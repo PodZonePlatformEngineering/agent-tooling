@@ -1,11 +1,11 @@
 ---
 name: launch-session
-description: Launch an isolated concurrent agent session using git worktree + VS Code CLI (Hermes only)
+description: Launch an isolated concurrent agent session using git worktree + VS Code CLI (Team Lead only)
 ---
 
-This skill is for **Hermes (Team Lead) only**. It creates an isolated working environment
+This skill is for **the Team Lead** of each team. It creates an isolated working environment
 for an agent session, opens it in a new VS Code window, and registers the session so
-Hermes can track it during consolidation.
+the Team Lead can track it during consolidation.
 
 The engineer then switches to the new window, runs the agent session, and returns to the
 planning window when convenient. Both sessions run concurrently without sharing repo state.
@@ -49,7 +49,7 @@ default to all repos in the identity file).
 
 Before creating any worktrees, confirm a commission brief for this session exists on
 `origin/main` of the home repo. This prevents agents from starting without proper context
-(e.g. when the brief is on an unmerged Hermes branch).
+(e.g. when the brief is on an unmerged Team Lead branch).
 
 **Home repo for the check:**
 - Standard mode: `podzoneAgentTeam`
@@ -68,10 +68,10 @@ Before creating any worktrees, confirm a commission brief for this session exist
    git -C ~/workspace/{home_repo} push origin main
    ```
    Push ensures origin/main is current before the worktree branches, preventing PR diff
-   noise from unpushed Hermes commits.
+   noise from unpushed Team Lead commits.
 4. **If no match is found:** abort with:
    ```
-   Commission brief not in main — merge Hermes session branch first.
+   Commission brief not in main — merge the Team Lead session branch first.
    Expected: team/{agent}/incoming/{date}-{task-slug}.md
    Check: git show origin/main:team/{agent}/incoming/
    ```
@@ -178,7 +178,7 @@ session-local worktree path of the home repo:
 ### Standard mode
 
 Append a row to the **main clone** of `podzoneAgentTeam/planning/sessions/active.md`
-(not the session worktree — this file is Hermes-managed on main):
+(not the session worktree — this file is Team Lead-managed on main):
 
 ```markdown
 | {session-id} | {agent} | {task-slug} | {YYYY-MM-DD} | in-flight | ~/sessions/{session-id} | session/{agent}-{YYYY-MM-DD}-{task-slug} |

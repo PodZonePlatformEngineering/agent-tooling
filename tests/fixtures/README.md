@@ -8,20 +8,21 @@ Documents the shared test environments used by `agent-tooling` primitive tests.
 
 **Collection:** `agent-tooling-test`
 **Dimensions:** 768 (nomic-embed-text cosine)
-**URL:** `https://qdrant.agenticflows.co.uk`
+**URL:** `http://qdrant.agenticflows.co.uk:8080` (local HTTP — `AGENTSONLY_QDRANT_URL`)
 **Auth env var:** `PODZONE_QDRANT_APIKEY`
+
+> **TLS note:** `https://qdrant.agenticflows.co.uk` (port 443) has an expired certificate.
+> Use the HTTP endpoint on port 8080 until Atlas renews the cert.
 
 The collection is pre-created and persistent. Tests add and clean up their own points
 using UUIDs scoped to the test run. Do not drop or recreate the collection between runs.
 
-> **Note (2026-05-13):** `qdrant.agenticflows.co.uk` TLS certificate has expired — the
-> `agent-tooling-test` collection has not yet been created. Atlas to renew the cert;
-> collection creation is pending. See current blockers in `planning/STATUS.md`.
+Collection created 2026-05-13 ✅
 
-To create or verify the collection:
+To verify or recreate the collection:
 
 ```bash
-curl -s -X PUT "https://qdrant.agenticflows.co.uk/collections/agent-tooling-test" \
+curl -s -X PUT "http://qdrant.agenticflows.co.uk:8080/collections/agent-tooling-test" \
   -H "api-key: $PODZONE_QDRANT_APIKEY" \
   -H "Content-Type: application/json" \
   -d '{"vectors": {"size": 768, "distance": "Cosine"}}'
@@ -36,7 +37,7 @@ curl -s -X PUT "https://qdrant.agenticflows.co.uk/collections/agent-tooling-test
 **Test chat_id:** confirm with Martin before running Telegram primitive tests.
 
 Bot token is available via secretctl: `secretctl run -k podzone_cloud_bot_token -- env | grep PODZONE_CLOUD_BOT_TOKEN`
-or injected directly from `~/.claude/settings.json` `env` block (preferred in hook context).
+or injected directly from `~/.claude/settings.json` `env` block (preferred in hook/subprocess context — secretctl requires a TTY).
 
 ---
 

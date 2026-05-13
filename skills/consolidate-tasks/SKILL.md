@@ -1,6 +1,6 @@
 ---
 name: consolidate-tasks
-description: Merge agent outbox status files into team-tasklist.md (Hermes only)
+description: Merge agent outbox status files into team-tasklist.md (Team Lead only)
 ---
 
 This skill is for **Team Leads only** — Hermes (apex) or a fissioned team's own Team Lead.
