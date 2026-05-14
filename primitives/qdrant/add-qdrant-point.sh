@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-# Add a single point to a Qdrant collection
-# Usage: add-qdrant-point.sh <collection> <id> <vector_json> <payload_json>
-# Auth:  PODZONE_QDRANT_APIKEY
+# Upsert a single point into a Qdrant collection.
+# Usage: add-qdrant-point.sh <collection> <point_id> <vector_json> <payload_json>
+# Auth: PODZONE_QDRANT_APIKEY
 set -euo pipefail
 
-# --- parameters ---
-COLLECTION="${1:?Usage: add-qdrant-point.sh <collection> <id> <vector_json> <payload_json>}"
-ID="${2:?missing id}"
+COLLECTION="${1:?Usage: add-qdrant-point.sh <collection> <point_id> <vector_json> <payload_json>}"
+POINT_ID="${2:?missing point_id}"
 VECTOR_JSON="${3:?missing vector_json}"
 PAYLOAD_JSON="${4:?missing payload_json}"
-QDRANT_URL="${QDRANT_URL:-https://qdrant.agenticflows.co.uk}"
 
-# --- auth check ---
-: "${PODZONE_QDRANT_APIKEY:?PODZONE_QDRANT_APIKEY is required}"
+QDRANT_URL="${AGENTSONLY_QDRANT_URL:-http://qdrant.agenticflows.co.uk:8080}"
+API_KEY="${PODZONE_QDRANT_APIKEY:?PODZONE_QDRANT_APIKEY not set}"
 
-# --- implementation ---
-echo "STUB: not yet implemented"
-exit 0
+curl -sf -X PUT "${QDRANT_URL}/collections/${COLLECTION}/points" \
+  -H "Content-Type: application/json" \
+  -H "api-key: ${API_KEY}" \
+  -d "{\"points\": [{\"id\": \"${POINT_ID}\", \"vector\": ${VECTOR_JSON}, \"payload\": ${PAYLOAD_JSON}}]}"
