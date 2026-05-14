@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# Scroll (list) points from a Qdrant collection with an optional filter
-# Usage: scroll-qdrant.sh <collection> <filter_json> <limit>
-# Auth:  PODZONE_QDRANT_APIKEY
+# Scroll points from a Qdrant collection.
+# Usage: scroll-qdrant.sh <collection> [limit] [filter_json]
+# Auth: PODZONE_QDRANT_APIKEY
 set -euo pipefail
 
-# --- parameters ---
-COLLECTION="${1:?Usage: scroll-qdrant.sh <collection> <filter_json> <limit>}"
-FILTER_JSON="${2:-{}}"
-LIMIT="${3:-10}"
-QDRANT_URL="${QDRANT_URL:-https://qdrant.agenticflows.co.uk}"
+COLLECTION="${1:?Usage: scroll-qdrant.sh <collection> [limit] [filter_json]}"
+LIMIT="${2:-10}"
+FILTER_JSON="${3:-}"
 
-# --- auth check ---
-: "${PODZONE_QDRANT_APIKEY:?PODZONE_QDRANT_APIKEY is required}"
+QDRANT_URL="${AGENTSONLY_QDRANT_URL:-http://qdrant.agenticflows.co.uk:8080}"
+API_KEY="${PODZONE_QDRANT_APIKEY:?PODZONE_QDRANT_APIKEY not set}"
 
-# --- implementation ---
-echo "STUB: not yet implemented"
-exit 0
+BODY="{\"limit\": ${LIMIT}, \"with_payload\": true, \"with_vector\": false"
+[ -n "${FILTER_JSON}" ] && BODY="${BODY}, \"filter\": ${FILTER_JSON}"
+BODY="${BODY}}"
+
+curl -sf -X POST "${QDRANT_URL}/collections/${COLLECTION}/points/scroll" \
+  -H "Content-Type: application/json" \
+  -H "api-key: ${API_KEY}" \
+  -d "${BODY}"

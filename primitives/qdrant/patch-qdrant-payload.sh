@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
-# Patch the payload of an existing Qdrant point
-# Usage: patch-qdrant-payload.sh <collection> <id> <payload_json>
-# Auth:  PODZONE_QDRANT_APIKEY
+# Patch payload on an existing Qdrant point without touching the vector.
+# Usage: patch-qdrant-payload.sh <collection> <point_id> <payload_json>
+# Auth: PODZONE_QDRANT_APIKEY
 set -euo pipefail
 
-# --- parameters ---
-COLLECTION="${1:?Usage: patch-qdrant-payload.sh <collection> <id> <payload_json>}"
-ID="${2:?missing id}"
+COLLECTION="${1:?Usage: patch-qdrant-payload.sh <collection> <point_id> <payload_json>}"
+POINT_ID="${2:?missing point_id}"
 PAYLOAD_JSON="${3:?missing payload_json}"
-QDRANT_URL="${QDRANT_URL:-https://qdrant.agenticflows.co.uk}"
 
-# --- auth check ---
-: "${PODZONE_QDRANT_APIKEY:?PODZONE_QDRANT_APIKEY is required}"
+QDRANT_URL="${AGENTSONLY_QDRANT_URL:-http://qdrant.agenticflows.co.uk:8080}"
+API_KEY="${PODZONE_QDRANT_APIKEY:?PODZONE_QDRANT_APIKEY not set}"
 
-# --- implementation ---
-echo "STUB: not yet implemented"
-exit 0
+curl -sf -X POST "${QDRANT_URL}/collections/${COLLECTION}/points/payload" \
+  -H "Content-Type: application/json" \
+  -H "api-key: ${API_KEY}" \
+  -d "{\"payload\": ${PAYLOAD_JSON}, \"points\": [\"${POINT_ID}\"]}"

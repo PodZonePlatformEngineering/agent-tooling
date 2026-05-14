@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Tests for primitives/telegram/send-telegram-message.sh
+# Structural tests for primitives/telegram/send-telegram-message.sh
+# Live integration tests are in tests/test_primitives.sh
+# Auth: prefers PODZONE_TELEGRAM_TEST_BOT, falls back to PODZONE_CLOUD_BOT_TOKEN
 set -euo pipefail
 
 SCRIPT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/primitives/telegram/send-telegram-message.sh"
@@ -15,25 +17,14 @@ expect_fail() {
     ok "$desc (exit non-zero as expected)"
   fi
 }
-run_test() {
-  local desc="$1"; shift
-  if "$@" >/dev/null 2>&1; then
-    ok "$desc (exit 0)"
-  else
-    fail "$desc — expected exit 0 but got non-zero"
-  fi
-}
 
-echo "=== send-telegram-message.sh ==="
+echo "=== send-telegram-message.sh (structural) ==="
 
-expect_fail "missing all args"                  "$SCRIPT"
-expect_fail "missing text"                      "$SCRIPT" "123456"
-expect_fail "missing PODZONE_CLOUD_BOT_TOKEN"   \
-  env -u PODZONE_CLOUD_BOT_TOKEN "$SCRIPT" "123456" "hello"
-
-run_test "stub exits 0 with valid args" \
-  env PODZONE_CLOUD_BOT_TOKEN=dummy \
-  "$SCRIPT" "123456" "test message"
+expect_fail "missing all args"  "$SCRIPT"
+expect_fail "missing text"      "$SCRIPT" "123456"
+# Must unset both token vars to trigger the auth failure
+expect_fail "missing both token vars" \
+  env -u PODZONE_TELEGRAM_TEST_BOT -u PODZONE_CLOUD_BOT_TOKEN "$SCRIPT" "123456" "hello"
 
 echo "  Results: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

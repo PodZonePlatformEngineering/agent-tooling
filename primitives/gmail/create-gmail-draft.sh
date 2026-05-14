@@ -1,22 +1,19 @@
 #!/usr/bin/env bash
-# Create a Gmail draft via the Gmail API
-# Usage: create-gmail-draft.sh <to> <subject> <body> [attachment_path]
-# Auth:  OAuth token file at ~/.config/podzone/gmail-token.json
+# Create a Gmail draft (optionally with attachment).
+# Usage: create-gmail-draft.sh --to <email> --subject <subject> --body <body> [--attachment <path>]
+# Auth: Gmail OAuth token at ~/.config/podzone/gmail-token.json
+#       Run the OAuth consent flow once if token is missing.
+# Credentials: ~/.config/podzone/gmail-client-secret.json
 set -euo pipefail
 
-# --- parameters ---
-TO="${1:?Usage: create-gmail-draft.sh <to> <subject> <body> [attachment_path]}"
-SUBJECT="${2:?missing subject}"
-BODY="${3:?missing body}"
-ATTACHMENT_PATH="${4:-}"
-GMAIL_TOKEN="${GMAIL_TOKEN_FILE:-$HOME/.config/podzone/gmail-token.json}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DRIVER="${SCRIPT_DIR}/../../tools/gmail/create_draft.py"
+GMAIL_TOKEN="${GMAIL_TOKEN_FILE:-${HOME}/.config/podzone/gmail-token.json}"
 
-# --- auth check ---
-if [[ ! -f "$GMAIL_TOKEN" ]]; then
-  echo "ERROR: Gmail token not found at $GMAIL_TOKEN" >&2
+if [ ! -f "${GMAIL_TOKEN}" ]; then
+  echo "ERROR: Gmail token not found at ${GMAIL_TOKEN}" >&2
+  echo "Run the OAuth consent flow once to generate it." >&2
   exit 1
 fi
 
-# --- implementation ---
-echo "STUB: not yet implemented"
-exit 0
+python3 "${DRIVER}" "$@"
