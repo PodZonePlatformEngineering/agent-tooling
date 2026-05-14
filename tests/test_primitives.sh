@@ -168,6 +168,24 @@ else
   fail "unexpected output: ${RESULT}"
 fi
 
+TNUM=11
+echo ""
+echo "=== T11: create-gmail-draft — draft with attachment ==="
+TMPFILE="$(mktemp /tmp/agent-tooling-test-attachment-XXXXXX.txt)"
+echo "agent-tooling T11 attachment test — $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${TMPFILE}"
+RESULT=$(bash "${GMAIL}" \
+  --to "podzone.cloud@gmail.com" \
+  --subject "agent-tooling attachment test 2026-05-14" \
+  --body "T11 draft with attachment" \
+  --attachment "${TMPFILE}")
+rm -f "${TMPFILE}"
+if echo "${RESULT}" | grep -qE "^draft_id=.+"; then
+  DRAFT_ID=$(echo "${RESULT}" | sed 's/draft_id=//')
+  ok "draft with attachment created: ${DRAFT_ID}"
+else
+  fail "unexpected output: ${RESULT}"
+fi
+
 echo ""
 echo "========================================"
 echo "Results: ${PASS} passed, ${FAIL} failed"
