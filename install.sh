@@ -33,6 +33,12 @@ echo "==> Updating skillDirectories..."
 echo "    Set claude.skillDirectories to: ${AGENT_TOOLING_DIR}/skills"
 echo "    (add to ~/.claude/settings.json manually or via /update-config)"
 
+echo "==> Setting up claude_session_telemetry collection..."
+bash "${AGENT_TOOLING_DIR}/hooks/setup-collection.sh"
+
+echo "==> Hook scripts installed to ${AGENT_TOOLING_DIR}/hooks/"
+echo "    Add the settings.json snippet from hooks/settings-snippet.json to ~/.claude/settings.json"
+
 echo "==> Running auth-check..."
 python3 -c "
 import urllib.request
