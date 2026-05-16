@@ -3,39 +3,39 @@
     "SessionStart": [
       {
         "type": "command",
-        "command": "~/.agent-tooling/hooks/session-start.sh"
+        "command": "~/.claude/hooks/session-start.sh"
       }
     ],
     "UserPromptSubmit": [
       {
         "type": "command",
-        "command": "~/.agent-tooling/hooks/user-prompt-submit.sh"
+        "command": "~/.claude/hooks/user-prompt-submit.sh"
       }
     ],
     "PreToolUse": [
       {
         "matcher": "*",
         "type": "command",
-        "command": "~/.agent-tooling/hooks/pre-tool-use.sh"
+        "command": "~/.claude/hooks/pre-tool-use.sh"
       }
     ],
     "PostToolUse": [
       {
         "matcher": "*",
         "type": "command",
-        "command": "~/.agent-tooling/hooks/post-tool-use.sh"
+        "command": "~/.claude/hooks/post-tool-use.sh"
       }
     ],
     "Stop": [
       {
         "type": "command",
-        "command": "~/.agent-tooling/hooks/stop.sh"
+        "command": "~/.claude/hooks/stop.sh"
       }
     ],
     "PostCompact": [
       {
         "type": "command",
-        "command": "~/.agent-tooling/hooks/post-compact.sh"
+        "command": "~/.claude/hooks/post-compact.sh"
       }
     ]
   }
