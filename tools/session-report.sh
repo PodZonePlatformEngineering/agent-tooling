@@ -97,10 +97,25 @@ points = json.loads(sys.argv[1])
 session_id = sys.argv[2]
 qdrant_url = sys.argv[3]
 
+def fmt_ts(ts):
+    if not ts:
+        return 'unknown'
+    try:
+        return datetime.fromisoformat(ts).astimezone(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+    except Exception:
+        return ts
+
 counts = {}
 timestamps = []
 repos = set()
 branches = set()
+shas = []
+user = None
+platform = None
+agent_identity = None
+prompts = []
+tool_calls = {}
+stop_reasons = {}
 
 for p in points:
     payload = p.get('payload', {})
@@ -114,15 +129,35 @@ for p in points:
         repos.add(repo['name'])
     if repo.get('git_branch'):
         branches.add(repo['git_branch'])
+    if repo.get('commit_sha') and ts:
+        shas.append((ts, repo['commit_sha']))
+    env = payload.get('environment', {})
+    if not user and env.get('user'):
+        user = env['user']
+    if not platform and env.get('platform'):
+        platform = env['platform']
+    if et == 'SessionStart' and not agent_identity:
+        agent_identity = payload.get('agent') or payload.get('scope')
+    if et == 'UserPromptSubmit':
+        msg = payload.get('user_message', '')
+        if msg and ts:
+            prompts.append((ts, msg))
+    if et == 'PreToolUse':
+        tool = payload.get('tool_name', 'Unknown')
+        tool_calls[tool] = tool_calls.get(tool, 0) + 1
+    if et == 'Stop':
+        reason = payload.get('stop_reason')
+        if reason:
+            stop_reasons[reason] = stop_reasons.get(reason, 0) + 1
 
 timestamps.sort()
-start_ts = timestamps[0] if timestamps else 'unknown'
-end_ts   = timestamps[-1] if timestamps else 'unknown'
+start_ts = timestamps[0] if timestamps else None
+end_ts   = timestamps[-1] if timestamps else None
 
 if len(timestamps) >= 2:
     try:
-        t_start = datetime.fromisoformat(start_ts)
-        t_end   = datetime.fromisoformat(end_ts)
+        t_start = datetime.fromisoformat(timestamps[0])
+        t_end   = datetime.fromisoformat(timestamps[-1])
         secs    = int((t_end - t_start).total_seconds())
         duration = f'{secs//3600:02d}:{(secs%3600)//60:02d}:{secs%60:02d}'
     except Exception:
@@ -130,31 +165,100 @@ if len(timestamps) >= 2:
 else:
     duration = '00:00:00'
 
-now   = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-total = sum(counts.values())
+shas.sort()
+first_sha = shas[0][1] if shas else None
+last_sha  = shas[-1][1] if shas else None
 
-print(f'# Session Report — {session_id}')
+pre_count  = counts.get('PreToolUse', 0)
+post_count = counts.get('PostToolUse', 0)
+now      = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+total    = sum(counts.values())
+short_id = session_id[:8]
+
+print(f'# Session Report — {short_id}')
 print()
-print(f'**Repo:** {\" \".join(sorted(repos)) or \"unknown\"}  **Branch:** {\" \".join(sorted(branches)) or \"unknown\"}  **Duration:** {duration}')
-print(f'**Period:** {start_ts} → {end_ts}')
+
+if agent_identity:
+    print(f'**Agent:** {agent_identity}')
+    print()
+
+print(f'**Session:** {short_id}')
+if repos:
+    print(f'**Repos:** {\", \".join(sorted(repos))}')
+if branches:
+    print(f'**Branches:** {\", \".join(sorted(branches))}')
+print(f'**Duration:** {duration}')
+if start_ts and end_ts:
+    print(f'**Period:** {fmt_ts(start_ts)} → {fmt_ts(end_ts)}')
+if pre_count > 0:
+    gap = pre_count - post_count
+    if gap > 0:
+        pct = int(100 * post_count / pre_count)
+        print(f'**Tool completion:** {post_count}/{pre_count} ({pct}%)  — {gap} calls did not complete')
+    else:
+        print(f'**Tool completion:** {pre_count}/{pre_count} (100%)')
+if user or platform:
+    parts = []
+    if user: parts.append(f'**User:** {user}')
+    if platform: parts.append(f'**Platform:** {platform}')
+    print('  '.join(parts))
+if first_sha and last_sha:
+    if first_sha == last_sha:
+        print(f'**Commit:** {first_sha[:7]}')
+    else:
+        print(f'**Commits:** {first_sha[:7]} → {last_sha[:7]}')
+
 print()
 print('## Event Volume')
 print()
 print('| Event Type        | Count |')
 print('|-------------------|-------|')
 
-ordered = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'PostCompact']
+ordered = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'Stop', 'SubagentStop', 'PostCompact']
 printed = set()
 for et in ordered:
-    if et in counts:
-        print(f'| {et:<17} | {counts[et]:<5} |')
-        printed.add(et)
+    c = counts.get(et, 0)
+    print(f'| {et:<17} | {c:<5} |')
+    printed.add(et)
 for et in sorted(counts):
     if et not in printed:
         print(f'| {et:<17} | {counts[et]:<5} |')
 print(f'| **Total**         | {total:<5} |')
+
+prompts.sort()
+if prompts:
+    print()
+    print(f'## Operator Prompts ({len(prompts)})')
+    print()
+    for i, (_, msg) in enumerate(prompts, 1):
+        truncated = (msg[:120] + '…') if len(msg) > 120 else msg
+        print(f'{i}. {truncated}')
+
+if tool_calls:
+    sorted_tools = sorted(tool_calls.items(), key=lambda x: -x[1])
+    total_pre = sum(tool_calls.values())
+    print()
+    print(f'## Tool Breakdown (PreToolUse — {total_pre} calls)')
+    print()
+    print(f'| {\"Tool\":<18} | Count |')
+    print(f'|{\"-\"*20}|-------|')
+    for tool, cnt in sorted_tools:
+        print(f'| {tool:<18} | {cnt:<5} |')
+
+if stop_reasons:
+    sorted_reasons = sorted(stop_reasons.items(), key=lambda x: -x[1])
+    total_stops = sum(stop_reasons.values())
+    print()
+    print(f'## Stop Reasons ({total_stops})')
+    print()
+    print(f'| {\"Reason\":<18} | Count |')
+    print(f'|{\"-\"*20}|-------|')
+    for reason, cnt in sorted_reasons:
+        print(f'| {reason:<18} | {cnt:<5} |')
+
 print()
 print('## Notes')
+print(f'- Session ID: {session_id}')
 print(f'- Generated: {now}')
 print(f'- Collection: claude_session_telemetry @ {qdrant_url}')
 " "${ALL_POINTS}" "${SESSION_ID}" "${QDRANT_URL}"
