@@ -5,6 +5,7 @@ set -euo pipefail
 
 AGENT_TOOLING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS_DIR="${HOME}/.claude/hooks"
+PRIMITIVES_DIR="${HOME}/.claude/primitives"
 WRAPPERS_DIR="${HOME}/.local/bin"
 
 echo "==> Installing Python dependencies..."
@@ -15,6 +16,10 @@ mkdir -p "${HOOKS_DIR}"
 cp "${AGENT_TOOLING_DIR}/hooks/"*.py "${HOOKS_DIR}/"
 cp "${AGENT_TOOLING_DIR}/hooks/"*.sh "${HOOKS_DIR}/"
 chmod +x "${HOOKS_DIR}/"*.sh
+
+echo "==> Installing primitives (for hook relative-path resolution)..."
+cp -r "${AGENT_TOOLING_DIR}/primitives/." "${PRIMITIVES_DIR}/"
+find "${PRIMITIVES_DIR}" -name "*.sh" -exec chmod +x {} \;
 
 echo "==> Installing primitive wrappers..."
 mkdir -p "${WRAPPERS_DIR}"
