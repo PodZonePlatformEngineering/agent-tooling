@@ -34,6 +34,18 @@ WRAPPER
   echo "    Installed: ${wrapper}"
 done
 
+echo "==> Installing tools..."
+find "${AGENT_TOOLING_DIR}/tools" -maxdepth 1 -name "*.sh" | while read -r script; do
+  name="$(basename "${script}" .sh)"
+  wrapper="${WRAPPERS_DIR}/${name}"
+  cat > "${wrapper}" <<WRAPPER
+#!/usr/bin/env bash
+exec "${script}" "\$@"
+WRAPPER
+  chmod +x "${wrapper}"
+  echo "    Installed: ${wrapper}"
+done
+
 echo "==> Updating skillDirectories..."
 echo "    Set claude.skillDirectories to: ${AGENT_TOOLING_DIR}/skills"
 echo "    (add to ~/.claude/settings.json manually or via /update-config)"
