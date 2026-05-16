@@ -28,4 +28,11 @@ for FIELD in session_id event_type; do
     || true
 done
 
+# datetime index enables order_by timestamp (required for session-report.sh no-arg resolution)
+curl -sf -X PUT "${QDRANT_URL}/collections/${COLLECTION}/index" \
+  -H "Content-Type: application/json" \
+  -H "api-key: ${API_KEY}" \
+  -d '{"field_name": "timestamp", "field_schema": "datetime"}' \
+  || true
+
 echo "==> Setup complete."
