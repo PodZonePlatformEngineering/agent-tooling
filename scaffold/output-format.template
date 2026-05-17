@@ -1,0 +1,4 @@
+Result file: results/session-{YYYY-MM-DD}-{task-slug}.md
+Sections: Completed / Blockers / Decisions / Questions for Martin / PRs Raised
+Commit format: {type}({scope}): {description} (CC-{NNN})
+PR title: ≤ 70 chars; body: Summary + Test plan + 🤖 Generated with Claude Code
