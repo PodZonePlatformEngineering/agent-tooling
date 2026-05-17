@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
-# install.sh — install agent-tooling to the workstation.
+# install.sh — install agent-tooling CLI tools to the workstation.
 # Pattern: trainingTeam/planning/projects/PROJ-007-trainee-onboarding/scripts/bootstrap.sh
+#
+# NOTE: Hooks are now repo-level (ADR-008 / PROJ-033/T-007).
+# Use scaffold.sh for new home repos; sync-agent-tooling.sh to update existing ones.
+# This script installs CLI tools (session-report.sh) and primitive wrappers only.
 set -euo pipefail
 
 AGENT_TOOLING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOOKS_DIR="${HOME}/.claude/hooks"
 PRIMITIVES_DIR="${HOME}/.claude/primitives"
 WRAPPERS_DIR="${HOME}/.local/bin"
 
 echo "==> Installing Python dependencies..."
 pip3 install -r "${AGENT_TOOLING_DIR}/requirements.txt"
-
-echo "==> Installing hooks..."
-mkdir -p "${HOOKS_DIR}"
-cp "${AGENT_TOOLING_DIR}/hooks/"*.py "${HOOKS_DIR}/"
-cp "${AGENT_TOOLING_DIR}/hooks/"*.sh "${HOOKS_DIR}/"
-chmod +x "${HOOKS_DIR}/"*.sh
 
 echo "==> Installing primitives (for hook relative-path resolution)..."
 cp -r "${AGENT_TOOLING_DIR}/primitives/." "${PRIMITIVES_DIR}/"
@@ -53,8 +50,11 @@ echo "    (add to ~/.claude/settings.json manually or via /update-config)"
 echo "==> Setting up claude_session_telemetry collection..."
 bash "${AGENT_TOOLING_DIR}/hooks/setup-collection.sh"
 
-echo "==> Hook scripts installed to ${AGENT_TOOLING_DIR}/hooks/"
-echo "    Add the settings.json snippet from hooks/settings-snippet.json to ~/.claude/settings.json"
+echo ""
+echo "NOTE: Hooks are now repo-level — not installed to ~/.claude/hooks/."
+echo "  New home repo:  bash ${AGENT_TOOLING_DIR}/scaffold.sh {team} {agent} {role}"
+echo "  Update hooks:   bash .workspace/agent-tooling/sync-agent-tooling.sh --role {role}"
+echo ""
 
 echo "==> Running auth-check..."
 python3 -c "

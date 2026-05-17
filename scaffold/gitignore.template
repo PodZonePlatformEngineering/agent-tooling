@@ -1,0 +1,17 @@
+# Working repo clones — never committed
+.workspace/
+
+# Ephemeral session context — regenerated each session
+context/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Local tool state
+*.log
+.env
