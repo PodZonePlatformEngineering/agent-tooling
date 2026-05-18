@@ -1,48 +1,50 @@
 #!/usr/bin/env bash
-# Bootstrap the Qdrant secrets collection from the secretctl/1Password vault.
-# Martin-run tool — requires TTY for 1Password authentication.
-# Usage: load-secrets.sh [--dry-run] [--vault <vault-name>]
-# Auth: SECRETCTL_PASSWORD (must be set); PODZONE_QDRANT_APIKEY
+# Load secrets into the Qdrant secrets collection from JSON input.
+# Vault enumeration is done by the Claude Code agent using secretctl MCP tools.
+# See tools/dump-secrets.md for the full bootstrap workflow.
+#
+# Usage:
+#   echo '[{"name":"foo","value":"bar"}]' | load-secrets.sh [--dry-run]
+#   load-secrets.sh --secrets-file /tmp/secrets-dump.json [--dry-run]
+#
+# Auth: PODZONE_QDRANT_APIKEY (Qdrant writes only; no vault access in this script)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 DRY_RUN=false
-VAULT="${OP_VAULT:-podzone}"
+SECRETS_FILE=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --dry-run) DRY_RUN=true; shift ;;
-    --vault)   VAULT="${2:?--vault requires a value}"; shift 2 ;;
-    *) echo "Unknown argument: $1" >&2; echo "Usage: load-secrets.sh [--dry-run] [--vault <vault-name>]" >&2; exit 1 ;;
+    --dry-run)       DRY_RUN=true; shift ;;
+    --secrets-file)  SECRETS_FILE="${2:?--secrets-file requires a path}"; shift 2 ;;
+    *) echo "Unknown argument: $1" >&2
+       echo "Usage: load-secrets.sh [--secrets-file <path>] [--dry-run]" >&2
+       exit 1 ;;
   esac
 done
 
-: "${SECRETCTL_PASSWORD:?SECRETCTL_PASSWORD must be set before running this script}"
 QDRANT_URL="${AGENTSONLY_QDRANT_URL:-http://qdrant.agenticflows.co.uk:8080}"
-API_KEY="${PODZONE_QDRANT_APIKEY:?PODZONE_QDRANT_APIKEY not set}"
 COLLECTION="secrets"
 
-command -v op >/dev/null 2>&1 || {
-  echo "Error: 'op' (1Password CLI) is required but not found in PATH." >&2
-  echo "Install via: brew install 1password-cli" >&2
-  exit 1
-}
+if [[ "${DRY_RUN}" == "false" ]]; then
+  : "${PODZONE_QDRANT_APIKEY:?PODZONE_QDRANT_APIKEY not set}"
+  API_KEY="${PODZONE_QDRANT_APIKEY}"
+fi
 
-echo "==> Listing secrets from vault '${VAULT}'..."
-ITEMS_JSON=$(op item list --vault "${VAULT}" --format json 2>&1) || {
-  echo "Error: could not list items from vault '${VAULT}'." >&2
-  echo "Ensure you are signed in to 1Password CLI: op signin" >&2
+# Read JSON input from --secrets-file or stdin
+if [[ -n "${SECRETS_FILE}" ]]; then
+  [[ -f "${SECRETS_FILE}" ]] || { echo "Error: secrets file not found: ${SECRETS_FILE}" >&2; exit 1; }
+  SECRETS_JSON=$(cat "${SECRETS_FILE}")
+elif [[ ! -t 0 ]]; then
+  SECRETS_JSON=$(cat)
+else
+  echo "Error: no secrets input. Provide JSON via stdin or --secrets-file <path>." >&2
+  echo "  Example: echo '[{\"name\":\"foo\",\"value\":\"bar\"}]' | load-secrets.sh --dry-run" >&2
   exit 1
-}
-
-ITEM_NAMES=$(python3 -c "
-import json, sys
-items = json.loads(sys.argv[1])
-for item in items:
-    print(item['title'])
-" "${ITEMS_JSON}")
+fi
 
 LOADED=0
 SKIPPED=0
@@ -71,12 +73,22 @@ derive_type() {
   esac
 }
 
-while IFS= read -r ITEM_NAME; do
+# Parse JSON array and iterate over entries
+ENTRIES=$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+for entry in data:
+    name = entry.get('name', '').strip()
+    value = entry.get('value', '').strip()
+    if name:
+        print(name + '\t' + value)
+" <<< "${SECRETS_JSON}")
+
+while IFS=$'\t' read -r ITEM_NAME SECRET_VALUE; do
   [[ -z "${ITEM_NAME}" ]] && continue
 
   SYSTEM=$(derive_system "${ITEM_NAME}")
   TYPE=$(derive_type "${ITEM_NAME}")
-  # Deterministic UUID from item name (md5 → UUID format, matching podzoneAgentTeam convention)
   POINT_ID=$(python3 -c "
 import hashlib, uuid
 print(str(uuid.UUID(hashlib.md5('${ITEM_NAME}'.encode()).hexdigest())))
@@ -88,17 +100,8 @@ print(str(uuid.UUID(hashlib.md5('${ITEM_NAME}'.encode()).hexdigest())))
     continue
   fi
 
-  # Retrieve secret value: derive env var name from item name (uppercase, replace - and / with _)
-  ENV_VAR=$(echo "${ITEM_NAME}" | tr '[:lower:]' '[:upper:]' | tr '-/_' '___')
-
-  SECRET_VALUE=$(secretctl run -k "${ITEM_NAME}" -- bash -c "printf '%s' \"\${${ENV_VAR}:-}\"" 2>/dev/null) || {
-    echo "  SKIP: ${ITEM_NAME} — could not retrieve (field '${ENV_VAR}' not found or secretctl error)"
-    SKIPPED=$((SKIPPED + 1))
-    continue
-  }
-
   if [[ -z "${SECRET_VALUE}" ]]; then
-    echo "  SKIP: ${ITEM_NAME} — empty value for env var '${ENV_VAR}'"
+    echo "  SKIP: ${ITEM_NAME} — empty value"
     SKIPPED=$((SKIPPED + 1))
     continue
   fi
@@ -119,7 +122,7 @@ print(json.dumps({
 }))
 " "${ITEM_NAME}" "${SYSTEM}" "${SECRET_VALUE}" "${TYPE}" "${NOW}")
 
-  curl -sf -X PUT "${QDRANT_URL}/collections/${COLLECTION}/points" \
+  curl -sf -X PUT "${QDRANT_URL}/collections/${COLLECTION}/points?wait=true" \
     -H "Content-Type: application/json" \
     -H "api-key: ${API_KEY}" \
     -d "{\"points\": [{\"id\": \"${POINT_ID}\", \"vector\": [0.0, 0.0, 0.0, 0.0], \"payload\": ${PAYLOAD}}]}" \
@@ -128,11 +131,11 @@ print(json.dumps({
   echo "  loaded: ${ITEM_NAME}"
   LOADED=$((LOADED + 1))
 
-done <<< "${ITEM_NAMES}"
+done <<< "${ENTRIES}"
 
 echo ""
 if [[ "${DRY_RUN}" == "true" ]]; then
   echo "Dry-run complete: ${LOADED} secrets would be upserted."
 else
-  echo "${LOADED} secrets loaded, ${SKIPPED} skipped (empty value or retrieval error)."
+  echo "${LOADED} secrets loaded, ${SKIPPED} skipped (empty value)."
 fi
