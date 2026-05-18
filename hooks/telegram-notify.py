@@ -7,8 +7,9 @@ Usage: python telegram-notify.py <message>
 Called from SessionEnd hook (ingest-transcript.py), notify-pr.py PostToolUse hook,
 and the session-end skill (for blocker notifications).
 
-Token injection: re-invokes itself via secretctl to avoid token in shell history.
-Best-effort: always exits 0.
+Token retrieval: calls primitives/getSecret.sh to fetch the bot token from the
+Qdrant secrets collection. Requires PODZONE_QDRANT_APIKEY in env.
+Best-effort: always exits 0; logs and skips on failure.
 
 Setup: set TELEGRAM_CHAT_ID env var (in settings.json or shell env).
 To find your chat ID:
@@ -22,20 +23,42 @@ import subprocess
 import sys
 from pathlib import Path
 
-# TODO: set once Martin's chat ID is confirmed via getUpdates
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+# getSecret.sh lives next to this file's parent in primitives/
+GET_SECRET = Path(__file__).resolve().parent.parent / "primitives" / "getSecret.sh"
 
 
 def log(msg: str) -> None:
     print(f"[telegram-notify] {msg}", file=sys.stderr)
 
 
-def send_direct(message: str) -> None:
-    """Send via Telegram API. Only called when PODZONE_CLOUD_BOT_TOKEN is in env."""
-    token = os.environ.get("PODZONE_CLOUD_BOT_TOKEN", "")
-    if not token:
-        log("PODZONE_CLOUD_BOT_TOKEN not in env after secretctl injection; skipping")
-        return
+def fetch_token() -> str:
+    """Fetch the bot token from Qdrant via getSecret.sh. Empty string on failure."""
+    if not GET_SECRET.exists():
+        log(f"getSecret.sh not found at {GET_SECRET}")
+        return ""
+    try:
+        result = subprocess.run(
+            ["bash", str(GET_SECRET), "podzone_cloud_bot_token"],
+            capture_output=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        log("getSecret.sh timed out")
+        return ""
+    except Exception as exc:
+        log(f"getSecret.sh exec failed: {exc}")
+        return ""
+
+    if result.returncode != 0:
+        err = result.stderr.decode(errors="replace").strip()[:200]
+        log(f"getSecret.sh failed (exit {result.returncode}): {err}")
+        return ""
+    return result.stdout.decode(errors="replace").strip()
+
+
+def send(message: str, token: str) -> None:
     try:
         import requests
 
@@ -61,38 +84,12 @@ def main() -> None:
         log("TELEGRAM_CHAT_ID not set; skipping notification (see setup instructions above)")
         sys.exit(0)
 
-    # If token already injected by a parent secretctl call, send directly
-    if os.environ.get("PODZONE_CLOUD_BOT_TOKEN"):
-        send_direct(message)
+    token = os.environ.get("PODZONE_CLOUD_BOT_TOKEN") or fetch_token()
+    if not token:
+        log("no token available; skipping notification")
         sys.exit(0)
 
-    # Re-invoke via secretctl to inject the bot token
-    script_path = Path(__file__).resolve()
-    try:
-        result = subprocess.run(
-            [
-                "secretctl", "run", "-k", "podzone_cloud_bot_token", "--",
-                sys.executable, str(script_path), message,
-            ],
-            capture_output=True,
-            timeout=20,
-        )
-        if result.returncode != 0:
-            log(
-                f"secretctl failed (exit {result.returncode}): "
-                f"{result.stderr.decode(errors='replace')[:200]}"
-            )
-        else:
-            # Forward stderr from inner invocation (contains our log lines)
-            inner_err = result.stderr.decode(errors="replace").strip()
-            if inner_err:
-                print(inner_err, file=sys.stderr)
-    except FileNotFoundError:
-        log("secretctl not found; skipping notification")
-    except subprocess.TimeoutExpired:
-        log("secretctl timed out; skipping notification")
-    except Exception as exc:
-        log(f"secretctl exec failed: {exc}")
+    send(message, token)
 
 
 if __name__ == "__main__":
