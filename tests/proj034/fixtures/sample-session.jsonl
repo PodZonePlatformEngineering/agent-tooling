@@ -1,0 +1,14 @@
+{"type":"user","timestamp":"2026-05-20T10:00:00.000Z","cwd":"/Users/martincolley/sessions/hephaestus-2026-05-20-proj034-foundation/agent-tooling","message":{"role":"user","content":"hi"}}
+{"type":"assistant","timestamp":"2026-05-20T10:00:01.000Z","message":{"model":"claude-opus-4-7","role":"assistant","stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":50,"cache_creation_input_tokens":200,"cache_read_input_tokens":300,"cache_creation":{"ephemeral_5m_input_tokens":200,"ephemeral_1h_input_tokens":0},"server_tool_use":{"web_search_requests":1,"web_fetch_requests":0}}}}
+{"type":"attachment","timestamp":"2026-05-20T10:00:02.000Z"}
+{"type":"system","timestamp":"2026-05-20T10:00:03.000Z"}
+{"type":"assistant","timestamp":"2026-05-20T10:00:04.000Z","message":{"model":"claude-opus-4-7","role":"assistant","stop_reason":"tool_use","usage":{"input_tokens":120,"output_tokens":60,"cache_creation_input_tokens":0,"cache_read_input_tokens":400,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"server_tool_use":{"web_search_requests":0,"web_fetch_requests":2}}}}
+{"type":"assistant","timestamp":"2026-05-20T10:00:05.000Z","message":{"model":"claude-sonnet-4-6","role":"assistant","stop_reason":"end_turn","usage":{"input_tokens":80,"output_tokens":40,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"type":"assistant","timestamp":"2026-05-20T10:00:06.000Z","message":{"model":"claude-opus-4-7","role":"assistant","stop_reason":"tool_use"}}
+{"type":"file-history-snapshot","timestamp":"2026-05-20T10:00:07.000Z"}
+{"type":"user","timestamp":"2026-05-20T10:00:08.000Z","message":{"role":"user","content":"thanks"}}
+not-valid-json-line-here
+{"type":"queue-operation","timestamp":"2026-05-20T10:00:09.000Z"}
+{"type":"assistant","timestamp":"2026-05-20T10:00:10.000Z","message":{"model":"claude-opus-4-7","role":"assistant","stop_reason":"end_turn","usage":{"input_tokens":50,"output_tokens":25,"cache_creation_input_tokens":0,"cache_read_input_tokens":100}}}
+
+{"type":"last-prompt","timestamp":"2026-05-20T10:00:11.000Z"}
