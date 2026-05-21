@@ -28,6 +28,7 @@ class TestScrape(unittest.TestCase):
             "session_id", "workspace", "agent", "cwd",
             "first_message_ts", "last_message_ts", "duration_seconds",
             "model_usage", "total_tokens", "message_counts",
+            "work_items", "projects",
             "jsonl_path", "jsonl_mtime",
         }
         self.assertTrue(required.issubset(self.payload.keys()))
@@ -127,6 +128,41 @@ class TestScrape(unittest.TestCase):
     def test_file_not_found(self) -> None:
         with self.assertRaises(FileNotFoundError):
             jsonl_scrape.scrape("/nonexistent/path/no.jsonl")
+
+    # T-010: work_items + projects extracted from corpus and cwd slug.
+    def test_work_items_extracted_from_corpus_and_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            parent = Path(td) / "-Users-x-sessions-hephaestus-2026-05-21-proj034-t010-agent-tooling"
+            parent.mkdir()
+            f = parent / "deadbeef.jsonl"
+            lines = [
+                json.dumps({
+                    "type": "user",
+                    "timestamp": "2026-05-21T10:00:00.000Z",
+                    "cwd": "/Users/x/sessions/hephaestus-2026-05-21-proj034-t010/agent-tooling",
+                    "message": {"role": "user", "content": "implement PROJ-034/T-010"},
+                }),
+                json.dumps({
+                    "type": "assistant",
+                    "timestamp": "2026-05-21T10:00:01.000Z",
+                    "message": {
+                        "model": "claude-opus-4-7",
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "Reading PROJ-033 context too"},
+                            {"type": "tool_use", "input": {"command": "grep PROJ-029/T-7"}},
+                        ],
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                    },
+                }),
+            ]
+            f.write_text("\n".join(lines) + "\n")
+            p = jsonl_scrape.scrape(f)
+            self.assertIn("PROJ-034/T-010", p["work_items"])
+            self.assertIn("PROJ-029/T-007", p["work_items"])
+            self.assertIn("PROJ-033", p["projects"])
+            self.assertIn("PROJ-034", p["projects"])  # from work item + cwd slug
+            self.assertIn("PROJ-029", p["projects"])  # from work item
 
 
 if __name__ == "__main__":
