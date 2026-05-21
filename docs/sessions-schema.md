@@ -40,6 +40,8 @@ documented migration.
 | `model_usage` | object | yes | keyed by model name; see [§ model_usage shape](#model_usage-shape) |
 | `total_tokens` | object | yes | same shape as one `model_usage` entry, summed across all models |
 | `message_counts` | object | yes | counts keyed by `.type` field — see [§ message_counts](#message_counts) |
+| `work_items` | list[str] | yes | canonical work-item IDs the session contributed to — see [§ work_items / projects](#work_items--projects) |
+| `projects` | list[str] | yes | project IDs (derived from work_items + bare mentions + cwd slug) |
 | `data_source` | enum | yes | which write path produced this payload — see [§ data_source](#data_source) |
 | `jsonl_path` | string | yes | absolute path to the source JSONL on disk |
 | `jsonl_mtime` | ISO 8601 | yes | `os.stat(path).st_mtime`, ISO-formatted, UTC |
@@ -105,6 +107,36 @@ entries carry `stop_reason: tool_use` (intra-turn tool pauses); filtering on
 Same shape as a single `model_usage` bucket. Values are the per-field sum across
 every model bucket. Consumers should treat `total_tokens` as a denormalised
 convenience, not as a source of truth — the per-model breakdown is authoritative.
+
+---
+
+## `work_items` / `projects`
+
+Two list[str] fields that name the work items and projects a session
+contributed to. Populated by `lib/work_items_extract.extract()` from the
+JSONL text corpus during scrape — no separate writer or migration required.
+
+**Extraction sources:**
+
+- canonical mentions in any user/assistant text or tool input (e.g.
+  `PROJ-034/T-010`, `proj-029/T-7`)
+- bare project mentions (e.g. `PROJ-033`) → `projects` only
+- session cwd basename slug (e.g. `hephaestus-2026-05-21-proj034-t010` →
+  `PROJ-034`)
+- every work item implies its project (`PROJ-034/T-008` → also adds `PROJ-034`
+  to `projects`)
+
+**Normalisation:** output is always uppercase, zero-padded to 3 digits, with
+the lowercase letter suffix preserved (`PROJ-034/T-006b`). `PROJ-3/T-9`
+becomes `PROJ-003/T-009`.
+
+**Bounds:** each list is deduped, ranked by mention frequency descending then
+alphabetically, truncated to 20, and the kept subset returned in alphabetical
+order. Both fields are always present — `[]` when nothing extractable.
+
+**Out of scope (deferred):** lookup against the `work_items` Qdrant collection
+by `session_id` (PROJ-033/T-008) — a follow-on T-010b will layer that source
+in once the collection is live.
 
 ---
 
@@ -224,6 +256,8 @@ Synthesised payload for a short session that used both Opus and Sonnet:
     "queue-operation": 2,
     "last-prompt": 5
   },
+  "work_items": ["PROJ-034/T-010"],
+  "projects": ["PROJ-034"],
   "data_source": "stop_hook",
   "jsonl_path": "/Users/martincolley/.claude/projects/-Users-martincolley-sessions-hephaestus-2026-05-20-proj034-foundation-agent-tooling/8e100f96-ce4c-48a8-a872-b85ced0d5b54.jsonl",
   "jsonl_mtime": "2026-05-20T10:42:12.150000+00:00",

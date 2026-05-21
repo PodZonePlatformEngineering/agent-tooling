@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import session_metadata
+from . import session_metadata, work_items_extract
 
 
 USAGE_FIELDS_FLAT = (
@@ -78,6 +78,42 @@ def _sum_totals(model_usage: dict) -> dict:
     return totals
 
 
+def _collect_message_text(content: Any) -> list[str]:
+    """Yield text strings from a Claude message content (str or block list).
+
+    Includes text blocks, tool_use inputs (JSON-serialised), and tool_result
+    string content. Skips images and other non-text payloads.
+    """
+    out: list[str] = []
+    if isinstance(content, str):
+        out.append(content)
+        return out
+    if not isinstance(content, list):
+        return out
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            text = block.get("text")
+            if isinstance(text, str):
+                out.append(text)
+        elif btype == "tool_use":
+            tool_input = block.get("input")
+            if isinstance(tool_input, dict):
+                try:
+                    out.append(json.dumps(tool_input))
+                except (TypeError, ValueError):
+                    pass
+        elif btype == "tool_result":
+            inner = block.get("content")
+            if isinstance(inner, str):
+                out.append(inner)
+            elif isinstance(inner, list):
+                out.extend(_collect_message_text(inner))
+    return out
+
+
 def _parse_ts(s: str | None) -> datetime | None:
     if not s:
         return None
@@ -100,6 +136,7 @@ def scrape(jsonl_path: str | Path) -> dict:
     last_ts: str | None = None
     model_usage: dict[str, dict] = {}
     message_counts: dict[str, int] = {}
+    text_corpus: list[str] = []
     malformed = 0
 
     with path.open("r", encoding="utf-8", errors="replace") as fh:
@@ -136,6 +173,11 @@ def scrape(jsonl_path: str | Path) -> dict:
                 if isinstance(c, str) and c:
                     cwd = c
 
+            if etype in ("user", "assistant"):
+                message = entry.get("message")
+                if isinstance(message, dict):
+                    text_corpus.extend(_collect_message_text(message.get("content")))
+
             # D1: assistant + .message.usage present, no stop_reason filter.
             if etype == "assistant":
                 message = entry.get("message")
@@ -163,6 +205,8 @@ def scrape(jsonl_path: str | Path) -> dict:
         os.stat(path).st_mtime, tz=timezone.utc
     ).isoformat()
 
+    work_items_payload = work_items_extract.extract(text_corpus, cwd=meta["cwd"] or "")
+
     payload: dict[str, Any] = {
         "session_id": session_id,
         "workspace": meta["workspace"],
@@ -174,6 +218,8 @@ def scrape(jsonl_path: str | Path) -> dict:
         "model_usage": model_usage,
         "total_tokens": _sum_totals(model_usage),
         "message_counts": message_counts,
+        "work_items": work_items_payload["work_items"],
+        "projects": work_items_payload["projects"],
         "jsonl_path": str(path.resolve()),
         "jsonl_mtime": mtime_iso,
     }
