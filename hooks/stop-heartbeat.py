@@ -2,94 +2,177 @@
 """
 stop-heartbeat.py — Stop hook.
 
-Fires at the end of each Claude turn (before the next user turn).
-Upserts a heartbeat record in the `sessions` Qdrant collection.
+Fires at the end of each Claude turn. PROJ-034 T-005 behaviour:
+
+  1. Locate this session's JSONL at ~/.claude/projects/<encoded-cwd>/<sid>.jsonl
+  2. If present: scrape() → full payload → upsert with data_source=stop_hook,
+     status=in_progress.
+  3. If missing: fall back to a heartbeat-only upsert (legacy behaviour).
+  4. Wrap the work in a hard time ceiling (2 s) — better to lose one point
+     than block the agent turn.
 
 Input: JSON on stdin (Claude Code Stop hook format).
-Exit: always 0 (non-blocking, fast — no Ollama calls).
+Exit: always 0 (best-effort, non-blocking).
 """
+
+from __future__ import annotations
 
 import json
 import os
+import signal
 import sys
+import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
-CLOUD_QDRANT_URL = "https://2dd1f0b8-5cf1-4caf-bc96-2b4811251f4c.eu-west-2-0.aws.cloud.qdrant.io"
-AGENTSONLY_QDRANT_URL = "http://qdrant.agenticflows.co.uk:8080"
-CLOUD_COLLECTIONS = {"sessions", "tasks", "task_events", "prompt_logs", "one_shots"}
 
+HARD_TIMEOUT_SECONDS = 2
+
+CLOUD_QDRANT_URL = (
+    "https://2dd1f0b8-5cf1-4caf-bc96-2b4811251f4c.eu-west-2-0.aws.cloud.qdrant.io"
+)
 SESSIONS_COLLECTION = "sessions"
 
 
-def get_qdrant_url(collection: str) -> str:
-    return CLOUD_QDRANT_URL if collection in CLOUD_COLLECTIONS else AGENTSONLY_QDRANT_URL
-
-
-def get_qdrant_headers(collection: str) -> dict:
-    if collection in CLOUD_COLLECTIONS:
-        api_key = os.environ.get("PODZONE_QDRANT_APIKEY", "")
-        return {"api-key": api_key} if api_key else {}
-    return {}
-
-
-def log(msg: str) -> None:
+def _log(msg: str) -> None:
     print(f"[stop-heartbeat] {msg}", file=sys.stderr)
 
 
-def upsert_heartbeat(session_id: str, cwd: Optional[str]) -> None:
-    """Upsert a heartbeat record to the sessions collection."""
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _locate_agent_tooling() -> Optional[Path]:
+    """Find the agent-tooling repo root (contains lib/sessions_upsert.py)."""
+    candidates: list[Path] = []
+    env = os.environ.get("AGENT_TOOLING_DIR")
+    if env:
+        candidates.append(Path(env))
+    # Walk up from this script — covers the canonical agent-tooling/hooks/ copy
+    here = Path(__file__).resolve()
+    for ancestor in here.parents:
+        candidates.append(ancestor)
+        if ancestor == ancestor.parent:
+            break
+    # Common workstation locations
+    candidates.append(Path.home() / "workspace" / "agent-tooling")
+    # Sibling under ~/sessions/<dir>/agent-tooling — the worktree case
+    candidates.extend(
+        (Path.home() / "sessions").glob("*/agent-tooling")
+        if (Path.home() / "sessions").is_dir()
+        else []
+    )
+    for c in candidates:
+        if (c / "lib" / "sessions_upsert.py").is_file():
+            return c
+    return None
+
+
+def _encode_cwd_to_project_dir(cwd: str) -> str:
+    """Mirror Claude Code's ~/.claude/projects/<encoded> convention.
+
+    Each '/' in the absolute path becomes '-'. A leading '/' becomes a leading
+    '-'. Example: /Users/x/y → -Users-x-y.
+    """
+    return cwd.replace("/", "-")
+
+
+def _resolve_jsonl_path(session_id: str, cwd: Optional[str]) -> Optional[Path]:
+    if not cwd:
+        return None
+    encoded = _encode_cwd_to_project_dir(cwd)
+    candidate = Path.home() / ".claude" / "projects" / encoded / f"{session_id}.jsonl"
+    return candidate if candidate.is_file() else None
+
+
+def _heartbeat_only_upsert(session_id: str, cwd: Optional[str]) -> None:
+    """Legacy heartbeat-only path. Used when JSONL not yet on disk."""
     try:
         import requests
     except ImportError:
-        log("requests not available; skipping heartbeat upsert")
+        _log("requests unavailable; skipping heartbeat")
+        return
+    api_key = os.environ.get("PODZONE_QDRANT_APIKEY", "")
+    if not api_key:
+        _log("PODZONE_QDRANT_APIKEY not set; skipping heartbeat")
         return
 
-    now = datetime.now(timezone.utc).isoformat()
-
+    import uuid as _uuid
+    pid = str(_uuid.uuid5(_uuid.NAMESPACE_DNS, session_id))
+    now = _now_iso()
     payload = {
         "session_id": session_id,
         "last_heartbeat_ts": now,
-        "status": "active",
+        "status": "in_progress",
+        "data_source": "stop_hook",
+        "updated_at": now,
     }
     if cwd:
         payload["cwd"] = cwd
-
-    _url = get_qdrant_url(SESSIONS_COLLECTION)
-    _headers = get_qdrant_headers(SESSIONS_COLLECTION)
     try:
-        r = requests.patch(
-            f"{_url}/collections/{SESSIONS_COLLECTION}/points/payload",
-            headers=_headers,
+        r = requests.put(
+            f"{CLOUD_QDRANT_URL}/collections/{SESSIONS_COLLECTION}/points",
+            headers={"api-key": api_key},
             json={
-                "payload": {"last_heartbeat_ts": now, "status": "active"},
-                "points": [session_id],
+                "points": [
+                    {"id": pid, "vector": [0.0] * 768, "payload": payload}
+                ]
             },
-            timeout=8,
+            timeout=5,
         )
         r.raise_for_status()
-        log(f"heartbeat updated for session {session_id[:16]}...")
-    except Exception:
-        # Fall back to full upsert (point may not exist yet)
-        try:
-            r = requests.put(
-                f"{_url}/collections/{SESSIONS_COLLECTION}/points",
-                headers=_headers,
-                json={
-                    "points": [
-                        {
-                            "id": session_id,
-                            "vector": [0.0] * 768,
-                            "payload": payload,
-                        }
-                    ]
-                },
-                timeout=8,
-            )
-            r.raise_for_status()
-            log(f"heartbeat upserted for session {session_id[:16]}...")
-        except Exception as exc:
-            log(f"Warning: heartbeat upsert failed: {exc}")
+        _log(f"heartbeat-only upserted for {session_id[:16]}…")
+    except Exception as exc:
+        _log(f"heartbeat upsert failed: {exc}")
+
+
+def _full_payload_upsert(jsonl_path: Path, agent_tooling: Path) -> bool:
+    """Scrape + upsert via the shared library. Returns True on success."""
+    if str(agent_tooling) not in sys.path:
+        sys.path.insert(0, str(agent_tooling))
+    try:
+        from lib import jsonl_scrape, sessions_upsert  # type: ignore
+    except Exception as exc:
+        _log(f"lib import failed: {exc}")
+        return False
+
+    try:
+        payload = jsonl_scrape.scrape(jsonl_path)
+    except Exception as exc:
+        _log(f"scrape failed: {exc}")
+        return False
+
+    now = _now_iso()
+    result = sessions_upsert.upsert_session(
+        payload,
+        data_source="stop_hook",
+        status="in_progress",
+        last_heartbeat_ts=now,
+    )
+    if result["ok"]:
+        _log(f"full payload upserted for {payload['session_id'][:16]}…")
+        return True
+    _log(f"upsert failed: {result['reason']}")
+    return False
+
+
+def _handle_timeout(signum, frame):  # type: ignore[no-untyped-def]
+    raise TimeoutError("stop-heartbeat exceeded hard ceiling")
+
+
+def run(session_id: str, cwd: Optional[str]) -> None:
+    started = time.monotonic()
+    jsonl = _resolve_jsonl_path(session_id, cwd)
+    agent_tooling = _locate_agent_tooling()
+
+    if jsonl is not None and agent_tooling is not None:
+        if _full_payload_upsert(jsonl, agent_tooling):
+            _log(f"done in {(time.monotonic() - started) * 1000:.0f} ms")
+            return
+        # fall through to heartbeat
+    _heartbeat_only_upsert(session_id, cwd)
+    _log(f"done in {(time.monotonic() - started) * 1000:.0f} ms")
 
 
 def main() -> None:
@@ -99,22 +182,32 @@ def main() -> None:
             sys.exit(0)
         hook_data = json.loads(raw)
     except Exception as exc:
-        log(f"Could not parse stdin JSON: {exc}")
+        _log(f"could not parse stdin JSON: {exc}")
         sys.exit(0)
 
     session_id: Optional[str] = hook_data.get("session_id")
     cwd: Optional[str] = hook_data.get("cwd")
-
     if not session_id:
-        log("No session_id in hook input; skipping.")
+        _log("no session_id in hook input; skipping.")
         sys.exit(0)
 
-    upsert_heartbeat(session_id, cwd)
+    # Hard ceiling — POSIX SIGALRM. On platforms without SIGALRM (e.g. Windows)
+    # the hook runs without a hard cap (still fast in practice).
+    if hasattr(signal, "SIGALRM"):
+        signal.signal(signal.SIGALRM, _handle_timeout)
+        signal.alarm(HARD_TIMEOUT_SECONDS)
+    try:
+        run(session_id, cwd)
+    except TimeoutError as exc:
+        _log(str(exc))
+    finally:
+        if hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"[stop-heartbeat] Unexpected error: {exc}", file=sys.stderr)
+        _log(f"unexpected error: {exc}")
     sys.exit(0)
