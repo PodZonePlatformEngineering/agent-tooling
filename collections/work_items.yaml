@@ -1,0 +1,146 @@
+# work_items — Qdrant collection schema (PROJ-033/T-008)
+#
+# Recursive task object — all levels of the hierarchy (roadmap → programme →
+# project → task → subtask → session_task) are the same point class.
+# Convenience labels are display filters on the `type` keyword only.
+#
+# Spec: planning/projects/PROJ-033-materialised-context/proposal.md §Unified Task Object Model
+# Docs: agent-tooling/docs/work-items-schema.md
+
+collection: work_items
+scope: programme-wide
+vector:
+  size: 768
+  distance: Cosine
+  embed_field: "title + ' — ' + description"
+  embed_model: nomic-embed-text
+  embed_via: ollama-workstation
+
+# Point ID: uuid5(NAMESPACE_URL, source_path) — idempotent re-ingest.
+# Where source_path is e.g. "planning/team-tasklist.md#PROJ-035/T-002".
+
+payload_fields:
+  # --- Identity ---
+  - name: type
+    type: keyword
+    index: true
+    description: roadmap | programme | project | task | subtask | session_task
+
+  - name: title
+    type: string
+    index: false
+    description: Short display title (e.g. project heading text or task summary).
+
+  - name: description
+    type: string
+    index: false
+    description: Long-form text; concatenated with title for the embedding source.
+
+  - name: status
+    type: keyword
+    index: true
+    description: draft | ready | in_progress | blocked | complete | archived
+
+  - name: owner
+    type: keyword
+    index: true
+    description: Canonical agent name (hermes | hephaestus | atlas | thoth) or "martin".
+
+  # --- Hierarchy + graph links ---
+  - name: parent.id
+    type: keyword
+    index: true
+    description: UUID of the parent WorkItem (project for tasks, programme for projects, etc.). Empty for roadmap.
+
+  - name: parent.type
+    type: keyword
+    index: false
+    description: Type of the parent WorkItem.
+
+  # children / depends_on / enables / related are stored as JSON arrays in the
+  # payload but are NOT individually indexed. Graph walks happen via parent.id
+  # filters (children = scroll by parent.id == self.id).
+
+  # --- Legacy compatibility ---
+  - name: programme_label
+    type: keyword
+    index: true
+    description: Legacy identifier (PROJ-033, PRG-002, T-008). Free-form; for cross-reference with markdown.
+
+  - name: proj_id
+    type: keyword
+    index: true
+    description: Project identifier (e.g. PROJ-031). Set on project + task + subtask rows; empty on programme rows.
+
+  - name: task_id
+    type: keyword
+    index: true
+    description: Task identifier within a project (e.g. T-001). Empty on programme + project rows.
+
+  - name: cc_number
+    type: keyword
+    index: true
+    description: Commission code (e.g. CC-225); empty string if not yet assigned.
+
+  - name: programme
+    type: keyword
+    index: true
+    description: Programme shortform (e.g. "communication", "platform-buildout") resolved via task-naming.md.
+
+  - name: project_slug
+    type: keyword
+    index: true
+    description: Project shortform (e.g. "agenticflows-schema") resolved via task-naming.md.
+
+  - name: task_slug
+    type: keyword
+    index: false
+    description: Lowercase hyphenated summary slug (max 30 chars).
+
+  # --- Provenance + temporal ---
+  - name: raised_at
+    type: datetime
+    index: false
+    description: ISO-8601 when the item was first raised. Null if unknown.
+
+  - name: raised_by
+    type: keyword
+    index: false
+    description: Agent or operator name. Empty if unknown.
+
+  - name: completed_at
+    type: datetime
+    index: false
+    description: ISO-8601 when the item transitioned to complete or archived. Null until done.
+
+  - name: updated_at
+    type: datetime
+    index: false
+    description: ISO-8601 timestamp of the last ingest write.
+
+  # --- Traceability ---
+  - name: brief_path
+    type: string
+    index: false
+    description: Relative path to the incoming brief (e.g. team/thoth/incoming/2026-05-22-...md).
+
+  - name: outbox_ref
+    type: string
+    index: false
+    description: Session outbox path that produced this item, when known.
+
+  - name: pr_refs
+    type: keyword
+    index: false
+    description: Array of PR references (e.g. "agent-tooling#15"). Stored as a list.
+
+  # --- Source tracking (initial ingest) ---
+  - name: source_path
+    type: string
+    index: false
+    description: Origin of this WorkItem — e.g. "planning/team-tasklist.md#PROJ-035/T-002".
+
+  - name: source_kind
+    type: keyword
+    index: true
+    description: tasklist_row | tasklist_project_header | programme_map | proposal_section | brief_file
