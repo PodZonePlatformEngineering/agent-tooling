@@ -1,0 +1,29 @@
+artefacts:
+  - path: ../../spec.md
+    type: brief
+    timestamp: 2026-05-25T08:00:00+00:00
+    role: hermes
+  - path: brief.md
+    type: brief
+    timestamp: 2026-05-25T09:00:00+00:00
+    role: hermes
+  - path: session-001.md
+    type: session
+    timestamp: 2026-05-25T10:00:00+00:00
+    role: hephaestus
+  - path: outbox-hermes.md
+    type: outbox
+    timestamp: 2026-05-25T11:00:00+00:00
+    role: hephaestus
+  - path: brief-followup.md
+    type: brief
+    timestamp: 2026-05-25T12:00:00+00:00
+    role: hermes
+  - path: session-002.md
+    type: session
+    timestamp: 2026-05-25T13:00:00+00:00
+    role: hephaestus
+  - path: session-003.md
+    type: session
+    timestamp: 2026-05-25T14:00:00+00:00
+    role: hephaestus
