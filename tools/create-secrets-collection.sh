@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Create the secrets collection on agentsonly Qdrant.
+# Create the secrets collection on the configured Qdrant instance.
 # Idempotent: safe to re-run.
 # Auth: PODZONE_QDRANT_APIKEY
 set -euo pipefail

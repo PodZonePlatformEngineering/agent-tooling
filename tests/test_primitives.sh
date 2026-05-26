@@ -17,6 +17,7 @@ EMBED="${ROOT}/primitives/ollama/embed-text.sh"
 ADD="${ROOT}/primitives/qdrant/add-qdrant-point.sh"
 PATCH="${ROOT}/primitives/qdrant/patch-qdrant-payload.sh"
 SCROLL="${ROOT}/primitives/qdrant/scroll-qdrant.sh"
+SEARCH="${ROOT}/primitives/qdrant/search-qdrant.sh"
 TELEGRAM="${ROOT}/primitives/telegram/send-telegram-message.sh"
 GMAIL="${ROOT}/primitives/gmail/create-gmail-draft.sh"
 
@@ -184,6 +185,24 @@ if echo "${RESULT}" | grep -qE "^draft_id=.+"; then
   ok "draft with attachment created: ${DRAFT_ID}"
 else
   fail "unexpected output: ${RESULT}"
+fi
+
+TNUM=12
+echo ""
+echo "=== T12: search-qdrant — semantic search returns test-wf-002 for hermes query ==="
+RESULT=$(bash "${SEARCH}" "${COLLECTION}" "second test point hermes" 5)
+if echo "${RESULT}" | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+pts = data['result']
+assert len(pts) > 0, 'no results returned'
+top = pts[0]
+assert top['payload']['name'] == 'test-wf-002', f\"expected test-wf-002 top hit, got {top['payload']['name']}\"
+assert 'score' in top, 'missing score field'
+" 2>/dev/null; then
+  ok "top hit is test-wf-002 with score"
+else
+  fail "search result wrong or malformed: ${RESULT}"
 fi
 
 echo ""

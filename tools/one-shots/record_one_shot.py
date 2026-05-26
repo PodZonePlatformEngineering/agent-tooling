@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 import uuid
 import urllib.request
@@ -29,8 +30,8 @@ try:
 except ImportError:
     yaml = None
 
-OLLAMA_URL = "http://localhost:11434"
-QDRANT_URL = "http://qdrant.agenticflows.co.uk:8080"
+OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+QDRANT_URL = os.environ.get("AGENTSONLY_QDRANT_URL", "http://qdrant.agenticflows.co.uk:8080")
 COLLECTION = "agent-workflow"
 EMBED_MODEL = "nomic-embed-text"
 TIMEOUT = 120
