@@ -1,0 +1,43 @@
+# Off-topic filler / backchannel vocabulary for PROJ-038 Cat 4 detection (T-2).
+#
+# Source: Jurafsky et al. 1998 ACL — Lexical, Prosodic, and Syntactic Cues for
+# Dialog Acts. Switchboard SWBD-DAMSL backchannel + agreement + acknowledgement
+# token set (selected entries with high lexical filler weight). Phrases below
+# are normalised to lowercase, word-boundary matched at runtime.
+#
+# Per PROJ-038 spec.md v1.3 § C-008 row Cat 4 GO-WITH-CONDITION: ≥ 20 phrases
+# enumerated + version-controlled. Iteration 2 (BL-NEW-E closure) may extend.
+
+version: 1
+source: "Jurafsky et al. 1998 (ACL) — Switchboard SWBD-DAMSL backchannel set"
+phrases:
+  - "uh"
+  - "uh-huh"
+  - "uhuh"
+  - "um"
+  - "hmm"
+  - "mhm"
+  - "mm-hm"
+  - "yeah"
+  - "yep"
+  - "yup"
+  - "right"
+  - "okay"
+  - "ok"
+  - "sure"
+  - "i see"
+  - "got it"
+  - "gotcha"
+  - "fair enough"
+  - "no worries"
+  - "you know"
+  - "i mean"
+  - "kind of"
+  - "sort of"
+  - "lol"
+  - "haha"
+  - "anyway"
+  - "anyways"
+  - "by the way"
+  - "as i said"
+  - "to be honest"
