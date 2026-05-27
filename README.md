@@ -178,6 +178,12 @@ Operator-facing CLIs under `tools/` and exposed via `install.sh` as wrappers in
 | `backfill-sessions.py` | One-shot backfill of session metadata |
 | `upsert-current-session.py` | Manual sync of the currently-running session |
 
+`usage-report.py`, `efficiency-report.py`, and `rollup-report.py` write their
+markdown into a podzone-internal default directory
+(`~/workspace/podzoneAgentTeam/team/hermes/outgoing/usage-reports/`). External
+adopters can redirect output with `--out-dir <path>` — filename derivation is
+unchanged.
+
 ---
 
 ## Collections

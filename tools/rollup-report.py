@@ -483,6 +483,7 @@ def render_digest(
 def run(
     days: int = 7,
     output: Optional[Path] = None,
+    out_dir: Optional[Path] = None,
     programme_map: Optional[Path] = None,
     stdout_only: bool = False,
     dry_run: bool = False,
@@ -508,8 +509,9 @@ def run(
         if output is not None:
             report_path = output
         else:
-            DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            report_path = DEFAULT_OUTPUT_DIR / f"{end.isoformat()}-project-rollup.md"
+            target_dir = out_dir if out_dir is not None else DEFAULT_OUTPUT_DIR
+            target_dir.mkdir(parents=True, exist_ok=True)
+            report_path = target_dir / f"{end.isoformat()}-project-rollup.md"
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(markdown)
 
@@ -528,6 +530,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--days", type=int, default=7, help="Window in days (default: 7)")
     ap.add_argument("--output", type=Path, help="Override output markdown path")
     ap.add_argument(
+        "--out-dir",
+        type=Path,
+        dest="out_dir",
+        help=(
+            "Directory to write the report into (filename derived as usual). "
+            "Default is the podzone-internal team/hermes/outgoing/usage-reports/; "
+            "external adopters should pass --out-dir."
+        ),
+    )
+    ap.add_argument(
         "--programme-map", type=Path, help="Override task-naming.md location"
     )
     ap.add_argument("--stdout-only", action="store_true", help="Do not write a file")
@@ -544,6 +556,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         result = run(
             days=args.days,
             output=args.output,
+            out_dir=args.out_dir,
             programme_map=args.programme_map,
             stdout_only=args.stdout_only,
             dry_run=args.dry_run,
