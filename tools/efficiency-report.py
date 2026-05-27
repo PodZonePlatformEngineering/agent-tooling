@@ -489,6 +489,7 @@ def run(
     days: int = 30,
     dimensions: tuple[str, ...] = DEFAULT_DIMENSIONS,
     output: Optional[Path] = None,
+    out_dir: Optional[Path] = None,
     stdout_only: bool = False,
     dry_run: bool = False,
     payloads: Optional[list[dict]] = None,
@@ -518,8 +519,9 @@ def run(
         if output is not None:
             report_path = output
         else:
-            DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-            report_path = DEFAULT_OUTPUT_DIR / f"{end.isoformat()}-model-efficiency.md"
+            target_dir = out_dir if out_dir is not None else DEFAULT_OUTPUT_DIR
+            target_dir.mkdir(parents=True, exist_ok=True)
+            report_path = target_dir / f"{end.isoformat()}-model-efficiency.md"
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(markdown)
 
@@ -557,6 +559,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Comma-separated subset of: project, work_item, agent (default: all)",
     )
     ap.add_argument("--output", type=Path, help="Override output markdown path")
+    ap.add_argument(
+        "--out-dir",
+        type=Path,
+        dest="out_dir",
+        help=(
+            "Directory to write the report into (filename derived as usual). "
+            "Default is the podzone-internal team/hermes/outgoing/usage-reports/; "
+            "external adopters should pass --out-dir."
+        ),
+    )
     ap.add_argument("--stdout-only", action="store_true", help="Do not write a file")
     ap.add_argument(
         "--dry-run", action="store_true", help="Read but no writes (no file)"
@@ -572,6 +584,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             days=args.days,
             dimensions=args.dimensions,
             output=args.output,
+            out_dir=args.out_dir,
             stdout_only=args.stdout_only,
             dry_run=args.dry_run,
         )
