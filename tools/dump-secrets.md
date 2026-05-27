@@ -19,12 +19,12 @@ subprocess. Hard limits to plan around:
 - ≤10 keys per call (MCP key-list limit)
 - The script is invoked once per batch; it must read its own env and emit the values
   out-of-band (we pipe them straight into `load-secrets.sh`)
-- Multi-field secrets (e.g. `minio-agentsonly`) cannot be loaded this way without a
-  `secretctl set ... --binding ENV_NAME=field` declaration first — then use
+- Multi-field secrets (e.g. a `minio` credential pair) cannot be loaded this way
+  without a `secretctl set ... --binding ENV_NAME=field` declaration first — then use
   `mcp__secrets__secret_run_with_bindings`
 
 **For new multi-field credentials, prefer creating individual single-field entries**
-(e.g. `minio-agentsonly-root-user` + `minio-agentsonly-root-password`) — avoids the
+(e.g. `<service>-root-user` + `<service>-root-password`) — avoids the
 bindings requirement entirely.
 
 ## Workflow (run inside a Claude Code session)
