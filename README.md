@@ -174,6 +174,7 @@ Operator-facing CLIs under `tools/` and exposed via `install.sh` as wrappers in
 | `efficiency-report.py` | Tool-call efficiency + retry-loop detection |
 | `rollup-report.py` | Weekly / monthly programme rollups |
 | `decay-detector.py` | Surface structurally-decayed files (long, fragmented) |
+| `trajectory-manifest-builder.py` | Auto-generate `trajectory-manifest.yaml` for a design (input to `decay-detector.py`); scans JSONL + outbox + incoming + cloud Qdrant for artefacts referencing the project ID. Project-to-cwd-slug mapping reads `cwd_slugs:` from each project's `spec.md` (falls back to `READMEFIRST.md`); `--cwd-slug` overrides. |
 | `backfill-prompt-logs.py` | One-shot backfill of prompt logs into Qdrant |
 | `backfill-sessions.py` | One-shot backfill of session metadata |
 | `upsert-current-session.py` | Manual sync of the currently-running session |
