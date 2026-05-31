@@ -24,7 +24,9 @@ from .events import DecayEvent
 from .fillers import compile_filler_regex, load_fillers
 from .loader import ArtefactLoader
 from .manifest import Manifest, ManifestEntry, load_manifest
+from .prefilter import build_filtered_bodies
 from .report import render_report, write_report
+from .stopwords import load_stop_words
 
 DEFAULT_FILLER_PATH = (
     Path(__file__).resolve().parents[2] / "data" / "off-topic-fillers.yaml"
@@ -94,10 +96,14 @@ def run_detection(
     incremental: bool = False,
     generated_at: Optional[datetime] = None,
     write_to_disk: bool = True,
+    ratio_threshold: float = 0.25,
 ) -> RunResult:
     manifest = load_manifest(manifest_path)
     loader = ArtefactLoader(manifest_dir=manifest_path.parent)
     bodies, qdrant_unreachable = _load_bodies(manifest, loader)
+    # Change A (R-015): transcript-medium entries get a denoised view for the
+    # Cat 3 + Cat 6 detectors; other detectors see the original bodies.
+    filtered_bodies = build_filtered_bodies(manifest, bodies)
 
     filler_phrases = load_fillers(filler_path)
     filler_regex = compile_filler_regex(filler_phrases)
@@ -109,6 +115,8 @@ def run_detection(
         filler_regex=filler_regex,
         noise_budget=noise_budget,
         pre_playbook_only=pre_playbook_only,
+        stop_words=load_stop_words(),
+        ratio_threshold=ratio_threshold,
     )
 
     if incremental:
@@ -118,7 +126,7 @@ def run_detection(
             # manifest to keep the report current.
             pass
 
-    events = run_all(manifest, bodies, ctx)
+    events = run_all(manifest, bodies, ctx, filtered_bodies=filtered_bodies)
     # Deterministic ordering by (category, severity, first_index, event_id)
     # is enforced inside the report renderer.
 
@@ -196,6 +204,7 @@ def run_trajectory_replay(
     manifest = load_manifest(manifest_path)
     loader = ArtefactLoader(manifest_dir=manifest_path.parent)
     bodies, qdrant_unreachable = _load_bodies(manifest, loader)
+    filtered_bodies = build_filtered_bodies(manifest, bodies)
     filler_phrases = load_fillers(filler_path)
     filler_regex = compile_filler_regex(filler_phrases)
     pre_playbook_only = all(e.pre_playbook for e in manifest)
@@ -205,6 +214,7 @@ def run_trajectory_replay(
         filler_regex=filler_regex,
         noise_budget=noise_budget,
         pre_playbook_only=pre_playbook_only,
+        stop_words=load_stop_words(),
     )
 
     # Per-session: prefix up to each session entry, detect, record event ids.
@@ -231,7 +241,8 @@ def run_trajectory_replay(
             source_path=manifest.source_path,
             raw=manifest.raw,
         )
-        prefix_events = run_all(prefix_manifest, bodies, ctx)
+        prefix_events = run_all(prefix_manifest, bodies, ctx,
+                                filtered_bodies=filtered_bodies)
         new_ids = [e.event_id for e in prefix_events
                    if e.event_id not in seen_ids]
         if new_ids:
@@ -239,7 +250,7 @@ def run_trajectory_replay(
             seen_ids.update(new_ids)
 
     # Full run; mark untraced events.
-    full_events = run_all(manifest, bodies, ctx)
+    full_events = run_all(manifest, bodies, ctx, filtered_bodies=filtered_bodies)
     traced_ids = {eid for ids in session_first_detected.values()
                   for eid in ids}
     for ev in full_events:
