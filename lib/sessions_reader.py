@@ -32,6 +32,16 @@ from lib.sessions_upsert import CLOUD_QDRANT_URL, SESSIONS_COLLECTION
 
 DEFAULT_BATCH_SIZE = 100
 SCROLL_TIMEOUT = 30.0
+POINT_GET_TIMEOUT = 8.0
+
+# Body-field resolution order used by `fetch_point_body` when the caller does
+# not name a `payload_field`. The `sessions` collection (see
+# `lib.jsonl_scrape.scrape`) stores session *metadata* only — no transcript
+# body — so none of these are present on a sessions point today and the
+# function returns "" for it. A body-bearing collection (or a sessions-schema
+# extension carrying one of these fields) is what makes the qdrant artefact
+# path non-empty. See PROJ-034/T-021.
+_DEFAULT_BODY_FIELDS = ("body", "text", "transcript", "content")
 
 
 class SessionsReaderError(RuntimeError):
@@ -145,3 +155,62 @@ def query_sessions_in_window(
             scroll_filter=scroll_filter,
         )
     )
+
+
+def fetch_point_body(
+    collection: str,
+    point_id: str,
+    *,
+    payload_field: Optional[str] = None,
+    api_key: Optional[str] = None,
+    qdrant_url: str = CLOUD_QDRANT_URL,
+    timeout: float = POINT_GET_TIMEOUT,
+) -> str:
+    """Fetch one Qdrant point by ID and return its textual body.
+
+    Used by the decay-detector artefact loader (PROJ-038) to resolve
+    `qdrant_*` manifest entries. Mirrors the single-point
+    `GET /collections/{c}/points/{id}` shape used privately by
+    `sessions_upsert._get_existing`, exposed here as a public reader API.
+
+    Body resolution:
+      - if `payload_field` is given, return `str(payload[payload_field])`
+        (empty string when the field is absent or null);
+      - otherwise return the first present field from `_DEFAULT_BODY_FIELDS`;
+      - otherwise "". A point that exists but carries no body-bearing field
+        (the current `sessions` schema) yields "" — this is *not* an error
+        and *not* drift; the caller can distinguish it from a missing API
+        because this function exists and returns normally.
+
+    Returns "" if the point is not found (404). Raises SessionsReaderError on
+    other HTTP failures so the caller can surface them.
+    """
+    if requests is None:
+        raise SessionsReaderError("requests library not available")
+
+    resolved_key = _resolve_api_key(api_key)
+    url = f"{qdrant_url}/collections/{collection}/points/{point_id}"
+    headers = {"api-key": resolved_key}
+
+    r = requests.get(url, headers=headers, timeout=timeout)
+    if r.status_code == 404:
+        return ""
+    if r.status_code == 403:
+        raise SessionsReaderError(
+            f"Qdrant point GET returned 403 for {collection}/{point_id}. "
+            "The current API key is not authorised. See STATUS.md "
+            "'Workstation Qdrant key returns 403 on scroll'."
+        )
+    r.raise_for_status()
+
+    result = r.json().get("result") or {}
+    payload = result.get("payload") or {}
+
+    if payload_field is not None:
+        return str(payload.get(payload_field) or "")
+
+    for field_name in _DEFAULT_BODY_FIELDS:
+        value = payload.get(field_name)
+        if value:
+            return str(value)
+    return ""

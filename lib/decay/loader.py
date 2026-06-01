@@ -22,6 +22,7 @@ class ArtefactLoader:
     def __init__(self, manifest_dir: Optional[Path] = None) -> None:
         self.manifest_dir = manifest_dir
         self._qdrant_warned = False
+        self._drift_warned = False
         self._qdrant_payloads: dict[tuple[str, str], str] = {}
 
     def _resolve_file(self, raw_path: str) -> Path:
@@ -64,7 +65,22 @@ class ArtefactLoader:
                     self._qdrant_warned = True
             else:
                 from lib import sessions_reader  # type: ignore
-                body = sessions_reader.fetch_point_body(collection, point_id)
+                fetch = getattr(sessions_reader, "fetch_point_body", None)
+                if fetch is None:
+                    # API drift: the reader no longer exposes the method the
+                    # loader was written against. Warn once (not per entry) so
+                    # a future rename surfaces loudly instead of silently
+                    # empty-bodying every qdrant entry. See PROJ-034/T-021.
+                    if not self._drift_warned:
+                        print(
+                            "[decay-detector] lib.sessions_reader has no "
+                            "fetch_point_body (API drift); qdrant-referenced "
+                            "artefacts will be empty. See PROJ-034/T-021.",
+                            file=sys.stderr,
+                        )
+                        self._drift_warned = True
+                else:
+                    body = fetch(collection, point_id)
         except Exception as exc:  # noqa: BLE001
             if not self._qdrant_warned:
                 print(
