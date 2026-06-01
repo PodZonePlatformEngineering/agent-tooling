@@ -28,6 +28,7 @@ from lib import work_items_extract  # noqa: E402
 from .anchors import file_anchor, qdrant_anchor  # noqa: E402
 from .events import CATEGORIES, DecayEvent  # noqa: E402
 from .manifest import Manifest, ManifestEntry  # noqa: E402
+from .stopwords import is_stop_word, phrase_is_all_stop  # noqa: E402
 
 CAT_1, CAT_2, CAT_3, CAT_4, CAT_5, CAT_6 = CATEGORIES
 
@@ -59,6 +60,13 @@ class DetectionContext:
     # cached parsed structures
     glossary_terms: list[str] = field(default_factory=list)
     pre_playbook_only: bool = False
+    # Iter-2 Strand 1 calibration knobs (Change B + C).
+    stop_words: frozenset[str] = field(default_factory=frozenset)
+    # Cat 6 min observed-token length (F-2-004 industry consensus 4–5 chars).
+    min_token_len: int = 4
+    # Cat 6 edit-distance / max-token-length ratio guard (RQ-2-002 empirical;
+    # swept against the regression metric — see subloop-1.md).
+    ratio_threshold: float = 0.25
 
 
 # ---------------------------------------------------------------------------
@@ -256,10 +264,17 @@ def detect_over_emphasis(manifest: Manifest, bodies: dict[int, str],
                          ctx: DetectionContext) -> list[DecayEvent]:
     first_seen: dict[str, ManifestEntry] = {}
     later_mentions: dict[str, list[ManifestEntry]] = {}
+    # SD-2-010 proper-noun guard: track distinct artefact TYPES per term.
+    term_types: dict[str, set[str]] = {}
 
     for entry in manifest:
         body = bodies.get(entry.index, "")
         for term in _extract_terms(body):
+            # Change C stop-word filter: a phrase made up only of stop words
+            # ("The Of") carries no conceptual weight — never an over-emphasis.
+            if phrase_is_all_stop(term, ctx.stop_words):
+                continue
+            term_types.setdefault(term, set()).add(entry.type)
             if term not in first_seen:
                 first_seen[term] = entry
             else:
@@ -268,6 +283,11 @@ def detect_over_emphasis(manifest: Manifest, bodies: dict[int, str],
     events: list[DecayEvent] = []
     for term, first_entry in first_seen.items():
         if first_entry.type not in REACTIVE_TYPES:
+            continue
+        # SD-2-010 proper-noun guard: a token confined to a single artefact
+        # type is a proper noun / local label, not over-emphasis. Cat 3 fires
+        # only when a token spans >= 2 distinct artefact types.
+        if len(term_types.get(term, set())) < 2:
             continue
         downstream = later_mentions.get(term, [])
         distinct_artefacts = {e.index for e in downstream}
@@ -443,6 +463,43 @@ def _damerau_levenshtein(a: str, b: str, cap: int = 3) -> int:
     return matrix[la][lb]
 
 
+_ALNUM_RE = re.compile(r"[^a-z0-9]")
+_INFLECTION_SUFFIXES = ("ing", "es", "ed", "s", "d")
+
+
+def _morph_stem(word: str) -> str:
+    """Crude English stem: strip one inflection suffix + a trailing 'e'.
+
+    Deliberately lightweight (no Porter stemmer) — it only needs to collapse
+    the inflection pairs that the interim-glossary mode mis-flags. Requires the
+    remaining stem to be >= 3 chars so we don't over-collapse short tokens.
+    """
+    for suf in _INFLECTION_SUFFIXES:
+        if word.endswith(suf) and len(word) - len(suf) >= 3:
+            word = word[: -len(suf)]
+            break
+    if len(word) > 3 and word.endswith("e"):
+        word = word[:-1]
+    return word
+
+
+def _is_morphology_variant(a: str, b: str) -> bool:
+    """True if a and b are the same term up to case, separators, or inflection.
+
+    Inputs are already lowercased. `a`/`b` equal after stripping non-alphanum
+    characters → a case/separator restyling (team↔team/, session-start↔
+    SessionStart). Equal stems → an inflection pair (task↔tasks, resolve↔
+    resolved). Either way it is not terminology drift.
+    """
+    na = _ALNUM_RE.sub("", a)
+    nb = _ALNUM_RE.sub("", b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    return _morph_stem(na) == _morph_stem(nb)
+
+
 def _load_glossary(project_dir: Optional[Path]) -> list[str]:
     if project_dir is None:
         return []
@@ -489,7 +546,12 @@ def detect_terminology_drift(manifest: Manifest, bodies: dict[int, str],
             glossary = _interim_glossary(manifest, bodies)
 
     # Normalise to lowercase tokens for comparison; preserve display form.
-    canonical = {t.lower(): t for t in glossary if len(t) >= 4}
+    # Change B: drop stop-word canonicals (a glossary term that is a common
+    # English word attracts spurious near-misses).
+    canonical = {
+        t.lower(): t for t in glossary
+        if len(t) >= 4 and not is_stop_word(t, ctx.stop_words)
+    }
     if not canonical:
         return []
 
@@ -504,18 +566,42 @@ def detect_terminology_drift(manifest: Manifest, bodies: dict[int, str],
             tl = token.lower()
             if tl in canon_lower_set:
                 continue
+            # Change B observed-token guards.
+            # Min-token-length guard (F-2-004 consensus 4–5 chars): short
+            # tokens generate near-misses that are almost always noise.
+            if len(tl) < ctx.min_token_len:
+                continue
+            # Stop-word guard: common English words are not terminology.
+            if is_stop_word(tl, ctx.stop_words):
+                continue
             for canon_l, canon_display in canonical.items():
                 # quick length filter to avoid O(N*M) DL on every token
                 if abs(len(tl) - len(canon_l)) > 2:
                     continue
                 d = _damerau_levenshtein(tl, canon_l, cap=2)
-                if 0 < d <= 2:
-                    key = (canon_display, token)
-                    near_misses.setdefault(key, []).append(entry)
-                    near_miss_lines.setdefault(
-                        key, _line_no(body, m.start())
-                    )
-                    break
+                if not (0 < d <= 2):
+                    continue
+                # Edit-distance / max-token-length ratio guard (RQ-2-002):
+                # reject loose matches (e.g. distance 2 on a 5-char token).
+                if d / max(len(tl), len(canon_l)) > ctx.ratio_threshold:
+                    continue
+                # Morphology / case / separator variant guard (Change B
+                # follow-on). On a pre-playbook corpus Cat 6 uses the interim
+                # first-occurrence-as-glossary, so every common word becomes a
+                # canonical and ordinary plurals / inflections / case+separator
+                # restylings read as "drift" (e.g. task↔tasks, team↔team/,
+                # SessionStart↔session-start). These are not terminology drift;
+                # reject when the two tokens are the same word up to those
+                # transformations. Genuine misspellings (Trajektory↔Trajectory)
+                # have differing stems and survive.
+                if _is_morphology_variant(tl, canon_l):
+                    continue
+                key = (canon_display, token)
+                near_misses.setdefault(key, []).append(entry)
+                near_miss_lines.setdefault(
+                    key, _line_no(body, m.start())
+                )
+                break
 
     events: list[DecayEvent] = []
     for (canon_display, token), entries in near_misses.items():
@@ -558,9 +644,17 @@ DETECTORS = (
 )
 
 
+# Cat 3 + Cat 6 read the R-015-filtered transcript view (Change A); the other
+# detectors see the original bodies (Cat 4 in particular needs raw turns).
+_TRANSCRIPT_FILTERED = {"cat3", "cat6"}
+
+
 def run_all(manifest: Manifest, bodies: dict[int, str],
-            ctx: DetectionContext) -> list[DecayEvent]:
+            ctx: DetectionContext,
+            filtered_bodies: Optional[dict[int, str]] = None) -> list[DecayEvent]:
+    fb = filtered_bodies if filtered_bodies is not None else bodies
     events: list[DecayEvent] = []
-    for _, fn in DETECTORS:
-        events.extend(fn(manifest, bodies, ctx))
+    for name, fn in DETECTORS:
+        detector_bodies = fb if name in _TRANSCRIPT_FILTERED else bodies
+        events.extend(fn(manifest, detector_bodies, ctx))
     return events
