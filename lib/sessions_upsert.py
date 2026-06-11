@@ -16,25 +16,27 @@ point is "final" and a backfill write must skip it when its jsonl_mtime is not
 newer. The skip rule is owned by callers (they have the freedom to query
 existing points cheaply alongside other work); `should_skip_backfill()` is
 provided as a helper.
+
+PROJ-033/T-016: Qdrant access now goes through `lib.qdrant_http` (stdlib
+urllib, no `requests` dependency). A missing/empty `PODZONE_QDRANT_APIKEY`
+raises `QdrantAuthError` rather than silently no-op'ing — there is no longer
+any path that proceeds to a zero-write because the key was empty. Transient
+network/HTTP errors are still returned in the result dict (best-effort) so
+non-blocking hooks can aggregate; only the configuration error (no key) is
+loud. Best-effort callers (hooks) must catch `QdrantAuthError`.
 """
 
 from __future__ import annotations
 
-import os
 import sys
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-try:
-    import requests  # type: ignore
-except ImportError:
-    requests = None  # type: ignore[assignment]
+from lib import qdrant_http
+from lib.qdrant_http import QdrantAuthError  # re-exported for callers
 
-
-CLOUD_QDRANT_URL = (
-    "https://2dd1f0b8-5cf1-4caf-bc96-2b4811251f4c.eu-west-2-0.aws.cloud.qdrant.io"
-)
+CLOUD_QDRANT_URL = qdrant_http.CLOUD_QDRANT_URL
 SESSIONS_COLLECTION = "sessions"
 
 # Phase 1: no vectors on `sessions` payloads — store as zeros. Collection is
@@ -72,29 +74,21 @@ def derive_status(jsonl_mtime_iso: str) -> str:
     return "ended"
 
 
-def _qdrant_headers() -> dict:
-    api_key = os.environ.get("PODZONE_QDRANT_APIKEY", "")
-    return {"api-key": api_key} if api_key else {}
-
-
 def _get_existing(session_id: str, timeout: float = 5.0) -> Optional[dict]:
-    """Fetch existing point payload, or None on any failure / not-found."""
-    if requests is None:
-        return None
+    """Fetch existing point payload, or None on not-found / transient failure.
+
+    A missing API key raises ``QdrantAuthError`` (loud — a missing key must
+    never be mistaken for "no existing point", which would let a backfill
+    clobber a finalised row). Network/HTTP errors return None (best-effort).
+    """
     pid = point_id_for(session_id)
-    url = f"{CLOUD_QDRANT_URL}/collections/{SESSIONS_COLLECTION}/points/{pid}"
     try:
-        r = requests.get(url, headers=_qdrant_headers(), timeout=timeout)
-        if r.status_code == 404:
-            return None
-        r.raise_for_status()
-        body = r.json()
-        if isinstance(body, dict):
-            result = body.get("result")
-            if isinstance(result, dict):
-                return result.get("payload") or {}
-        return None
-    except Exception:
+        return qdrant_http.get_point(
+            pid, collection=SESSIONS_COLLECTION, timeout=timeout
+        )
+    except QdrantAuthError:
+        raise
+    except qdrant_http.QdrantError:
         return None
 
 
@@ -122,9 +116,15 @@ def upsert_session(
 ) -> dict:
     """Upsert a sessions payload to the cloud Qdrant `sessions` collection.
 
-    Best-effort: catches and logs all exceptions; returns a result dict:
+    Returns a result dict:
         {"ok": bool, "skipped": bool, "reason": str, "point_id": str|None,
          "payload": dict}
+
+    A missing/empty ``PODZONE_QDRANT_APIKEY`` raises ``QdrantAuthError`` — it
+    is never downgraded to a silent ``ok: False`` (that was the PROJ-033/T-016
+    zero-write bug). Transient network/HTTP errors are caught and returned in
+    the dict so non-blocking callers can aggregate; loud callers should let the
+    QdrantAuthError propagate to a non-zero exit.
     """
     result: dict[str, Any] = {
         "ok": False,
@@ -154,37 +154,23 @@ def upsert_session(
     if last_heartbeat_ts is not None:
         payload["last_heartbeat_ts"] = last_heartbeat_ts
 
-    if requests is None:
-        result["reason"] = "requests unavailable"
-        _log(result["reason"])
-        return result
-
-    api_key = os.environ.get("PODZONE_QDRANT_APIKEY", "")
-    if not api_key:
-        result["reason"] = "PODZONE_QDRANT_APIKEY not set"
-        _log(result["reason"])
-        return result
-
     pid = point_id_for(session_id)
     result["point_id"] = pid
-    url = f"{CLOUD_QDRANT_URL}/collections/{SESSIONS_COLLECTION}/points"
-    body = {
-        "points": [
-            {
-                "id": pid,
-                "vector": [0.0] * ZERO_VECTOR_DIM,
-                "payload": payload,
-            }
-        ]
-    }
 
+    # Resolve the key up front: a missing key is a configuration error and
+    # must be loud — never a silent zero-write. (Raises QdrantAuthError.)
+    qdrant_http.resolve_api_key()
+
+    point = {"id": pid, "vector": [0.0] * ZERO_VECTOR_DIM, "payload": payload}
     try:
-        r = requests.put(url, headers=_qdrant_headers(), json=body, timeout=timeout)
-        r.raise_for_status()
+        qdrant_http.upsert_points(
+            [point], collection=SESSIONS_COLLECTION, timeout=timeout
+        )
         result["ok"] = True
         result["reason"] = "upserted"
         return result
-    except Exception as exc:
+    except qdrant_http.QdrantError as exc:
+        # Transient network/HTTP failure — best-effort, return for aggregation.
         result["reason"] = f"upsert failed: {exc}"
         _log(result["reason"])
         return result

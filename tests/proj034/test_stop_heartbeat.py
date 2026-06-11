@@ -99,33 +99,25 @@ class TestStopHeartbeat(unittest.TestCase):
 
     # T12: standard Stop with extant JSONL → full payload, stop_hook, in_progress
     def test_t12_full_payload_upsert(self) -> None:
-        with patch("lib.sessions_upsert.requests") as rq:
-            mock_resp = type("R", (), {"raise_for_status": lambda self: None, "status_code": 200})()
-            rq.put.return_value = mock_resp
+        with patch("lib.qdrant_http.upsert_points") as up:
             hook.run(SID, self.cwd)
-            self.assertTrue(rq.put.called)
-            sent = rq.put.call_args.kwargs["json"]["points"][0]["payload"]
+            self.assertTrue(up.called)
+            sent = up.call_args.args[0][0]["payload"]
             self.assertEqual(sent["data_source"], "stop_hook")
             self.assertEqual(sent["status"], "in_progress")
             self.assertIn("model_usage", sent)
             self.assertIn("claude-opus-4-7", sent["model_usage"])
 
-    # T13: missing JSONL → falls back to heartbeat-only write
+    # T13: missing JSONL → falls back to heartbeat-only write (via qdrant_http)
     def test_t13_missing_jsonl_fallback(self) -> None:
-        with patch("hooks.stop-heartbeat", create=True):
-            pass
         # Use a session_id with no corresponding file
         bogus_sid = "55555555-5555-4555-8555-555555555555"
-        # Mock the requests used inside the hook's heartbeat-only path
-        import requests as _r  # noqa: F401
         with patch.object(hook, "_full_payload_upsert", return_value=False) as fp, \
-             patch("requests.put") as rq:
-            mock_resp = type("R", (), {"raise_for_status": lambda self: None, "status_code": 200})()
-            rq.return_value = mock_resp
+             patch("lib.qdrant_http.upsert_points") as up:
             hook.run(bogus_sid, self.cwd)
             fp.assert_not_called()  # JSONL missing → never tried
-            self.assertTrue(rq.called)
-            sent = rq.call_args.kwargs["json"]["points"][0]["payload"]
+            self.assertTrue(up.called)
+            sent = up.call_args.args[0][0]["payload"]
             self.assertEqual(sent["data_source"], "stop_hook")
             self.assertIn("last_heartbeat_ts", sent)
             self.assertNotIn("model_usage", sent)
@@ -142,10 +134,8 @@ class TestStopHeartbeat(unittest.TestCase):
         def slow_scrape(_path):
             raise TimeoutError("simulated")
 
-        with patch("lib.sessions_upsert.requests") as rq, \
+        with patch("lib.qdrant_http.upsert_points"), \
                 patch("lib.jsonl_scrape.scrape", side_effect=slow_scrape):
-            mock_resp = type("R", (), {"raise_for_status": lambda self: None, "status_code": 200})()
-            rq.put.return_value = mock_resp
             # heartbeat-only fallback should kick in; we just verify no raise
             try:
                 hook.run(SID, self.cwd)

@@ -88,29 +88,25 @@ class TestWalker(unittest.TestCase):
 
     # T7: walks tree and upserts each JSONL
     def test_t7_walk_and_upsert(self) -> None:
-        with patch("lib.sessions_upsert.requests") as rq, \
+        with patch("lib.qdrant_http.upsert_points") as up, \
                 patch("lib.sessions_upsert._get_existing", return_value=None):
-            mock_resp = type("R", (), {"raise_for_status": lambda self: None, "status_code": 200})()
-            rq.put.return_value = mock_resp
             report = backfill_sessions.backfill(projects_dir=self.projects)
         self.assertEqual(report["scanned"], 3)
         self.assertEqual(report["upserted"], 3)
-        self.assertEqual(rq.put.call_count, 3)
+        self.assertEqual(up.call_count, 3)
 
     # T8: --dry-run does not upsert
     def test_t8_dry_run(self) -> None:
-        with patch("lib.sessions_upsert.requests") as rq:
+        with patch("lib.qdrant_http.upsert_points") as up:
             report = backfill_sessions.backfill(projects_dir=self.projects, dry_run=True)
         self.assertEqual(report["scanned"], 3)
         self.assertEqual(report["upserted"], 3)
-        rq.put.assert_not_called()
+        up.assert_not_called()
 
     # T9: --workspace filter
     def test_t9_workspace_filter(self) -> None:
-        with patch("lib.sessions_upsert.requests") as rq, \
+        with patch("lib.qdrant_http.upsert_points") as up, \
                 patch("lib.sessions_upsert._get_existing", return_value=None):
-            mock_resp = type("R", (), {"raise_for_status": lambda self: None, "status_code": 200})()
-            rq.put.return_value = mock_resp
             report = backfill_sessions.backfill(
                 projects_dir=self.projects, workspace_filter="foo"
             )
@@ -129,10 +125,8 @@ class TestWalker(unittest.TestCase):
                 }
             return None
 
-        with patch("lib.sessions_upsert.requests") as rq, \
+        with patch("lib.qdrant_http.upsert_points") as up, \
                 patch("lib.sessions_upsert._get_existing", side_effect=fake_get_existing):
-            mock_resp = type("R", (), {"raise_for_status": lambda self: None, "status_code": 200})()
-            rq.put.return_value = mock_resp
             report = backfill_sessions.backfill(projects_dir=self.projects)
 
         self.assertEqual(report["upserted"], 2)
@@ -140,10 +134,8 @@ class TestWalker(unittest.TestCase):
 
     # T11: aggregate counts in report match upserted
     def test_t11_aggregate_counts(self) -> None:
-        with patch("lib.sessions_upsert.requests") as rq, \
+        with patch("lib.qdrant_http.upsert_points") as up, \
                 patch("lib.sessions_upsert._get_existing", return_value=None):
-            mock_resp = type("R", (), {"raise_for_status": lambda self: None, "status_code": 200})()
-            rq.put.return_value = mock_resp
             report = backfill_sessions.backfill(projects_dir=self.projects)
         total_sessions_per_ws = sum(
             e["sessions"] for e in report["per_workspace"].values()
@@ -151,11 +143,9 @@ class TestWalker(unittest.TestCase):
         self.assertEqual(total_sessions_per_ws, report["upserted"])
 
     def test_only_new_skips_existing(self) -> None:
-        with patch("lib.sessions_upsert.requests") as rq, \
+        with patch("lib.qdrant_http.upsert_points") as up, \
                 patch("lib.sessions_upsert._get_existing") as ge:
             ge.side_effect = lambda sid: ({"data_source": "stop_hook"} if sid == SID_A else None)
-            mock_resp = type("R", (), {"raise_for_status": lambda self: None, "status_code": 200})()
-            rq.put.return_value = mock_resp
             report = backfill_sessions.backfill(
                 projects_dir=self.projects, only_new=True
             )

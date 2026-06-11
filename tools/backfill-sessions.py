@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from lib import jsonl_scrape, sessions_upsert  # noqa: E402
+from lib import jsonl_scrape, qdrant_http, sessions_upsert  # noqa: E402
 
 
 DEFAULT_PROJECTS_DIR = Path.home() / ".claude" / "projects"
@@ -270,6 +270,16 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = ap.parse_args(argv)
 
     since_dt = _parse_since(args.since) if args.since else None
+
+    # Fail loudly up front if the write path has no credentials — better a
+    # non-zero exit than a green run that silently upserted nothing
+    # (PROJ-033/T-016). Dry runs don't touch Qdrant, so skip the check.
+    if not args.dry_run:
+        try:
+            qdrant_http.resolve_api_key()
+        except qdrant_http.QdrantAuthError as exc:
+            print(f"[backfill] {exc}", file=sys.stderr)
+            return 1
 
     report = backfill(
         projects_dir=args.projects_dir,

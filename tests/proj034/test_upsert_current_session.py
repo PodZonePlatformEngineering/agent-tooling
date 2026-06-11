@@ -72,13 +72,11 @@ class TestUpsertCurrentSession(unittest.TestCase):
 
     # T16: explicit --session-id + --cwd resolves expected JSONL
     def test_t16_explicit_args(self) -> None:
-        with patch("lib.sessions_upsert.requests") as rq:
-            mock_resp = type("R", (), {"raise_for_status": lambda self: None, "status_code": 200})()
-            rq.put.return_value = mock_resp
+        with patch("lib.qdrant_http.upsert_points") as up:
             rc = ucs.run(SID, self.cwd, "session_end_skill", "ended")
             self.assertEqual(rc, 0)
-            self.assertTrue(rq.put.called)
-            sent = rq.put.call_args.kwargs["json"]["points"][0]["payload"]
+            self.assertTrue(up.called)
+            sent = up.call_args.args[0][0]["payload"]
             self.assertEqual(sent["data_source"], "session_end_skill")
             self.assertEqual(sent["status"], "ended")
 
@@ -86,21 +84,17 @@ class TestUpsertCurrentSession(unittest.TestCase):
     def test_t17_autodetect(self) -> None:
         with patch.dict(os.environ, {"CLAUDE_SESSION_ID": SID}, clear=False), \
                 patch("os.getcwd", return_value=self.cwd), \
-                patch("lib.sessions_upsert.requests") as rq:
-            mock_resp = type("R", (), {"raise_for_status": lambda self: None, "status_code": 200})()
-            rq.put.return_value = mock_resp
+                patch("lib.qdrant_http.upsert_points") as up:
             rc = ucs.run(None, None, "session_end_skill", "ended")
             self.assertEqual(rc, 0)
-            self.assertTrue(rq.put.called)
+            self.assertTrue(up.called)
 
     # T18: missing JSONL → exit 0 with stderr log (best-effort)
     def test_t18_missing_jsonl(self) -> None:
-        with patch("lib.sessions_upsert.requests") as rq:
-            mock_resp = type("R", (), {"raise_for_status": lambda self: None, "status_code": 200})()
-            rq.put.return_value = mock_resp
+        with patch("lib.qdrant_http.upsert_points") as up:
             rc = ucs.run(SID, "/nonexistent/path", "session_end_skill", "ended")
             self.assertEqual(rc, 0)
-            rq.put.assert_not_called()
+            up.assert_not_called()
 
     def test_no_session_id_exits_zero(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
