@@ -47,7 +47,7 @@ cd agent-tooling
 ./install.sh                                # installs primitives + tools to ~/.local/bin
 
 # Point the primitives at your services
-export AGENTSONLY_QDRANT_URL="https://<your-qdrant-host>:6333"
+export QDRANT_URL="https://<your-qdrant-host>:6333"   # legacy alias AGENTSONLY_QDRANT_URL still honoured
 export PODZONE_QDRANT_APIKEY="<your-qdrant-api-key>"
 export OLLAMA_HOST="http://localhost:11434"
 
@@ -87,8 +87,8 @@ agent-tooling/
 ## Primitives
 
 Each primitive is a small bash script that validates its inputs + env vars,
-then calls one HTTP endpoint. All Qdrant primitives honour `AGENTSONLY_QDRANT_URL`
-and `PODZONE_QDRANT_APIKEY`.
+then calls one HTTP endpoint. All Qdrant primitives honour `QDRANT_URL`
+(legacy alias `AGENTSONLY_QDRANT_URL` still honoured) and `PODZONE_QDRANT_APIKEY`.
 
 | Script | Auth | Arguments |
 |---|---|---|
@@ -228,7 +228,7 @@ This repo originated as podzone's internal agent tooling, so a few env-var
 names still carry that prefix:
 
 - `PODZONE_QDRANT_APIKEY` — Qdrant API key
-- `AGENTSONLY_QDRANT_URL` — Qdrant base URL (falls back to a podzone default)
+- `QDRANT_URL` — Qdrant base URL (falls back to the podzone cloud default; legacy alias `AGENTSONLY_QDRANT_URL` still honoured)
 - `PODZONE_CLOUD_BOT_TOKEN` — Telegram bot token
 - `OLLAMA_HOST` — standard upstream Ollama env var
 
