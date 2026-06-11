@@ -205,9 +205,18 @@ def get_point(
     qdrant_url: str = CLOUD_QDRANT_URL,
     api_key: Optional[str] = None,
     timeout: float = DEFAULT_TIMEOUT,
+    with_vector: bool = False,
 ) -> Optional[dict]:
-    """GET a single point's payload, or ``None`` if it does not exist (404)."""
+    """GET a single point, or ``None`` if it does not exist (404).
+
+    By default returns the point's payload dict (back-compat). With
+    ``with_vector=True`` returns the full ``result`` object
+    (``{"id", "payload", "vector"}``) so callers can assert that named
+    vectors survived a partial update (OT-006 / DT-004b / DT-005).
+    """
     url = f"{qdrant_url}/collections/{collection}/points/{point_id}"
+    if with_vector:
+        url += "?with_vector=true"
     try:
         body = request_json("GET", url, api_key=api_key, timeout=timeout)
     except QdrantHTTPError as exc:
@@ -216,8 +225,141 @@ def get_point(
         raise
     result = body.get("result")
     if isinstance(result, dict):
+        if with_vector:
+            return result
         return result.get("payload") or {}
     return None
+
+
+def set_payload(
+    payload: dict,
+    point_ids: list,
+    *,
+    collection: str,
+    qdrant_url: str = CLOUD_QDRANT_URL,
+    api_key: Optional[str] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict:
+    """POST a ``set_payload`` — partial payload write (SD-3-001).
+
+    Overwrites only the named keys in ``payload`` on each point in
+    ``point_ids``; leaves unspecified payload fields **and every named
+    vector** intact (F-2-008). This is the per-Stop / session-end workhorse;
+    a full :func:`upsert_points` must never be used to update an existing
+    point because it nulls unspecified named vectors.
+    """
+    url = f"{qdrant_url}/collections/{collection}/points/payload"
+    return request_json(
+        "POST",
+        url,
+        payload={"payload": payload, "points": point_ids},
+        api_key=api_key,
+        timeout=timeout,
+    )
+
+
+def update_vectors(
+    points: list[dict],
+    *,
+    collection: str,
+    qdrant_url: str = CLOUD_QDRANT_URL,
+    api_key: Optional[str] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict:
+    """PUT a ``update-vectors`` — patch named vectors on existing points (SD-3-001).
+
+    Each entry in ``points`` is ``{"id": …, "vector": {"<name>": [...]}}``.
+    Only the named vectors present are replaced; other named vectors and the
+    whole payload are preserved. This is the IMPL-1 path the session-end
+    ``response`` vector patch requires (§ 2.4 step 1) — a full upsert there
+    would null the ``brief`` vector.
+    """
+    url = f"{qdrant_url}/collections/{collection}/points/vectors"
+    return request_json(
+        "PUT", url, payload={"points": points}, api_key=api_key, timeout=timeout
+    )
+
+
+def collection_exists(
+    collection: str,
+    *,
+    qdrant_url: str = CLOUD_QDRANT_URL,
+    api_key: Optional[str] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> bool:
+    """True if ``collection`` exists (GET collection-info is 2xx)."""
+    url = f"{qdrant_url}/collections/{collection}"
+    try:
+        request_json("GET", url, api_key=api_key, timeout=timeout)
+        return True
+    except QdrantHTTPError as exc:
+        if exc.status == 404:
+            return False
+        raise
+
+
+def create_collection(
+    vectors: dict,
+    *,
+    collection: str,
+    qdrant_url: str = CLOUD_QDRANT_URL,
+    api_key: Optional[str] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict:
+    """PUT a collection definition. ``vectors`` is the named-vector config map,
+    e.g. ``{"brief": {"size": 768, "distance": "Cosine"}}``."""
+    url = f"{qdrant_url}/collections/{collection}"
+    return request_json(
+        "PUT", url, payload={"vectors": vectors}, api_key=api_key, timeout=timeout
+    )
+
+
+def create_payload_index(
+    field_name: str,
+    *,
+    collection: str,
+    field_schema: str = "keyword",
+    qdrant_url: str = CLOUD_QDRANT_URL,
+    api_key: Optional[str] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> dict:
+    """PUT a payload index on ``field_name`` (F-2-004 — create before ingest)."""
+    url = f"{qdrant_url}/collections/{collection}/index"
+    return request_json(
+        "PUT",
+        url,
+        payload={"field_name": field_name, "field_schema": field_schema},
+        api_key=api_key,
+        timeout=timeout,
+    )
+
+
+def search(
+    vector: list,
+    *,
+    collection: str,
+    using: Optional[str] = None,
+    limit: int = 10,
+    query_filter: Optional[dict] = None,
+    with_payload: bool = True,
+    qdrant_url: str = CLOUD_QDRANT_URL,
+    api_key: Optional[str] = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> list:
+    """POST a vector search; returns the ``result`` list of scored points.
+
+    ``using`` names the vector to search against (required for named-vector
+    collections such as ``session_substrate`` → ``"brief"`` / ``"response"``).
+    """
+    url = f"{qdrant_url}/collections/{collection}/points/search"
+    body: dict = {"vector": vector, "limit": limit, "with_payload": with_payload}
+    if using is not None:
+        body["vector"] = {"name": using, "vector": vector}
+    if query_filter is not None:
+        body["filter"] = query_filter
+    resp = request_json("POST", url, payload=body, api_key=api_key, timeout=timeout)
+    result = resp.get("result")
+    return result if isinstance(result, list) else []
 
 
 def scroll(
