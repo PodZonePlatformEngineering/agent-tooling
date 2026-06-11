@@ -23,15 +23,13 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
-try:
-    import requests
-except ImportError:
-    requests = None  # type: ignore[assignment]
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
+from lib import qdrant_http  # noqa: E402
 
-CLOUD_QDRANT_URL = (
-    "https://2dd1f0b8-5cf1-4caf-bc96-2b4811251f4c.eu-west-2-0.aws.cloud.qdrant.io"
-)
+CLOUD_QDRANT_URL = qdrant_http.CLOUD_QDRANT_URL
 SESSIONS_COLLECTION = "sessions"
 SCROLL_LIMIT = 256
 
@@ -46,29 +44,25 @@ def _log(msg: str) -> None:
     print(f"[usage-report] {msg}", file=sys.stderr)
 
 
-def _headers() -> dict:
-    api_key = os.environ.get("PODZONE_QDRANT_APIKEY", "")
-    return {"api-key": api_key} if api_key else {}
-
-
 def scroll_all(
     qdrant_url: str = CLOUD_QDRANT_URL,
     collection: str = SESSIONS_COLLECTION,
     timeout: float = 30.0,
 ) -> list[dict]:
-    """Scroll the whole collection. Returns a list of {id, payload} dicts."""
-    if requests is None:
-        raise RuntimeError("requests not available")
-    url = f"{qdrant_url}/collections/{collection}/points/scroll"
+    """Scroll the whole collection. Returns a list of {id, payload} dicts.
+
+    Raises ``QdrantAuthError`` (loud) if no API key is available, rather than
+    silently returning an empty report.
+    """
     out: list[dict] = []
     offset = None
     while True:
         body: dict = {"limit": SCROLL_LIMIT, "with_payload": True, "with_vector": False}
         if offset is not None:
             body["offset"] = offset
-        r = requests.post(url, headers=_headers(), json=body, timeout=timeout)
-        r.raise_for_status()
-        result = r.json().get("result", {})
+        result = qdrant_http.scroll(
+            collection=collection, body=body, qdrant_url=qdrant_url, timeout=timeout
+        ).get("result", {})
         points = result.get("points") or []
         for p in points:
             out.append({"id": p.get("id"), "payload": p.get("payload") or {}})
@@ -86,16 +80,12 @@ def delete_points(
 ) -> bool:
     if not ids:
         return True
-    if requests is None:
-        return False
-    url = f"{qdrant_url}/collections/{collection}/points/delete"
     try:
-        r = requests.post(
-            url, headers=_headers(), json={"points": ids}, timeout=timeout
+        qdrant_http.delete_points(
+            ids, collection=collection, qdrant_url=qdrant_url, timeout=timeout
         )
-        r.raise_for_status()
         return True
-    except Exception as exc:
+    except qdrant_http.QdrantError as exc:
         _log(f"delete failed: {exc}")
         return False
 

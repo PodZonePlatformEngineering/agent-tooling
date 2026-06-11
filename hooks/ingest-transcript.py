@@ -20,15 +20,40 @@ COLLECTION_PROMPT_LOGS = "prompt_logs"
 COLLECTION_SESSIONS = "sessions"
 
 
+def _load_qdrant_http():
+    """Locate agent-tooling and import the canonical qdrant_http primitive
+    (PROJ-033/T-016). Returns the module, or None if not locatable — the hook
+    is non-blocking, so it degrades to logging-and-skipping rather than a
+    silent unauthenticated write. Mirrors stop-heartbeat._locate_agent_tooling.
+    """
+    candidates = []
+    env = os.environ.get("AGENT_TOOLING_DIR")
+    if env:
+        candidates.append(Path(env))
+    candidates.extend(Path(__file__).resolve().parents)
+    candidates.append(Path.home() / "workspace" / "agent-tooling")
+    if (Path.home() / "sessions").is_dir():
+        candidates.extend((Path.home() / "sessions").glob("*/agent-tooling"))
+    for c in candidates:
+        if (c / "lib" / "qdrant_http.py").is_file():
+            if str(c) not in sys.path:
+                sys.path.insert(0, str(c))
+            try:
+                from lib import qdrant_http  # type: ignore
+                return qdrant_http
+            except Exception as exc:
+                print(f"[ingest-transcript] qdrant_http import failed: {exc}", file=sys.stderr)
+                return None
+    print("[ingest-transcript] agent-tooling/lib not located; Qdrant writes skipped",
+          file=sys.stderr)
+    return None
+
+
+qdrant_http = _load_qdrant_http()
+
+
 def get_qdrant_url(collection: str) -> str:
     return CLOUD_QDRANT_URL if collection in CLOUD_COLLECTIONS else AGENTSONLY_QDRANT_URL
-
-
-def get_qdrant_headers(collection: str) -> dict:
-    if collection in CLOUD_COLLECTIONS:
-        api_key = os.environ.get("PODZONE_QDRANT_APIKEY", "")
-        return {"api-key": api_key} if api_key else {}
-    return {}
 
 
 def embed(text: str) -> list[float] | None:
@@ -47,50 +72,54 @@ def embed(text: str) -> list[float] | None:
 
 
 def upsert_point(collection: str, point_id: str, vector: list[float], payload: dict) -> bool:
+    if qdrant_http is None:
+        return False
+    point = {"id": point_id, "vector": vector, "payload": payload}
     try:
-        import requests
-        r = requests.put(
-            f"{get_qdrant_url(collection)}/collections/{collection}/points",
-            headers=get_qdrant_headers(collection),
-            json={"points": [{"id": point_id, "vector": vector, "payload": payload}]},
-            timeout=15,
+        qdrant_http.upsert_points(
+            [point], collection=collection,
+            qdrant_url=get_qdrant_url(collection), timeout=15,
         )
-        r.raise_for_status()
         return True
-    except Exception as e:
+    except qdrant_http.QdrantAuthError as e:
+        print(f"[ingest-transcript] PODZONE_QDRANT_APIKEY unavailable; skipped {collection} write: {e}",
+              file=sys.stderr)
+        return False
+    except qdrant_http.QdrantError as e:
         print(f"[ingest-transcript] upsert error ({collection}): {e}", file=sys.stderr)
         return False
 
 
 def upsert_point_no_vector(collection: str, point_id: str, payload: dict) -> bool:
     """Update payload only (session record — not vectorised)."""
+    if qdrant_http is None:
+        return False
+    url = f"{get_qdrant_url(collection)}/collections/{collection}/points/payload"
     try:
-        import requests
-        r = requests.post(
-            f"{get_qdrant_url(collection)}/collections/{collection}/points/payload",
-            headers=get_qdrant_headers(collection),
-            json={"payload": payload, "points": [point_id]},
-            timeout=15,
+        qdrant_http.request_json(
+            "POST", url, payload={"payload": payload, "points": [point_id]}, timeout=15,
         )
-        r.raise_for_status()
         return True
-    except Exception as e:
+    except qdrant_http.QdrantAuthError as e:
+        print(f"[ingest-transcript] PODZONE_QDRANT_APIKEY unavailable; skipped {collection} payload update: {e}",
+              file=sys.stderr)
+        return False
+    except qdrant_http.QdrantError as e:
         print(f"[ingest-transcript] payload update error ({collection}): {e}", file=sys.stderr)
         return False
 
 
 def fetch_session_agent(session_id: str) -> str:
     """Look up agent from the sessions record written at SessionStart."""
+    if qdrant_http is None:
+        return "unknown"
     try:
-        import requests
-        r = requests.get(
-            f"{get_qdrant_url(COLLECTION_SESSIONS)}/collections/{COLLECTION_SESSIONS}/points/{session_id}",
-            headers=get_qdrant_headers(COLLECTION_SESSIONS),
-            timeout=8,
+        payload = qdrant_http.get_point(
+            session_id, collection=COLLECTION_SESSIONS,
+            qdrant_url=get_qdrant_url(COLLECTION_SESSIONS), timeout=8,
         )
-        r.raise_for_status()
-        return r.json().get("result", {}).get("payload", {}).get("agent", "unknown")
-    except Exception:
+        return (payload or {}).get("agent", "unknown")
+    except qdrant_http.QdrantError:
         return "unknown"
 
 

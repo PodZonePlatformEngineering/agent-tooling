@@ -86,16 +86,24 @@ def _resolve_jsonl_path(session_id: str, cwd: Optional[str]) -> Optional[Path]:
     return candidate if candidate.is_file() else None
 
 
-def _heartbeat_only_upsert(session_id: str, cwd: Optional[str]) -> None:
-    """Legacy heartbeat-only path. Used when JSONL not yet on disk."""
-    try:
-        import requests
-    except ImportError:
-        _log("requests unavailable; skipping heartbeat")
+def _heartbeat_only_upsert(
+    session_id: str, cwd: Optional[str], agent_tooling: Optional[Path]
+) -> None:
+    """Legacy heartbeat-only path. Used when JSONL not yet on disk.
+
+    Goes through the canonical lib.qdrant_http primitive (stdlib urllib, no
+    `requests` dependency). Best-effort: a missing key or transient error is
+    logged loudly, never silently swallowed, and never crashes the turn.
+    """
+    if agent_tooling is None:
+        _log("agent-tooling not located; skipping heartbeat")
         return
-    api_key = os.environ.get("PODZONE_QDRANT_APIKEY", "")
-    if not api_key:
-        _log("PODZONE_QDRANT_APIKEY not set; skipping heartbeat")
+    if str(agent_tooling) not in sys.path:
+        sys.path.insert(0, str(agent_tooling))
+    try:
+        from lib import qdrant_http  # type: ignore
+    except Exception as exc:
+        _log(f"qdrant_http import failed; skipping heartbeat: {exc}")
         return
 
     import uuid as _uuid
@@ -110,20 +118,15 @@ def _heartbeat_only_upsert(session_id: str, cwd: Optional[str]) -> None:
     }
     if cwd:
         payload["cwd"] = cwd
+    point = {"id": pid, "vector": [0.0] * 768, "payload": payload}
     try:
-        r = requests.put(
-            f"{CLOUD_QDRANT_URL}/collections/{SESSIONS_COLLECTION}/points",
-            headers={"api-key": api_key},
-            json={
-                "points": [
-                    {"id": pid, "vector": [0.0] * 768, "payload": payload}
-                ]
-            },
-            timeout=5,
+        qdrant_http.upsert_points(
+            [point], collection=SESSIONS_COLLECTION, timeout=5
         )
-        r.raise_for_status()
         _log(f"heartbeat-only upserted for {session_id[:16]}…")
-    except Exception as exc:
+    except qdrant_http.QdrantAuthError as exc:
+        _log(f"PODZONE_QDRANT_APIKEY unavailable; skipping heartbeat: {exc}")
+    except qdrant_http.QdrantError as exc:
         _log(f"heartbeat upsert failed: {exc}")
 
 
@@ -144,12 +147,17 @@ def _full_payload_upsert(jsonl_path: Path, agent_tooling: Path) -> bool:
         return False
 
     now = _now_iso()
-    result = sessions_upsert.upsert_session(
-        payload,
-        data_source="stop_hook",
-        status="in_progress",
-        last_heartbeat_ts=now,
-    )
+    try:
+        result = sessions_upsert.upsert_session(
+            payload,
+            data_source="stop_hook",
+            status="in_progress",
+            last_heartbeat_ts=now,
+        )
+    except sessions_upsert.QdrantAuthError as exc:
+        # Loud config error — log and fall back, but never crash the turn.
+        _log(f"PODZONE_QDRANT_APIKEY unavailable; skipping upsert: {exc}")
+        return False
     if result["ok"]:
         _log(f"full payload upserted for {payload['session_id'][:16]}…")
         return True
@@ -171,7 +179,7 @@ def run(session_id: str, cwd: Optional[str]) -> None:
             _log(f"done in {(time.monotonic() - started) * 1000:.0f} ms")
             return
         # fall through to heartbeat
-    _heartbeat_only_upsert(session_id, cwd)
+    _heartbeat_only_upsert(session_id, cwd, agent_tooling)
     _log(f"done in {(time.monotonic() - started) * 1000:.0f} ms")
 
 

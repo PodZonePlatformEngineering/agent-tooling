@@ -29,15 +29,40 @@ EMBED_MODEL = "nomic-embed-text"
 VECTOR_SIZE = 768
 
 
+def _load_qdrant_http():
+    """Locate agent-tooling and import the canonical qdrant_http primitive
+    (PROJ-033/T-016). Returns the module, or None if not locatable — the hook
+    is non-blocking, so it degrades to logging-and-skipping rather than a
+    silent unauthenticated write. Mirrors stop-heartbeat._locate_agent_tooling.
+    """
+    candidates = []
+    env = os.environ.get("AGENT_TOOLING_DIR")
+    if env:
+        candidates.append(Path(env))
+    candidates.extend(Path(__file__).resolve().parents)
+    candidates.append(Path.home() / "workspace" / "agent-tooling")
+    if (Path.home() / "sessions").is_dir():
+        candidates.extend((Path.home() / "sessions").glob("*/agent-tooling"))
+    for c in candidates:
+        if (c / "lib" / "qdrant_http.py").is_file():
+            if str(c) not in sys.path:
+                sys.path.insert(0, str(c))
+            try:
+                from lib import qdrant_http  # type: ignore
+                return qdrant_http
+            except Exception as exc:
+                print(f"[subagent-stop] qdrant_http import failed: {exc}", file=sys.stderr)
+                return None
+    print("[subagent-stop] agent-tooling/lib not located; Qdrant writes skipped",
+          file=sys.stderr)
+    return None
+
+
+qdrant_http = _load_qdrant_http()
+
+
 def get_qdrant_url(collection: str) -> str:
     return CLOUD_QDRANT_URL if collection in CLOUD_COLLECTIONS else AGENTSONLY_QDRANT_URL
-
-
-def get_qdrant_headers(collection: str) -> dict:
-    if collection in CLOUD_COLLECTIONS:
-        api_key = os.environ.get("PODZONE_QDRANT_APIKEY", "")
-        return {"api-key": api_key} if api_key else {}
-    return {}
 
 
 def log(msg: str) -> None:
@@ -105,10 +130,8 @@ def read_transcript_summary(transcript_path: str) -> str:
 
 def upsert_event(session_id: str, parent_session_id: Optional[str], detail: str, timestamp: str) -> None:
     """Write a subagent_complete event to task_events."""
-    try:
-        import requests
-    except ImportError:
-        log("requests not available; skipping event upsert")
+    if qdrant_http is None:
+        log("qdrant_http unavailable; skipping event upsert")
         return
 
     point_id = event_point_id(session_id, timestamp)
@@ -124,48 +147,39 @@ def upsert_event(session_id: str, parent_session_id: Optional[str], detail: str,
     if parent_session_id:
         payload["parent_session_id"] = parent_session_id
 
+    point = {"id": point_id, "vector": vector, "payload": payload}
     try:
-        r = requests.put(
-            f"{get_qdrant_url(EVENTS_COLLECTION)}/collections/{EVENTS_COLLECTION}/points",
-            headers=get_qdrant_headers(EVENTS_COLLECTION),
-            json={
-                "points": [
-                    {
-                        "id": point_id,
-                        "vector": vector,
-                        "payload": payload,
-                    }
-                ]
-            },
-            timeout=20,
+        qdrant_http.upsert_points(
+            [point], collection=EVENTS_COLLECTION,
+            qdrant_url=get_qdrant_url(EVENTS_COLLECTION), timeout=20,
         )
-        r.raise_for_status()
         log(f"event upserted for session {session_id[:16]}...")
-    except Exception as exc:
+    except qdrant_http.QdrantAuthError as exc:
+        log(f"PODZONE_QDRANT_APIKEY unavailable; skipping event upsert: {exc}")
+    except qdrant_http.QdrantError as exc:
         log(f"Warning: event upsert failed: {exc}")
 
 
 def close_session(session_id: str, now: str) -> None:
     """Mark the subagent's session as closed in the sessions collection."""
-    try:
-        import requests
-    except ImportError:
-        log("requests not available; skipping session close")
+    if qdrant_http is None:
+        log("qdrant_http unavailable; skipping session close")
         return
 
+    url = (
+        f"{get_qdrant_url(SESSIONS_COLLECTION)}"
+        f"/collections/{SESSIONS_COLLECTION}/points/payload"
+    )
     try:
-        r = requests.patch(
-            f"{get_qdrant_url(SESSIONS_COLLECTION)}/collections/{SESSIONS_COLLECTION}/points/payload",
-            headers=get_qdrant_headers(SESSIONS_COLLECTION),
-            json={
-                "payload": {"status": "closed", "end_ts": now},
-                "points": [session_id],
-            },
+        qdrant_http.request_json(
+            "POST", url,
+            payload={"payload": {"status": "closed", "end_ts": now}, "points": [session_id]},
             timeout=8,
         )
-        r.raise_for_status()
         log(f"session {session_id[:16]}... marked closed")
-    except Exception as exc:
+    except qdrant_http.QdrantAuthError as exc:
+        log(f"PODZONE_QDRANT_APIKEY unavailable; skipping session close: {exc}")
+    except qdrant_http.QdrantError as exc:
         log(f"Warning: session close failed: {exc}")
 
 
