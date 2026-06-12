@@ -131,6 +131,37 @@ def get_session_point(
     )
 
 
+ACTIVE_STATUSES = ("ready", "in_progress", "blocked")
+
+
+def active_work_items(
+    agent: str,
+    *,
+    statuses: tuple[str, ...] = ACTIVE_STATUSES,
+    api_key: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Scroll the agent's active `task`/`work_item` points (§ 2.2 step 3).
+
+    Returns the list of point payloads with ``point_type=task`` for ``agent``
+    whose ``status`` is in ``statuses``. Used by the session-start materialise.
+    """
+    body = {
+        "filter": {
+            "must": [
+                {"key": "point_type", "match": {"value": "task"}},
+                {"key": "agent", "match": {"value": agent}},
+                {"key": "status", "match": {"any": list(statuses)}},
+            ]
+        },
+        "limit": limit,
+        "with_payload": True,
+    }
+    resp = qdrant_http.scroll(collection=COLLECTION, body=body, api_key=api_key)
+    points = resp.get("result", {}).get("points", [])
+    return [p.get("payload", {}) for p in points]
+
+
 def find_session_id_by_work_item(
     agent: str, work_item: str, *, api_key: Optional[str] = None
 ) -> Optional[str]:
