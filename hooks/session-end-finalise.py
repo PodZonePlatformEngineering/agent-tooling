@@ -2,17 +2,19 @@
 """
 session-end-finalise.py — session-end Qdrant write path (PROJ-039 § 2.4 steps 1-3).
 
-This is the PR-A half of session-end: the writes to the `session_substrate`
-point. The telemetry commit/push (step 4), the gated raw-event deletion (step 5),
-session-finalise (step 6) and the brief-result PR (step 7) are added in PR-B,
-because the deletion gate depends on the telemetry-repo interface.
-
-Ordered contract realised here (all partial writes — SD-3-001 / OT-006):
+Ordered contract realised here — **order is load-bearing** (§ 2.4):
   1. Upsert `response = {text, status_transition, event_refs, end_ts}` via
      set_payload, then patch the `response` named vector via update-vectors.
   2. Attach `event_refs` linking measurement points (R-012).
   3. Compute `rollup = {tool_usage, cost_tokens}` from the session JSONL and
      attach via set_payload (R-013/R-014; reconciles with a fresh re-scrape, DT-006).
+  4. Commit + push the JSONL to `agent-telemetry.git` FIRST (R-015, § 2.5).
+  5. ONLY if the push landed, delete the raw PreToolUse/PostToolUse points for
+     this session from CST (R-013, § 2.4 step 5). If the push failed, skip the
+     delete and warn — deletion safety depends on the backstop existing (C-006).
+
+session-finalise (step 6) and the brief-result PR (step 7) remain a follow-on
+(the consolidate-tasks `session-finalise` refactor, DTD § 1.4).
 
 Best-effort: logs and exits 0 on any failure (a session-end hook must not break
 teardown). Reads stdin JSON: ``session_id``, ``cwd``, ``transcript_path``.
@@ -117,6 +119,44 @@ def main() -> int:
             )
         except Exception as exc:
             print(f"[session-end-finalise] rollup skipped: {exc}", file=sys.stderr)
+
+    # 4. Commit + push the telemetry JSONL FIRST (R-015) — the backstop that
+    #    makes step 5 safe. Push failure blocks deletion (C-006).
+    pushed = False
+    try:
+        from lib import telemetry_repo
+
+        from datetime import datetime, timezone
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        res = telemetry_repo.commit_and_push(session_id, date=date)
+        pushed = res.get("pushed", False)
+        print(
+            f"[session-end-finalise] telemetry: committed={res.get('committed')} "
+            f"pushed={pushed} ({res.get('reason') or 'ok'})",
+            file=sys.stderr,
+        )
+    except Exception as exc:
+        print(f"[session-end-finalise] telemetry push skipped: {exc}", file=sys.stderr)
+
+    # 5. Delete raw PreToolUse/PostToolUse from CST — ONLY if the push landed.
+    if pushed:
+        try:
+            from lib import cst_cleanup
+
+            res = cst_cleanup.delete_raw_tool_events(session_id)
+            print(
+                f"[session-end-finalise] CST raw events deleted "
+                f"(was {res['deleted_before_count']})",
+                file=sys.stderr,
+            )
+        except Exception as exc:
+            print(f"[session-end-finalise] CST delete skipped: {exc}", file=sys.stderr)
+    else:
+        print(
+            "[session-end-finalise] CST raw events RETAINED — telemetry push did "
+            "not land; deletion gated on the backstop (C-006).",
+            file=sys.stderr,
+        )
 
     return 0
 

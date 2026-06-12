@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # session-end.sh — SessionEnd hook (PROJ-039 § 2.4).
 #
-# PR-A (this change): the Qdrant substrate write path — response upsert +
-# response-vector patch + rollups, on the canonical `session` point. Delegated to
-# session-end-finalise.py (best-effort; never breaks teardown).
+# Delegates to session-end-finalise.py (best-effort; never breaks teardown):
+#   1-3. Qdrant substrate writes — response upsert + response-vector patch +
+#        rollups on the canonical `session` point.
+#   4.   Commit + push the session JSONL to agent-telemetry.git FIRST (R-015).
+#   5.   Delete raw PreToolUse/PostToolUse from CST — ONLY if the push landed
+#        (C-006; deletion gated on the durable backstop).
 #
-# PR-B will extend this with the telemetry commit/push (step 4), the gated
-# raw-event deletion (step 5 — conditional on the push landing, C-006),
-# session-finalise (step 6) and the brief-result PR (step 7).
+# Follow-on: session-finalise (step 6) + brief-result PR (step 7) — the
+# consolidate-tasks `session-finalise` refactor (DTD § 1.4).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
