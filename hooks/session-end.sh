@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# session-end.sh — SessionEnd hook for v2.0 home repos (ADR-008 / PROJ-033)
-# Copies to .claude/hooks/ in each home repo via scaffold.sh.
+# session-end.sh — SessionEnd hook (PROJ-039 § 2.4).
 #
-# STUB — full implementation in PROJ-033/T-006 (result materialisation + PR raise).
+# PR-A (this change): the Qdrant substrate write path — response upsert +
+# response-vector patch + rollups, on the canonical `session` point. Delegated to
+# session-end-finalise.py (best-effort; never breaks teardown).
 #
-# Full behaviour (T-006):
-#   1. Write session_results Qdrant point (task_id, summary, files_changed, status)
-#   2. Generate results/session-{date}-{slug}.md from Qdrant point
-#   3. Commit + push to PAT branch on home repo
-#   4. Raise PR on home repo for Martin review
+# PR-B will extend this with the telemetry commit/push (step 4), the gated
+# raw-event deletion (step 5 — conditional on the push landing, C-006),
+# session-finalise (step 6) and the brief-result PR (step 7).
 set -euo pipefail
 
-echo "==> session-end.sh: session end recorded [stub — PROJ-033/T-006 pending]" >&2
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+STDIN="$(cat)"
+
+echo "==> session-end.sh: finalising session_substrate writes" >&2
+printf '%s' "${STDIN}" | python3 "${SCRIPT_DIR}/session-end-finalise.py" || true
+
 exit 0

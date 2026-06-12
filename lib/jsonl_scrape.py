@@ -114,6 +114,23 @@ def _collect_message_text(content: Any) -> list[str]:
     return out
 
 
+def _count_tool_uses(content: Any, counter: dict[str, int]) -> None:
+    """Increment ``counter`` per ``tool_use`` block name in a message content.
+
+    Feeds ``rollup.tool_usage`` (PROJ-039 R-013/R-014). Each ``tool_use`` block
+    in an assistant turn is one tool invocation, keyed by the tool ``name``.
+    """
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_use":
+            name = block.get("name")
+            if isinstance(name, str) and name:
+                counter[name] = counter.get(name, 0) + 1
+
+
 def _parse_ts(s: str | None) -> datetime | None:
     if not s:
         return None
@@ -136,6 +153,7 @@ def scrape(jsonl_path: str | Path) -> dict:
     last_ts: str | None = None
     model_usage: dict[str, dict] = {}
     message_counts: dict[str, int] = {}
+    tool_usage: dict[str, int] = {}
     text_corpus: list[str] = []
     malformed = 0
 
@@ -177,6 +195,8 @@ def scrape(jsonl_path: str | Path) -> dict:
                 message = entry.get("message")
                 if isinstance(message, dict):
                     text_corpus.extend(_collect_message_text(message.get("content")))
+                    if etype == "assistant":
+                        _count_tool_uses(message.get("content"), tool_usage)
 
             # D1: assistant + .message.usage present, no stop_reason filter.
             if etype == "assistant":
@@ -218,6 +238,7 @@ def scrape(jsonl_path: str | Path) -> dict:
         "model_usage": model_usage,
         "total_tokens": _sum_totals(model_usage),
         "message_counts": message_counts,
+        "tool_usage": tool_usage,
         "work_items": work_items_payload["work_items"],
         "projects": work_items_payload["projects"],
         "jsonl_path": str(path.resolve()),
