@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-session-end-finalise.py — session-end Qdrant write path (PROJ-039 § 2.4 steps 1-3).
+session-end-finalise.py — session-end Qdrant write path (PROJ-039 § 2.4).
 
 Ordered contract realised here — **order is load-bearing** (§ 2.4):
   1. Upsert `response = {text, status_transition, event_refs, end_ts}` via
@@ -12,9 +12,13 @@ Ordered contract realised here — **order is load-bearing** (§ 2.4):
   5. ONLY if the push landed, delete the raw PreToolUse/PostToolUse points for
      this session from CST (R-013, § 2.4 step 5). If the push failed, skip the
      delete and warn — deletion safety depends on the backstop existing (C-006).
+  6. session-finalise (§ 1.4): read the session point and apply the 4 per-session
+     consolidation steps (apply to tasklist + update STATUS).
+  7. Brief-result PR (R-011 / MVP-8): generate results/session-{date}-{slug}.md
+     from the session point, commit to the home-team-agent repo, raise a PR.
 
-session-finalise (step 6) and the brief-result PR (step 7) remain a follow-on
-(the consolidate-tasks `session-finalise` refactor, DTD § 1.4).
+Steps 6-7 are best-effort and require PODZONE_QDRANT_APIKEY + PODZONEAGENTTEAM_REPO
+to be set; they are silently skipped if either is absent.
 
 Best-effort: logs and exits 0 on any failure (a session-end hook must not break
 teardown). Reads stdin JSON: ``session_id``, ``cwd``, ``transcript_path``.
@@ -28,6 +32,7 @@ reconcile) hold regardless of how the text is authored.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -155,6 +160,92 @@ def main() -> int:
         print(
             "[session-end-finalise] CST raw events RETAINED — telemetry push did "
             "not land; deletion gated on the backstop (C-006).",
+            file=sys.stderr,
+        )
+
+    # 6. session-finalise (§ 1.4): apply the 4 per-session consolidation steps
+    #    from the session point (tasklist + STATUS). Requires the session point
+    #    to carry response.status_transition (set in step 1 above).
+    agent_repo = os.environ.get("PODZONEAGENTTEAM_REPO", "")
+    if agent_repo:
+        try:
+            from pathlib import Path as _Path
+            from lib import session_substrate, session_finalise
+
+            point = session_substrate.get_session_point(session_id)
+            if point:
+                tasklist = _Path(agent_repo) / "planning" / "team-tasklist.md"
+                status_md = _Path(agent_repo) / "planning" / "STATUS.md"
+                res = session_finalise.apply_from_point(
+                    point, tasklist_path=tasklist, status_path=status_md
+                )
+                print(
+                    f"[session-end-finalise] session-finalise: "
+                    f"tasklist_changed={res['tasklist_changed']} "
+                    f"status_changed={res['status_changed']} "
+                    f"work_item={res['work_item']} "
+                    f"new_status={res['new_status']}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "[session-end-finalise] session-finalise skipped: "
+                    "session point not found",
+                    file=sys.stderr,
+                )
+        except Exception as exc:
+            print(
+                f"[session-end-finalise] session-finalise skipped: {exc}",
+                file=sys.stderr,
+            )
+    else:
+        print(
+            "[session-end-finalise] session-finalise skipped: "
+            "PODZONEAGENTTEAM_REPO not set",
+            file=sys.stderr,
+        )
+
+    # 7. Brief-result PR (R-011 / MVP-8): generate results/session-{date}-{slug}.md,
+    #    commit to the home-team-agent repo, and raise a PR (best-effort).
+    if agent_repo:
+        try:
+            from lib import session_finalise as _sf, session_substrate as _ss
+            from datetime import datetime, timezone as _tz
+
+            point = _ss.get_session_point(session_id)
+            if point:
+                date = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+                result_text = _sf.generate_brief_result(point, date=date)
+                pr_res = _sf.commit_brief_result(
+                    result_text,
+                    session_id=session_id,
+                    work_item=point.get("work_item", "unknown"),
+                    date=date,
+                    repo_dir=agent_repo,
+                    raise_pr=True,
+                )
+                print(
+                    f"[session-end-finalise] brief-result PR: "
+                    f"ok={pr_res['ok']} branch={pr_res['branch']} "
+                    f"pr_url={pr_res['pr_url'] or '(none)'} "
+                    f"{pr_res.get('reason') or ''}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "[session-end-finalise] brief-result PR skipped: "
+                    "session point not found",
+                    file=sys.stderr,
+                )
+        except Exception as exc:
+            print(
+                f"[session-end-finalise] brief-result PR skipped: {exc}",
+                file=sys.stderr,
+            )
+    else:
+        print(
+            "[session-end-finalise] brief-result PR skipped: "
+            "PODZONEAGENTTEAM_REPO not set",
             file=sys.stderr,
         )
 
