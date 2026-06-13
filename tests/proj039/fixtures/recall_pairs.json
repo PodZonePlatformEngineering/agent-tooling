@@ -1,0 +1,55 @@
+{
+  "_comment": "DT-001 labelled corpus (PROJ-039 AC-002 / MVP-11). 10 pairs: each query is semantically related to its target brief but the query phrase does not appear verbatim anywhere in the brief corpus (grep-baseline = 0, enforced by tests/proj039/test_recall_harness.py). Label quality guarded by ST-003.",
+  "pairs": [
+    {
+      "slug": "tls-rotation",
+      "brief": "Rotate the expiring TLS certificate for the Qdrant ingress endpoint at qdrant.agenticflows.co.uk and verify the new chain is served on port 443. Confirm curl validates without --insecure and update the runbook with the rotation date.",
+      "query": "renew the soon-to-lapse https cert on the vector database host"
+    },
+    {
+      "slug": "legacy-migration",
+      "brief": "Migrate the legacy tasking records from the agentsonly cluster into the unified cloud collection, preserving the audit trail for every session: dispatch timestamp, response content, and status-transition events must all remain retrievable after the move.",
+      "query": "move the old coordination data into the new datastore without losing history"
+    },
+    {
+      "slug": "nightly-backup",
+      "brief": "Add a Kubernetes CronJob that snapshots the vector store every night at 02:00 and prunes snapshots older than seven days. Persist snapshots to the piraeus-datastore PVC and alert on two consecutive failures.",
+      "query": "schedule automatic backups with a one week retention window"
+    },
+    {
+      "slug": "embed-retry",
+      "brief": "Implement exponential backoff with jitter for the Ollama embedding client so a transient timeout or connection reset does not fail the session hook. Cap total retry time at sixty seconds and log each attempt.",
+      "query": "make the embedding calls resilient to flaky network errors"
+    },
+    {
+      "slug": "spend-dashboard",
+      "brief": "Build a Grafana dashboard showing per-agent token spend by model over the trailing thirty days, broken down by input, output, and cache-read buckets, sourced from the sessions collection rollups.",
+      "query": "visualise llm cost and usage for each teammate"
+    },
+    {
+      "slug": "bastion-hardening",
+      "brief": "Harden the bastion host freyr: disable password SSH logins, enforce key-only authentication, remove unused open ports from iptables, and document the surviving rules in the network inventory.",
+      "query": "lock down remote access on the jump server"
+    },
+    {
+      "slug": "photo-endpoint",
+      "brief": "Build a FastAPI endpoint that accepts an inventory photo upload, forwards it to the photo processor, and returns the catalogue entry that was created, including thumbnail URL and detected attributes.",
+      "query": "api route for ingesting product pictures into the catalogue"
+    },
+    {
+      "slug": "dns-reconcile",
+      "brief": "Reconcile the Cloudflare zone against the domain inventory and delete any stale A records still pointing at decommissioned hosts. Produce a before and after record listing for the audit log.",
+      "query": "clean up dead dns entries left over from retired machines"
+    },
+    {
+      "slug": "consolidation-perf",
+      "brief": "Profile the consolidation script and cut its wall-clock time by batching the Qdrant scroll requests and caching the gh pr view lookups. Target is under ninety seconds for a full pass.",
+      "query": "speed up the slow merge job by reducing round trips"
+    },
+    {
+      "slug": "zero-trust-doc",
+      "brief": "Document the zero-trust bootstrap flow for newly provisioned clusters, covering how Flux obtains its deploy key, how SOPS age secrets are seeded, and which steps require operator presence.",
+      "query": "explain how a fresh cluster authenticates itself at first boot"
+    }
+  ]
+}
