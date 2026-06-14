@@ -1,0 +1,38 @@
+{
+  "_comment": "PROJ-039 unified-session-substrate hook wiring. The NEW hooks COEXIST with the legacy CST chain (settings-snippet.json) under the C-003 transition — merge both. Claude Code merges hooks across settings sources (user + project + local), so a project-level copy of this block fires ALONGSIDE the apex legacy chain; neither replaces the other. Auth: PODZONE_QDRANT_APIKEY is inherited from the session env (the apex settings.json `env` block, PROJ-033/T-016) — never embed the key here. SessionEnd is unreliable under the VSCode extension (2026-05-19 decision); see hooks/session-end-finalise.py and the Phase-B runbook for the manual-finalise fallback.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/session-materialise.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/substrate-stop.sh"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/session-end-finalise.py"
+          }
+        ]
+      }
+    ]
+  }
+}
