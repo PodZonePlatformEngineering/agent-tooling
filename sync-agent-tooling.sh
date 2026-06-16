@@ -88,6 +88,14 @@ fi
 
 # --- Role hook set ---
 
+# NOTE (PROJ-039/T-011 C2a): the v2.0 template names below (startup.sh /
+# session-end.sh / task-event.sh) are STUBS; the functional hooks are
+# session-start.sh / post-tool-use.sh + the per-Stop telemetry chain. Adopting
+# the real working set here must be done together with scaffold.sh's role_hooks
+# AND role_settings_json (grouped settings format) so scaffold+sync stay
+# consistent — that is the template v2.1 package (see c2a-canary/migration-recipe.md).
+# Left on the existing set in C2a to keep scaffold+sync coherent; the canary
+# relocated the real hooks manually.
 role_hooks() {
   case "$1" in
     team-lead)        echo "startup.sh session-end.sh stop.sh task-event.sh" ;;

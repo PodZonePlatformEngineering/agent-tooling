@@ -7,7 +7,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PRIMITIVES="${SCRIPT_DIR}/../primitives"
+PRIMITIVES="${AGENT_TOOLING_DIR:-${SCRIPT_DIR}/..}/primitives"
 COLLECTION="claude_session_telemetry"
 
 STDIN="$(cat)"

@@ -23,10 +23,15 @@ Usage: append-session-stop.py <session_id> <ts> [stop_reason] [transcript_path]
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+# agent-tooling root: honour AGENT_TOOLING_DIR (set by repo-resident home repos
+# where this hook lives in .claude/hooks/, so parents[1] would point at .claude/);
+# fall back to the canonical agent-tooling/hooks/ layout. Mirrors the
+# AGENT_TOOLING_DIR override used by subagent-stop.py / hook-lib-discovery-pattern.
+REPO_ROOT = Path(os.environ.get("AGENT_TOOLING_DIR") or Path(__file__).resolve().parents[1])
 sys.path.insert(0, str(REPO_ROOT))
 
 

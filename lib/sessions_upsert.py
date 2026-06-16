@@ -112,6 +112,7 @@ def upsert_session(
     data_source: str,
     status: Optional[str] = None,
     last_heartbeat_ts: Optional[str] = None,
+    extra_payload: Optional[dict] = None,
     timeout: float = 8.0,
 ) -> dict:
     """Upsert a sessions payload to the cloud Qdrant `sessions` collection.
@@ -153,6 +154,11 @@ def upsert_session(
     payload["updated_at"] = _now_iso()
     if last_heartbeat_ts is not None:
         payload["last_heartbeat_ts"] = last_heartbeat_ts
+    # Caller-supplied extra fields (e.g. push_failed:true from /session-end on a
+    # failed home-repo push — PROJ-032 T-005). Merged last so callers can stamp
+    # session-level flags without a bespoke writer.
+    if extra_payload:
+        payload.update(extra_payload)
 
     pid = point_id_for(session_id)
     result["point_id"] = pid

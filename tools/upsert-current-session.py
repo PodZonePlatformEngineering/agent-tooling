@@ -44,6 +44,7 @@ def run(
     cwd: Optional[str],
     data_source: str,
     status: Optional[str],
+    push_failed: bool = False,
 ) -> int:
     session_id = session_id or os.environ.get("CLAUDE_SESSION_ID")
     cwd = cwd or os.getcwd()
@@ -66,7 +67,10 @@ def run(
         return 0
 
     result = sessions_upsert.upsert_session(
-        payload, data_source=data_source, status=status
+        payload,
+        data_source=data_source,
+        status=status,
+        extra_payload={"push_failed": True} if push_failed else None,
     )
     if result["ok"]:
         _log(
@@ -88,12 +92,19 @@ def main(argv: Optional[list[str]] = None) -> int:
         choices=sorted(sessions_upsert.VALID_DATA_SOURCES),
     )
     ap.add_argument("--status", default="ended")
+    ap.add_argument(
+        "--push-failed",
+        action="store_true",
+        help="Stamp push_failed:true on the session point (PROJ-032 T-005: "
+        "/session-end could not push the home repo).",
+    )
     args = ap.parse_args(argv)
     return run(
         session_id=args.session_id,
         cwd=args.cwd,
         data_source=args.data_source,
         status=args.status,
+        push_failed=args.push_failed,
     )
 
 
