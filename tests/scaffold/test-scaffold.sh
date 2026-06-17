@@ -42,22 +42,35 @@ assert "workspaces/identity/ exists"   "$([ -d "${TARGET}/workspaces/identity" ]
 assert "workspace file exists"         "$([ -f "${TARGET}/home-training-alex.code-workspace" ] && echo ok || echo fail)"
 assert "identity YAML exists"          "$([ -f "${TARGET}/workspaces/identity/martin-alex-trainer.identity.yaml" ] && echo ok || echo fail)"
 
-# 2. Trainer hook set: exactly startup.sh, session-end.sh, stop.sh (no extras)
+# 2. Trainer hook set (v2.1 substrate, no subagent chain)
 HOOKS_DIR="${TARGET}/.claude/hooks"
-assert "startup.sh present"            "$([ -f "${HOOKS_DIR}/startup.sh" ] && echo ok || echo fail)"
-assert "session-end.sh present"        "$([ -f "${HOOKS_DIR}/session-end.sh" ] && echo ok || echo fail)"
+assert "session-start.sh present"      "$([ -f "${HOOKS_DIR}/session-start.sh" ] && echo ok || echo fail)"
+assert "user-prompt-submit.sh present" "$([ -f "${HOOKS_DIR}/user-prompt-submit.sh" ] && echo ok || echo fail)"
+assert "pre-tool-use.sh present"       "$([ -f "${HOOKS_DIR}/pre-tool-use.sh" ] && echo ok || echo fail)"
+assert "post-tool-use.sh present"      "$([ -f "${HOOKS_DIR}/post-tool-use.sh" ] && echo ok || echo fail)"
+assert "post-compact.sh present"       "$([ -f "${HOOKS_DIR}/post-compact.sh" ] && echo ok || echo fail)"
 assert "stop.sh present"               "$([ -f "${HOOKS_DIR}/stop.sh" ] && echo ok || echo fail)"
-assert "task-event.sh NOT present"     "$([ ! -f "${HOOKS_DIR}/task-event.sh" ] && echo ok || echo fail)"
+assert "append-session-stop.py present" "$([ -f "${HOOKS_DIR}/append-session-stop.py" ] && echo ok || echo fail)"
 assert "subagent-stop.sh NOT present"  "$([ ! -f "${HOOKS_DIR}/subagent-stop.sh" ] && echo ok || echo fail)"
-assert "ingest-transcript.sh NOT present" "$([ ! -f "${HOOKS_DIR}/ingest-transcript.sh" ] && echo ok || echo fail)"
+assert "no stub startup.sh"            "$([ ! -f "${HOOKS_DIR}/startup.sh" ] && echo ok || echo fail)"
+assert "no stub session-end.sh"        "$([ ! -f "${HOOKS_DIR}/session-end.sh" ] && echo ok || echo fail)"
 
-# 3. settings.json has exactly SessionStart, SessionEnd, Stop (no PostToolUse, no SubagentStop)
+# 2b. Resident deps (self-containment, v2.1)
+assert ".claude/primitives/ resident"  "$([ -d "${TARGET}/.claude/primitives" ] && echo ok || echo fail)"
+assert ".claude/lib/ resident"         "$([ -d "${TARGET}/.claude/lib" ] && echo ok || echo fail)"
+assert "lib/qdrant_http.py resident"   "$([ -f "${TARGET}/.claude/lib/qdrant_http.py" ] && echo ok || echo fail)"
+assert "primitives/qdrant resolves"    "$([ -f "${TARGET}/.claude/hooks/../primitives/qdrant/add-qdrant-point.sh" ] && echo ok || echo fail)"
+assert "no AGENT_TOOLING_DIR in hooks"  "$(! grep -rq 'os.environ.*AGENT_TOOLING_DIR\|AGENT_TOOLING_DIR:-' "${HOOKS_DIR}" && echo ok || echo fail)"
+
+# 3. settings.json: grouped substrate events; no SubagentStop for trainer
 SETTINGS="${TARGET}/.claude/settings.json"
+assert "settings.json valid JSON"       "$(python3 -c 'import json;json.load(open("'"$SETTINGS"'"))' 2>/dev/null && echo ok || echo fail)"
 assert "settings.json has SessionStart" "$(grep -q 'SessionStart' "$SETTINGS" && echo ok || echo fail)"
-assert "settings.json has SessionEnd"   "$(grep -q 'SessionEnd'   "$SETTINGS" && echo ok || echo fail)"
+assert "settings.json has UserPromptSubmit" "$(grep -q 'UserPromptSubmit' "$SETTINGS" && echo ok || echo fail)"
+assert "settings.json has PostToolUse"  "$(grep -q 'PostToolUse' "$SETTINGS" && echo ok || echo fail)"
 assert "settings.json has Stop"         "$(grep -q '"Stop"'       "$SETTINGS" && echo ok || echo fail)"
-assert "settings.json no PostToolUse"   "$(! grep -q 'PostToolUse'  "$SETTINGS" && echo ok || echo fail)"
 assert "settings.json no SubagentStop"  "$(! grep -q 'SubagentStop' "$SETTINGS" && echo ok || echo fail)"
+assert "settings.json no stub startup.sh" "$(! grep -q 'startup.sh' "$SETTINGS" && echo ok || echo fail)"
 
 # 4. AGENTS.md contains agent and team
 assert "AGENTS.md contains agent=alex" "$(grep -q 'agent=alex' "${TARGET}/AGENTS.md" && echo ok || echo fail)"
@@ -66,6 +79,7 @@ assert "AGENTS.md contains team=training" "$(grep -q 'training' "${TARGET}/AGENT
 # 5. .gitignore contains .workspace/ and context/
 assert ".gitignore has .workspace/"    "$(grep -q '\.workspace/' "${TARGET}/.gitignore" && echo ok || echo fail)"
 assert ".gitignore has context/"       "$(grep -q 'context/' "${TARGET}/.gitignore" && echo ok || echo fail)"
+assert ".gitignore has settings.local.json" "$(grep -q 'settings.local.json' "${TARGET}/.gitignore" && echo ok || echo fail)"
 
 echo ""
 echo "Results: ${PASS} passed, ${FAIL} failed."

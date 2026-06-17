@@ -31,44 +31,52 @@ echo "=== test-sync.sh ==="
 bash "${AGENT_TOOLING_DIR}/scaffold.sh" training sync-test trainer --target-dir "$TARGET" > /dev/null
 assert "scaffold produced .claude/hooks/" "$([ -d "${TARGET}/.claude/hooks" ] && echo ok || echo fail)"
 
-# 2. Simulate drift in startup.sh
-HOOK="${TARGET}/.claude/hooks/startup.sh"
+# 2. Simulate drift in session-start.sh (a real substrate hook) AND in a resident lib module
+HOOK="${TARGET}/.claude/hooks/session-start.sh"
 echo "# DRIFTED CONTENT" >> "$HOOK"
-DRIFTED_CONTENT="$(cat "$HOOK")"
-assert "drift introduced" "$(grep -q 'DRIFTED CONTENT' "$HOOK" && echo ok || echo fail)"
+LIBMOD="${TARGET}/.claude/lib/qdrant_http.py"
+echo "# DRIFTED LIB" >> "$LIBMOD"
+assert "hook drift introduced" "$(grep -q 'DRIFTED CONTENT' "$HOOK" && echo ok || echo fail)"
+assert "lib drift introduced"  "$(grep -q 'DRIFTED LIB' "$LIBMOD" && echo ok || echo fail)"
 
 # 3. Sync with --yes (non-interactive)
+SYNC_RC=0
 bash "${AGENT_TOOLING_DIR}/sync-agent-tooling.sh" \
   --role trainer \
   --home-repo "$TARGET" \
   --agent-tooling "${AGENT_TOOLING_DIR}" \
-  --yes > /dev/null
+  --yes > /tmp/test-sync-out-$$ 2>&1 || SYNC_RC=$?
 
 # 4. Assert hook was restored to agent-tooling version
-SOURCE_CONTENT="$(cat "${AGENT_TOOLING_DIR}/hooks/startup.sh")"
-SYNCED_CONTENT="$(cat "$HOOK")"
-
-assert "startup.sh restored to agent-tooling version" \
-  "$([ "$SOURCE_CONTENT" = "$SYNCED_CONTENT" ] && echo ok || echo fail)"
-
-assert "drifted content removed" \
+assert "session-start.sh restored to source" \
+  "$(diff -q "${AGENT_TOOLING_DIR}/hooks/session-start.sh" "$HOOK" > /dev/null 2>&1 && echo ok || echo fail)"
+assert "drifted hook content removed" \
   "$(! grep -q 'DRIFTED CONTENT' "$HOOK" && echo ok || echo fail)"
 
-# 5. Unchanged hooks not touched (session-end.sh should still match)
-SE_SRC="${AGENT_TOOLING_DIR}/hooks/session-end.sh"
-SE_DST="${TARGET}/.claude/hooks/session-end.sh"
-assert "session-end.sh still matches source" \
-  "$(diff -q "$SE_SRC" "$SE_DST" > /dev/null 2>&1 && echo ok || echo fail)"
+# 4b. Resident lib restored byte-identical (v2.1 dependency sync)
+assert "lib/qdrant_http.py restored to source" \
+  "$(diff -q "${AGENT_TOOLING_DIR}/lib/qdrant_http.py" "$LIBMOD" > /dev/null 2>&1 && echo ok || echo fail)"
+assert "drifted lib content removed" \
+  "$(! grep -q 'DRIFTED LIB' "$LIBMOD" && echo ok || echo fail)"
+
+# 4c. Byte-identity invariant asserted + clean exit
+assert "sync exit 0 (invariant PASS)" "$([ "$SYNC_RC" -eq 0 ] && echo ok || echo fail)"
+assert "sync printed invariant PASS"  "$(grep -q 'Byte-identity invariant: PASS' /tmp/test-sync-out-$$ && echo ok || echo fail)"
+rm -f /tmp/test-sync-out-$$
+
+# 5. Unchanged hooks not touched (stop.sh should still match)
+assert "stop.sh still matches source" \
+  "$(diff -q "${AGENT_TOOLING_DIR}/hooks/stop.sh" "${TARGET}/.claude/hooks/stop.sh" > /dev/null 2>&1 && echo ok || echo fail)"
 
 # 6. Auto-detect role from identity YAML (no --role flag)
 bash "${AGENT_TOOLING_DIR}/scaffold.sh" training auto-test trainer --target-dir "${TARGET}-auto" > /dev/null
-echo "# DRIFT" >> "${TARGET}-auto/.claude/hooks/startup.sh"
+echo "# DRIFT" >> "${TARGET}-auto/.claude/hooks/session-start.sh"
 bash "${AGENT_TOOLING_DIR}/sync-agent-tooling.sh" \
   --home-repo "${TARGET}-auto" \
   --agent-tooling "${AGENT_TOOLING_DIR}" \
   --yes > /dev/null
-assert "auto-detected role: startup.sh restored" \
-  "$(diff -q "${AGENT_TOOLING_DIR}/hooks/startup.sh" "${TARGET}-auto/.claude/hooks/startup.sh" > /dev/null 2>&1 && echo ok || echo fail)"
+assert "auto-detected role: session-start.sh restored" \
+  "$(diff -q "${AGENT_TOOLING_DIR}/hooks/session-start.sh" "${TARGET}-auto/.claude/hooks/session-start.sh" > /dev/null 2>&1 && echo ok || echo fail)"
 rm -rf "${TARGET}-auto"
 
 echo ""

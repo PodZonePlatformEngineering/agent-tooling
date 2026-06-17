@@ -15,3 +15,9 @@ __pycache__/
 # Local tool state
 *.log
 .env
+
+# Per-home-repo scoped env block (plaintext secrets until PROJ-003) — NEVER commit.
+# Lives only on the workstation; carries PODZONE_QDRANT_APIKEY / SECRETCTL_PASSWORD.
+# The committed .claude/settings.json carries hooks only; primitives/ + lib/ are
+# resident under .claude/ (self-contained, no AGENT_TOOLING_DIR — PROJ-039 C2-v2.1).
+.claude/settings.local.json
