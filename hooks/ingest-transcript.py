@@ -27,9 +27,9 @@ def _load_qdrant_http():
     silent unauthenticated write. Mirrors stop-heartbeat._locate_agent_tooling.
     """
     candidates = []
-    env = os.environ.get("AGENT_TOOLING_DIR")
-    if env:
-        candidates.append(Path(env))
+    # parents[] covers both layouts: agent-tooling/hooks/ (root holds lib/) and a
+    # self-contained home repo's .claude/hooks/ (.claude/ holds lib/). No
+    # AGENT_TOOLING_DIR override — self-containment per PROJ-039 C2-v2.1.
     candidates.extend(Path(__file__).resolve().parents)
     candidates.append(Path.home() / "workspace" / "agent-tooling")
     if (Path.home() / "sessions").is_dir():

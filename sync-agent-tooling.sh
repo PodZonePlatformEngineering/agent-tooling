@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# sync-agent-tooling.sh — re-apply hook updates to an existing v2.0 home repo.
+# sync-agent-tooling.sh — re-apply hook + resident-dependency updates to an
+# existing home repo, keeping it byte-identical to the canonical agent-tooling
+# source (template v2.1: hooks + primitives/ + lib/ resident under .claude/).
 # Reference: planning/projects/PROJ-032-agent-home-repos/home-repo-template.md §13
-# Task: PROJ-033/T-007 (CC-269)
+# Tasks: PROJ-033/T-007 (CC-269); PROJ-039/T-011 C2-v2.1 (self-containment)
 #
 # Usage (from inside the home repo, via .workspace clone):
 #   bash .workspace/agent-tooling/sync-agent-tooling.sh --role {role-class}
@@ -86,25 +88,31 @@ if [[ ! -d "$HOOKS_DST" ]]; then
   exit 1
 fi
 
-# --- Role hook set ---
+# --- Role hook set (template v2.1, PROJ-039/T-011 C2-v2.1) ---
 
-# NOTE (PROJ-039/T-011 C2a): the v2.0 template names below (startup.sh /
-# session-end.sh / task-event.sh) are STUBS; the functional hooks are
-# session-start.sh / post-tool-use.sh + the per-Stop telemetry chain. Adopting
-# the real working set here must be done together with scaffold.sh's role_hooks
-# AND role_settings_json (grouped settings format) so scaffold+sync stay
-# consistent — that is the template v2.1 package (see c2a-canary/migration-recipe.md).
-# Left on the existing set in C2a to keep scaffold+sync coherent; the canary
-# relocated the real hooks manually.
+# The real PROJ-039 substrate working set — the hooks proven on the Hephaestus
+# canary, NOT the v2.0 stubs (startup.sh / session-end.sh / task-event.sh) that
+# never existed as a runnable set. The universal substrate (session-start +
+# user-prompt-submit + pre/post-tool-use + post-compact + stop, with
+# append-session-stop.py as stop.sh's per-Stop tasking helper) emits session
+# telemetry + tasking for every role. Roles that spawn subagents
+# (coder / cluster-operator) additionally carry the SubagentStop chain.
+# Kept byte-identical with scaffold.sh's role_hooks + role_settings_json.
+SUBSTRATE_BASE="session-start.sh user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py"
 role_hooks() {
   case "$1" in
-    team-lead)        echo "startup.sh session-end.sh stop.sh task-event.sh" ;;
-    coder)            echo "startup.sh session-end.sh stop.sh task-event.sh subagent-stop.sh" ;;
-    archivist)        echo "startup.sh session-end.sh stop.sh ingest-transcript.sh" ;;
-    trainer)          echo "startup.sh session-end.sh stop.sh" ;;
-    cluster-operator) echo "startup.sh session-end.sh stop.sh task-event.sh subagent-stop.sh" ;;
+    team-lead)        echo "${SUBSTRATE_BASE}" ;;
+    coder)            echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
+    archivist)        echo "${SUBSTRATE_BASE}" ;;
+    trainer)          echo "${SUBSTRATE_BASE}" ;;
+    cluster-operator) echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
   esac
 }
+
+# Resident dependencies mirrored into the home repo's .claude/ so it is
+# self-contained (ADR-008 D2): no AGENT_TOOLING_DIR, no agent-tooling on the
+# discovery path. The sync diff over these IS the byte-identity regression test.
+DEP_DIRS="primitives lib"
 
 # --- Sync ---
 
@@ -155,5 +163,74 @@ for hook in $(role_hooks "$ROLE"); do
   ((UPDATED++))
 done
 
+# --- Resident dependency dirs (primitives/ + lib/) ---
+
+echo ""
+echo "==> Syncing resident dependencies (${DEP_DIRS}) → ${HOME_REPO}/.claude/"
+
+for dep in $DEP_DIRS; do
+  src="${AGENT_TOOLING_DIR}/${dep}"
+  dst="${HOME_REPO}/.claude/${dep}"
+
+  if [[ ! -d "$src" ]]; then
+    echo "  SKIP  ${dep}/ — not found in agent-tooling (${src})"
+    ((SKIPPED++))
+    continue
+  fi
+
+  if [[ -d "$dst" ]] && diff -rq -x '__pycache__' -x '*.pyc' "$src" "$dst" > /dev/null 2>&1; then
+    echo "  OK    ${dep}/ — unchanged"
+    ((UNCHANGED++))
+    continue
+  fi
+
+  if [[ -d "$dst" ]]; then
+    echo "  DIFF  ${dep}/:"
+    diff -rq -x '__pycache__' -x '*.pyc' "$dst" "$src" || true
+    echo ""
+  else
+    echo "  NEW   ${dep}/ — not present in home repo"
+  fi
+
+  if [[ $YES -eq 0 ]]; then
+    printf "  Overwrite %s/? [y/N] " "$dep"
+    read -r answer </dev/tty
+    if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+      echo "  Skipped."
+      ((SKIPPED++))
+      continue
+    fi
+  fi
+
+  rm -rf "$dst"
+  cp -R "$src" "$dst"
+  find "$dst" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+  echo "  Updated: ${dep}/"
+  ((UPDATED++))
+done
+
 echo ""
 echo "Sync complete: ${UPDATED} updated, ${UNCHANGED} unchanged, ${SKIPPED} skipped."
+
+# --- Byte-identity invariant (the regression test) ---
+# Updates flow only from the canonical agent-tooling source; after a clean sync
+# the home repo's hook set + resident deps MUST be byte-identical to agent-tooling
+# (ADR-008 D2 self-containment). Any residual diff is a regression — fail loudly.
+
+DRIFT=0
+for hook in $(role_hooks "$ROLE"); do
+  [[ -f "${HOOKS_SRC}/${hook}" ]] || continue
+  diff -q "${HOOKS_SRC}/${hook}" "${HOOKS_DST}/${hook}" > /dev/null 2>&1 \
+    || { echo "  DRIFT: hooks/${hook}"; DRIFT=1; }
+done
+for dep in $DEP_DIRS; do
+  diff -rq -x '__pycache__' -x '*.pyc' "${AGENT_TOOLING_DIR}/${dep}" "${HOME_REPO}/.claude/${dep}" > /dev/null 2>&1 \
+    || { echo "  DRIFT: ${dep}/"; DRIFT=1; }
+done
+
+if [[ $DRIFT -eq 0 ]]; then
+  echo "Byte-identity invariant: PASS — hooks + ${DEP_DIRS} match agent-tooling."
+else
+  echo "Byte-identity invariant: FAIL — drift listed above (re-run without --skip, or investigate)."
+  exit 1
+fi

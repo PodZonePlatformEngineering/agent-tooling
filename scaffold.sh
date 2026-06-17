@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# scaffold.sh — create a new agent home repo from the v2.0 template.
+# scaffold.sh — create a new, self-contained agent home repo (template v2.1).
+# Emits the real PROJ-039 substrate hook set + grouped settings.json, and copies
+# primitives/ + lib/ resident under .claude/ so the repo runs with no
+# AGENT_TOOLING_DIR and no agent-tooling clone on the discovery path (ADR-008 D2).
 # Reference: planning/projects/PROJ-032-agent-home-repos/home-repo-template.md
-# Task: PROJ-033/T-007 (CC-269)
+# Tasks: PROJ-033/T-007 (CC-269); PROJ-039/T-011 C2-v2.1 (self-containment)
 #
 # Usage:
 #   bash scaffold.sh {team} {agent} {role-class} [--target-dir /path] [--force]
@@ -77,15 +80,22 @@ echo "==> Scaffolding ${REPO_NAME} (role: ${ROLE}) → ${TARGET_DIR}"
 
 # --- Role definitions ---
 
+# Real PROJ-039 substrate working set (template v2.1) — kept byte-identical with
+# sync-agent-tooling.sh's role_hooks. Universal substrate emits session telemetry
+# + tasking for every role; subagent-spawning roles add the SubagentStop chain.
+SUBSTRATE_BASE="session-start.sh user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py"
 role_hooks() {
   case "$1" in
-    team-lead)        echo "startup.sh session-end.sh stop.sh task-event.sh" ;;
-    coder)            echo "startup.sh session-end.sh stop.sh task-event.sh subagent-stop.sh" ;;
-    archivist)        echo "startup.sh session-end.sh stop.sh ingest-transcript.sh" ;;
-    trainer)          echo "startup.sh session-end.sh stop.sh" ;;
-    cluster-operator) echo "startup.sh session-end.sh stop.sh task-event.sh subagent-stop.sh" ;;
+    team-lead)        echo "${SUBSTRATE_BASE}" ;;
+    coder)            echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
+    archivist)        echo "${SUBSTRATE_BASE}" ;;
+    trainer)          echo "${SUBSTRATE_BASE}" ;;
+    cluster-operator) echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
   esac
 }
+
+# Resident dependency dirs copied into .claude/ for self-containment.
+DEP_DIRS="primitives lib"
 
 role_title() {
   case "$1" in
@@ -105,63 +115,52 @@ role_task_filter() {
   esac
 }
 
-# Build settings.json hook entries for the role
+# Build .claude/settings.json in the real grouped Claude Code hook format
+# (template v2.1) — universal PROJ-039 substrate events for every role; the
+# SubagentStop chain is added only for subagent-spawning roles. Mirrors the
+# Hephaestus canary settings.json.
 role_settings_json() {
   local role="$1"
-  local base_hooks
-  base_hooks=$(cat <<'HOOKS'
-        { "type": "command", "event": "SessionStart", "command": "bash .claude/hooks/startup.sh" },
-        { "type": "command", "event": "SessionEnd",   "command": "bash .claude/hooks/session-end.sh" },
-        { "type": "command", "event": "Stop",         "command": "bash .claude/hooks/stop.sh" }
-HOOKS
-)
-
-  local extra_hooks=""
-  case "$role" in
-    team-lead|cluster-operator|coder)
-      extra_hooks=',
-        { "type": "command", "event": "PostToolUse",  "command": "bash .claude/hooks/task-event.sh" }'
-      ;;
-    archivist)
-      extra_hooks=',
-        { "type": "command", "event": "PostToolUse",  "command": "bash .claude/hooks/ingest-transcript.sh" }'
-      ;;
-  esac
-
+  local subagent_stop=""
   if [[ "$role" == "coder" || "$role" == "cluster-operator" ]]; then
-    extra_hooks="${extra_hooks}"',
-        { "type": "command", "event": "SubagentStop", "command": "bash .claude/hooks/subagent-stop.sh" }'
+    subagent_stop=',
+    "SubagentStop": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/subagent-stop.sh" } ] }
+    ]'
   fi
 
   cat <<SETTINGS
 {
-  "hooks": [
-    {
-      "matcher": "",
-      "hooks": [
-${base_hooks}${extra_hooks}
-      ]
-    }
-  ]
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash .claude/hooks/session-start.sh" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/user-prompt-submit.sh" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash .claude/hooks/pre-tool-use.sh" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash .claude/hooks/post-tool-use.sh" } ] }
+    ],
+    "PostCompact": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/post-compact.sh" } ] }
+    ],
+    "Stop": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/stop.sh" } ] }
+    ]${subagent_stop}
+  }
 }
 SETTINGS
 }
 
-# Build AGENTS.md hook table rows (role-specific rows beyond base)
+# Build AGENTS.md hook table rows (role-specific rows beyond the universal base).
+# The PROJ-039 substrate (SessionStart/UserPromptSubmit/Pre+PostToolUse/
+# PostCompact/Stop) is universal; only the SubagentStop chain is role-specific.
 role_hook_rows() {
-  case "$1" in
-    team-lead|cluster-operator|coder)
-      echo "| PostToolUse | \`task-event.sh\` | Record tool invocations to task_events |"
-      ;;
-    archivist)
-      echo "| PostToolUse | \`ingest-transcript.sh\` | Embed user prompts to prompt_logs |"
-      ;;
-    trainer)
-      echo ""
-      ;;
-  esac
   if [[ "$1" == "coder" || "$1" == "cluster-operator" ]]; then
-    echo "| SubagentStop | \`subagent-stop.sh\` | Record subagent outcomes |"
+    echo "| SubagentStop | \`subagent-stop.sh\` | Record subagent outcomes to task_events |"
   fi
 }
 
@@ -194,6 +193,23 @@ for hook in $(role_hooks "$ROLE"); do
   echo "    copied: ${hook}"
 done
 
+# --- Copy resident dependencies (primitives/ + lib/) ---
+# Self-containment (ADR-008 D2): the hooks resolve primitives via
+# ${SCRIPT_DIR}/../primitives and lib via parents[1], both landing inside
+# .claude/ — no AGENT_TOOLING_DIR, no agent-tooling clone on the discovery path.
+
+echo "==> Copying resident dependencies (${DEP_DIRS}) into .claude/..."
+for dep in $DEP_DIRS; do
+  src="${AGENT_TOOLING_DIR}/${dep}"
+  if [[ ! -d "$src" ]]; then
+    echo "Warning: source dependency dir not found: ${src} — skipping"
+    continue
+  fi
+  cp -R "$src" "${TARGET_DIR}/.claude/${dep}"
+  find "${TARGET_DIR}/.claude/${dep}" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+  echo "    copied: ${dep}/"
+done
+
 # --- .gitignore ---
 
 cp "${SCAFFOLD_DIR}/gitignore.template" "${TARGET_DIR}/.gitignore"
@@ -212,14 +228,14 @@ cat > "${TARGET_DIR}/AGENTS.md" <<AGENTS
 
 ## Startup
 
-On session start, this repo's hook runs \`.claude/hooks/startup.sh\`, which:
+On session start, this repo's \`.claude/hooks/session-start.sh\` runs, which:
 
 1. Extracts agent identity from the repo directory name
 2. Queries Qdrant \`work_items\` for the active approved brief (agent=${AGENT}, status=approved)
 3. Materialises \`context/brief.md\` and \`context/identity.yaml\`
-4. Assembles and injects 10-section additionalContext before the LLM opens
+4. Assembles and injects session context before the LLM opens
 
-If no approved brief is found, startup.sh injects identity + state only and
+If no approved brief is found, session-start.sh injects identity + state only and
 prints a notice: "No active brief — check with team lead for next task."
 
 ## Agent
@@ -231,18 +247,22 @@ prints a notice: "No active brief — check with team lead for next task."
 
 ## Repos
 
-Working repos cloned into \`.workspace/\`:
-
-- \`agent-tooling\` — always present (hooks, primitives, sync script)
-- \`{task-repo}\` — cloned per brief; deleted after PR merge
+This home repo is **self-contained** — its hooks, \`primitives/\`, and \`lib/\` are
+resident under \`.claude/\` (no AGENT_TOOLING_DIR, no agent-tooling clone needed to
+run). Task repos are cloned into \`.workspace/\` per brief and deleted after PR merge.
+Run \`.workspace/agent-tooling/sync-agent-tooling.sh --role ${ROLE}\` to pull hook +
+dependency updates from the canonical source (keeps them byte-identical).
 
 ## Hook set (role: ${ROLE})
 
 | Event | Script | Purpose |
 |---|---|---|
-| SessionStart | \`startup.sh\` | Identity + brief + 10-section context |
-| SessionEnd | \`session-end.sh\` | Materialise results + push + raise PR |
-| Stop | \`stop.sh\` | Write session_state snapshot |
+| SessionStart | \`session-start.sh\` | Identity + brief + session context |
+| UserPromptSubmit | \`user-prompt-submit.sh\` | Record prompt telemetry |
+| PreToolUse | \`pre-tool-use.sh\` | Record tool-call telemetry |
+| PostToolUse | \`post-tool-use.sh\` | Record tool-result telemetry |
+| PostCompact | \`post-compact.sh\` | Record compaction telemetry |
+| Stop | \`stop.sh\` | CST Stop point + session_stop[] tasking append |
 ${EXTRA_HOOK_ROWS}
 
 ## Constraints
@@ -337,6 +357,7 @@ echo "        — set scope, add task repos"
 echo "  [ ] Edit .claude/instructions.md — fill in role behaviour rules"
 echo "  [ ] Edit .claude/guardrails.md   — fill in role-specific prohibitions"
 echo "  [ ] Create repo '${REPO_NAME}' in PodZonePlatformEngineering and push"
-echo "  [ ] Clone agent-tooling into .workspace/agent-tooling/"
-echo "        git clone https://github.com/PodZonePlatformEngineering/agent-tooling.git .workspace/agent-tooling"
-echo "  [ ] Open ${REPO_NAME}.code-workspace and confirm startup.sh fires"
+echo "        (hooks + primitives/ + lib/ are resident under .claude/ — the repo"
+echo "         runs self-contained; no agent-tooling clone is required to fire hooks)"
+echo "  [ ] Set PODZONE_QDRANT_APIKEY in .claude/settings.local.json (workstation only)"
+echo "  [ ] Open ${REPO_NAME}.code-workspace and confirm session-start.sh fires"

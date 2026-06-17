@@ -18,7 +18,6 @@ Exit: always 0 (best-effort, non-blocking).
 from __future__ import annotations
 
 import json
-import os
 import signal
 import sys
 import time
@@ -46,10 +45,10 @@ def _now_iso() -> str:
 def _locate_agent_tooling() -> Optional[Path]:
     """Find the agent-tooling repo root (contains lib/sessions_upsert.py)."""
     candidates: list[Path] = []
-    env = os.environ.get("AGENT_TOOLING_DIR")
-    if env:
-        candidates.append(Path(env))
-    # Walk up from this script — covers the canonical agent-tooling/hooks/ copy
+    # Walk up from this script — covers both the canonical agent-tooling/hooks/
+    # copy (root holds lib/) and a self-contained home repo's .claude/hooks/
+    # (.claude/ holds lib/). No AGENT_TOOLING_DIR override — self-containment
+    # per PROJ-039 C2-v2.1.
     here = Path(__file__).resolve()
     for ancestor in here.parents:
         candidates.append(ancestor)
