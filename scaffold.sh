@@ -17,6 +17,7 @@ set -euo pipefail
 AGENT_TOOLING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCAFFOLD_DIR="${AGENT_TOOLING_DIR}/scaffold"
 HOOKS_DIR="${AGENT_TOOLING_DIR}/hooks"
+LIB_MANIFEST="${HOOKS_DIR}/home-runtime-lib.manifest"
 
 VALID_ROLES="team-lead coder archivist trainer cluster-operator"
 
@@ -94,8 +95,12 @@ role_hooks() {
   esac
 }
 
-# Resident dependency dirs copied into .claude/ for self-containment.
-DEP_DIRS="primitives lib"
+# Resident dependency dirs copied wholesale into .claude/ for self-containment.
+# lib/ is deliberately NOT in this list — it is copied module-by-module from
+# home-runtime-lib.manifest (the runtime closure), never as the whole 26-module
+# agent-tooling lib/ (PROJ-039/T-011 C2-v2.1b — avoids shipping workstation/Hermes
+# -only code into every home repo). Kept byte-identical with sync-agent-tooling.sh.
+DEP_DIRS="primitives"
 
 role_title() {
   case "$1" in
@@ -210,6 +215,33 @@ for dep in $DEP_DIRS; do
   echo "    copied: ${dep}/"
 done
 
+# --- Copy runtime lib closure (home-runtime-lib.manifest) ---
+# lib/ is NOT copied wholesale: only the modules in home-runtime-lib.manifest (the
+# transitive import closure of the shipped hooks) land in .claude/lib/. This keeps
+# the home repo free of workstation/Hermes-only code (decay detector, one-shots,
+# harnesses, reporting). PROJ-039/T-011 C2-v2.1b. Kept identical with sync-agent-tooling.sh.
+
+echo "==> Copying runtime lib closure (home-runtime-lib.manifest) into .claude/lib/..."
+if [[ ! -f "$LIB_MANIFEST" ]]; then
+  echo "Error: lib manifest not found: ${LIB_MANIFEST}"
+  exit 1
+fi
+LIB_COUNT=0
+while IFS= read -r line || [[ -n "$line" ]]; do
+  entry="${line%%#*}"; entry="${entry//[[:space:]]/}"
+  [[ -z "$entry" ]] && continue
+  src="${AGENT_TOOLING_DIR}/lib/${entry}"
+  dst="${TARGET_DIR}/.claude/lib/${entry}"
+  if [[ ! -f "$src" ]]; then
+    echo "Error: manifest lists '${entry}' but source is missing: ${src}"
+    exit 1
+  fi
+  mkdir -p "$(dirname "$dst")"
+  cp "$src" "$dst"
+  LIB_COUNT=$((LIB_COUNT + 1))
+done < "$LIB_MANIFEST"
+echo "    copied: lib/ (${LIB_COUNT} modules from manifest)"
+
 # --- .gitignore ---
 
 cp "${SCAFFOLD_DIR}/gitignore.template" "${TARGET_DIR}/.gitignore"
@@ -247,11 +279,14 @@ prints a notice: "No active brief — check with team lead for next task."
 
 ## Repos
 
-This home repo is **self-contained** — its hooks, \`primitives/\`, and \`lib/\` are
-resident under \`.claude/\` (no AGENT_TOOLING_DIR, no agent-tooling clone needed to
-run). Task repos are cloned into \`.workspace/\` per brief and deleted after PR merge.
-Run \`.workspace/agent-tooling/sync-agent-tooling.sh --role ${ROLE}\` to pull hook +
-dependency updates from the canonical source (keeps them byte-identical).
+This home repo is **self-contained** — its hooks, \`primitives/\`, and the \`lib/\`
+runtime closure are resident under \`.claude/\` (no AGENT_TOOLING_DIR, no agent-tooling
+clone needed to run). \`agent-tooling\` is the canonical **sync source**, not a runtime
+dependency: clone it into \`.workspace/\` on demand — to pull hook/dependency updates, or
+when a brief tasks you with agent-tooling itself — then run
+\`.workspace/agent-tooling/sync-agent-tooling.sh --role ${ROLE}\` (keeps the resident set
+byte-identical to source). Task repos are likewise cloned into \`.workspace/\` per brief
+and deleted after PR merge.
 
 ## Hook set (role: ${ROLE})
 
@@ -322,7 +357,7 @@ home_repo: ${REPO_NAME}
 role_class: agenticflows/roles/${ROLE}/
 repos:
   - name: agent-tooling
-    purpose: always-present — hooks and primitives source
+    purpose: canonical sync source for sync-agent-tooling.sh — cloned to .workspace/ on demand; not required at runtime (self-contained)
   # FILL IN — add task repos here
 task_filter: "${TASK_FILTER}"
 workspace: ${REPO_NAME}
@@ -330,11 +365,13 @@ IDENTITY
 
 # --- Workspace file ---
 
+# Committed default: the self-contained home repo folder alone. agent-tooling and task
+# repos are added under .workspace/ (and here as folders) on demand per brief — agent-tooling
+# is the sync source, not a permanent fixture (PROJ-039/T-011 C2-v2.1b).
 cat > "${TARGET_DIR}/${REPO_NAME}.code-workspace" <<WORKSPACE
 {
   "folders": [
-    { "name": "${REPO_NAME}", "path": "." },
-    { "name": "agent-tooling", "path": ".workspace/agent-tooling" }
+    { "name": "${REPO_NAME}", "path": "." }
   ],
   "settings": {}
 }

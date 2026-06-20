@@ -1,0 +1,26 @@
+# home-runtime-lib.manifest — the lib/ modules a self-contained agent home repo
+# needs at runtime (PROJ-039/T-011 C2-v2.1b).
+#
+# This is the transitive import closure of the SHIPPED home-repo hook set's
+# Python entry points — append-session-stop.py (Stop tasking) and
+# subagent-stop.py (SubagentStop). The shell hooks import nothing from lib/.
+# scaffold.sh and sync-agent-tooling.sh copy ONLY these modules into a home
+# repo's .claude/lib/ — NOT the whole 26-module agent-tooling lib/, which carries
+# workstation/Hermes-only code (decay detector, one-shots, harnesses, reporting)
+# that never runs inside a home repo.
+#
+# This list is enforced, not decorative: tests/proj039/test_home_runtime_lib_closure.py
+# recomputes the closure from the shipped hooks and FAILS if it drifts from this
+# manifest (a missing dependency, or a re-bloat module that nothing references).
+# If you add/remove a lib import in a shipped hook, update this manifest and the
+# test will confirm it matches.
+#
+# Format: one path per line, relative to agent-tooling/lib/. Blank lines and
+# lines starting with '#' are ignored.
+
+__init__.py
+jsonl_scrape.py
+qdrant_http.py
+session_metadata.py
+session_substrate.py
+work_items_extract.py
