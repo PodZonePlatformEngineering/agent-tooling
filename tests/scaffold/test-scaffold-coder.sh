@@ -45,7 +45,25 @@ assert "no stub task-event.sh"     "$([ ! -f "${HOOKS_DIR}/task-event.sh" ] && e
 # 3b. Resident deps + self-containment
 assert ".claude/primitives/ resident" "$([ -d "${TARGET}/.claude/primitives" ] && echo ok || echo fail)"
 assert ".claude/lib/ resident"        "$([ -d "${TARGET}/.claude/lib" ] && echo ok || echo fail)"
-assert "byte-identical lib vs source" "$(diff -rq -x __pycache__ -x '*.pyc' "${AGENT_TOOLING_DIR}/lib" "${TARGET}/.claude/lib" >/dev/null 2>&1 && echo ok || echo fail)"
+
+# Resident lib is the slim runtime closure (home-runtime-lib.manifest), NOT the
+# whole agent-tooling lib/ (PROJ-039/T-011 C2-v2.1b). Assert each manifest module
+# is byte-identical to source, that the home repo carries no out-of-closure module,
+# and the canonical over-copy (decay/) is absent.
+LIB_MANIFEST="${AGENT_TOOLING_DIR}/hooks/home-runtime-lib.manifest"
+LIB_OK=ok
+while IFS= read -r line; do
+  entry="${line%%#*}"; entry="${entry//[[:space:]]/}"
+  [[ -z "$entry" ]] && continue
+  diff -q "${AGENT_TOOLING_DIR}/lib/${entry}" "${TARGET}/.claude/lib/${entry}" >/dev/null 2>&1 || LIB_OK=fail
+done < "$LIB_MANIFEST"
+assert "lib closure byte-identical to source" "$LIB_OK"
+# No file under .claude/lib outside the manifest set.
+EXTRA="$(comm -23 \
+  <(find "${TARGET}/.claude/lib" -type f ! -path '*__pycache__*' | sed "s|${TARGET}/.claude/lib/||" | sort) \
+  <(grep -vE '^\s*(#|$)' "$LIB_MANIFEST" | sed 's/#.*//; s/[[:space:]]//g' | sort))"
+assert "no out-of-closure lib modules" "$([ -z "$EXTRA" ] && echo ok || echo fail)"
+assert "no decay/ over-copy"           "$([ ! -e "${TARGET}/.claude/lib/decay" ] && echo ok || echo fail)"
 
 # 4. settings.json: valid grouped JSON with substrate + SubagentStop
 assert "settings.json valid JSON"       "$(python3 -c 'import json;json.load(open("'"$SETTINGS"'"))' 2>/dev/null && echo ok || echo fail)"
