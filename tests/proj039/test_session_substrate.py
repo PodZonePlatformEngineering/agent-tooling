@@ -191,6 +191,114 @@ class TestRollup(unittest.TestCase):
             Path(path).unlink()
 
 
+class RecordingEmbed:
+    """Stand-in for ``embed_text`` that records each input it was handed and
+    returns a fixed 768-dim vector — lets a test assert the embed *input* was
+    bounded while the stored payload keeps the full text."""
+
+    def __init__(self, dim: int = session_substrate.EMBED_DIM) -> None:
+        self.dim = dim
+        self.inputs: list[str] = []
+
+    def __call__(self, text, *a, **k):
+        self.inputs.append(text)
+        return [0.0] * self.dim
+
+
+def _over_limit_brief() -> str:
+    """A brief comfortably past nomic-embed-text's ~2048-token limit.
+
+    Distinct, signal-bearing head (title/scope/acceptance) followed by enough
+    body that even the conservative 3-chars/token estimate clears 2048 tokens —
+    the regression condition T-027 fixes (the real failure was a 7275-char brief).
+    """
+    head = (
+        "# PROJ-039/T-999 — Over-limit brief fixture\n\n"
+        "## Scope\nHead-of-brief signal that must survive into the embed input.\n\n"
+        "## Acceptance\n- authors without an HTTP 500\n\n## Body\n"
+    )
+    body = ("Lorem ipsum dolor sit amet, consectetur adipiscing elit. " * 200)
+    text = head + body
+    # guard the fixture itself: must exceed the budget (and thus ~2048 tokens)
+    assert len(text) > session_substrate._EMBED_CHAR_BUDGET
+    return text
+
+
+class TestEmbedInputBounding(unittest.TestCase):
+    """T-027 (CC-326): a >2048-token brief/response must author without a 500 —
+    the embed input is bounded, the stored text stays full."""
+
+    def test_large_brief_authors_full_text_stored_embed_bounded(self) -> None:
+        import io
+        from contextlib import redirect_stderr
+
+        brief = _over_limit_brief()
+        rec = RecordingQdrant()
+        embed = RecordingEmbed()
+        captured = {}
+
+        def recorder(method, url, *, payload=None, api_key=None, timeout=None):
+            if method.upper() == "PUT" and url.endswith("/points"):
+                captured["vector"] = payload["points"][0]["vector"]["brief"]
+            return rec(method, url, payload=payload, api_key=api_key, timeout=timeout)
+
+        err = io.StringIO()
+        with patch.object(qdrant_http, "request_json", recorder), \
+             patch.object(session_substrate, "embed_text", embed), \
+             redirect_stderr(err):
+            r = session_substrate.create_session_point(
+                session_id=SESSION_ID, agent="hephaestus",
+                work_item="PROJ-039/T-999", brief_text=brief,
+            )
+
+        self.assertTrue(r["ok"])
+        # a 768-dim brief vector is written (no 500)
+        self.assertEqual(len(captured["vector"]), session_substrate.EMBED_DIM)
+        # embed input was bounded below the budget...
+        self.assertEqual(len(embed.inputs), 1)
+        self.assertLessEqual(
+            len(embed.inputs[0]), session_substrate._EMBED_CHAR_BUDGET
+        )
+        # ...but the FULL brief text is stored in the payload, unchanged
+        self.assertEqual(rec.payload["brief"]["text"], brief)
+        # truncation is announced on stderr, not silent
+        self.assertIn("head-truncated", err.getvalue())
+
+    def test_response_embed_input_bounded_full_text_stored(self) -> None:
+        big_response = "RESPONSE HEAD. " + ("filler tokens here " * 400)
+        self.assertGreater(len(big_response), session_substrate._EMBED_CHAR_BUDGET)
+        rec = RecordingQdrant()
+        embed = RecordingEmbed()
+        with patch.object(qdrant_http, "request_json", rec), \
+             patch.object(session_substrate, "embed_text", embed):
+            session_substrate.upsert_response(SESSION_ID, text=big_response)
+        self.assertEqual(len(embed.inputs), 1)
+        self.assertLessEqual(
+            len(embed.inputs[0]), session_substrate._EMBED_CHAR_BUDGET
+        )
+        # full response text stored unchanged
+        self.assertEqual(rec.payload["response"]["text"], big_response)
+
+    def test_within_budget_text_passes_through_unchanged(self) -> None:
+        import io
+        from contextlib import redirect_stderr
+
+        small = "build the substrate"
+        rec = RecordingQdrant()
+        embed = RecordingEmbed()
+        err = io.StringIO()
+        with patch.object(qdrant_http, "request_json", rec), \
+             patch.object(session_substrate, "embed_text", embed), \
+             redirect_stderr(err):
+            session_substrate.create_session_point(
+                session_id=SESSION_ID, agent="hephaestus",
+                work_item="PROJ-039/T-006", brief_text=small,
+            )
+        # passed through verbatim, no warning
+        self.assertEqual(embed.inputs, [small])
+        self.assertEqual(err.getvalue(), "")
+
+
 class TestFindByWorkItem(unittest.TestCase):
     def test_scroll_filter_shape(self) -> None:
         captured = {}
