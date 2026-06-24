@@ -1,9 +1,13 @@
 # home-runtime-lib.manifest — the lib/ modules a self-contained agent home repo
-# needs at runtime (PROJ-039/T-011 C2-v2.1b).
+# needs at runtime (PROJ-039/T-011 C2-v2.1c).
 #
 # This is the transitive import closure of the SHIPPED home-repo hook set's
-# Python entry points — append-session-stop.py (Stop tasking) and
-# subagent-stop.py (SubagentStop). The shell hooks import nothing from lib/.
+# Python entry points — append-session-stop.py (Stop tasking), subagent-stop.py
+# (SubagentStop), and session-end-finalise.py (SessionEnd: telemetry push →
+# rollup → CST prune → session-finalise). The shell hooks import nothing from
+# lib/. The finalise hook anchors the session-end lifecycle closure
+# (telemetry_repo, cst_cleanup, session_finalise); its omission from the shipped
+# hook set in C2-v2.1b is what dropped those three from this manifest (C2-v2.1c).
 # scaffold.sh and sync-agent-tooling.sh copy ONLY these modules into a home
 # repo's .claude/lib/ — NOT the whole 26-module agent-tooling lib/, which carries
 # workstation/Hermes-only code (decay detector, one-shots, harnesses, reporting)
@@ -24,3 +28,6 @@ qdrant_http.py
 session_metadata.py
 session_substrate.py
 work_items_extract.py
+telemetry_repo.py
+cst_cleanup.py
+session_finalise.py

@@ -84,7 +84,10 @@ echo "==> Scaffolding ${REPO_NAME} (role: ${ROLE}) → ${TARGET_DIR}"
 # Real PROJ-039 substrate working set (template v2.1) — kept byte-identical with
 # sync-agent-tooling.sh's role_hooks. Universal substrate emits session telemetry
 # + tasking for every role; subagent-spawning roles add the SubagentStop chain.
-SUBSTRATE_BASE="session-start.sh user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py"
+# session-end-finalise.py (SessionEnd) anchors the self-contained session-end
+# lifecycle — telemetry push → rollup → CST prune → session-finalise — and is
+# universal (every role finalises). PROJ-039/T-011 C2-v2.1c.
+SUBSTRATE_BASE="session-start.sh user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py session-end-finalise.py"
 role_hooks() {
   case "$1" in
     team-lead)        echo "${SUBSTRATE_BASE}" ;;
@@ -154,6 +157,9 @@ role_settings_json() {
     ],
     "Stop": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/stop.sh" } ] }
+    ],
+    "SessionEnd": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 .claude/hooks/session-end-finalise.py" } ] }
     ]${subagent_stop}
   }
 }
@@ -298,6 +304,7 @@ and deleted after PR merge.
 | PostToolUse | \`post-tool-use.sh\` | Record tool-result telemetry |
 | PostCompact | \`post-compact.sh\` | Record compaction telemetry |
 | Stop | \`stop.sh\` | CST Stop point + session_stop[] tasking append |
+| SessionEnd | \`session-end-finalise.py\` | Telemetry push → rollup → CST prune (post-push) → session-finalise |
 ${EXTRA_HOOK_ROWS}
 
 ## Constraints
