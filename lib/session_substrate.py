@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.request
 import uuid
 from datetime import datetime, timezone
@@ -35,6 +36,52 @@ COLLECTION = "session_substrate"
 
 EMBED_MODEL = "nomic-embed-text"
 EMBED_DIM = 768
+
+# --------------------------------------------------------------------------- #
+# Embed input bounding (PROJ-039/T-027 / CC-326)
+# --------------------------------------------------------------------------- #
+# nomic-embed-text returns a hard HTTP 500 once its input exceeds the ~2048-token
+# context window (empirically a ~6 KB brief: a 7275-char brief failed where a
+# 5673-char one squeaked through). The brief/response *embed inputs* are
+# unbounded user/agent text, so a large brief silently 500s and its `brief`
+# vector is lost — DT-001 semantic recall degrades on exactly the briefs most
+# worth recalling. We bound the embed *input* (never the stored text) to a safe
+# budget below that ceiling.
+#
+# Strategy: **head-truncate** (the MVP-acceptable choice in T-027). A brief's
+# load-bearing content — title, summary, scope, acceptance — sits at the top, so
+# the head carries the signal a `brief`/`response` vector needs; chunk+mean-pool
+# would add per-chunk embed round-trips and a semantically muddier pooled vector
+# for marginal gain on a dispatch-time path. We have no stdlib tokenizer, so the
+# token count is *estimated* from characters with a deliberately conservative
+# ratio (dense markdown/code runs ~3 chars/token; prose ~4) — over-counting
+# tokens means we truncate early, the safe direction relative to the 500 cliff.
+EMBED_TOKEN_BUDGET = 1800             # safe headroom below the ~2048 ceiling
+_CHARS_PER_TOKEN = 3                  # conservative (over-counts tokens)
+_EMBED_CHAR_BUDGET = EMBED_TOKEN_BUDGET * _CHARS_PER_TOKEN  # 5400 chars
+
+
+def _bound_embed_input(text: str, *, label: str = "embed") -> str:
+    """Head-truncate ``text`` to a safe embed budget for nomic-embed-text.
+
+    Bounds the *embed input* only — the caller still stores the full, unmodified
+    text in the payload. Returns ``text`` unchanged when within budget; otherwise
+    returns the leading ``_EMBED_CHAR_BUDGET`` characters and emits a one-line
+    stderr warning (naming the char + estimated-token counts) so the degradation
+    is visible rather than silent. See the module-level note for the strategy and
+    why head-truncate is chosen over chunk+mean-pool.
+    """
+    if len(text) <= _EMBED_CHAR_BUDGET:
+        return text
+    est_tokens = len(text) // _CHARS_PER_TOKEN
+    print(
+        f"[session_substrate] {label} embed input bounded: {len(text)} chars "
+        f"(~{est_tokens} est. tokens) head-truncated to {_EMBED_CHAR_BUDGET} "
+        f"chars (~{EMBED_TOKEN_BUDGET}-token budget) to stay under the "
+        f"nomic-embed-text ~2048-token limit; stored text is unchanged.",
+        file=sys.stderr,
+    )
+    return text[:_EMBED_CHAR_BUDGET]
 
 
 def point_id_for(session_id: str) -> str:
@@ -89,10 +136,17 @@ def create_session_point(
     Full-point upsert — creation only. Sets the `brief` named vector from
     ``brief_text``; the `response` vector is added later at session-end via
     update-vectors. Returns ``{"point_id", "ok"}``.
+
+    The *embed input* is head-truncated to a safe token budget
+    (:func:`_bound_embed_input`) so a large brief cannot 500 nomic-embed-text and
+    lose its `brief` vector; the **full** ``brief_text`` is always stored in the
+    payload unchanged.
     """
     pid = point_id_for(session_id)
     dispatch_ts = dispatch_ts or _now_iso()
-    brief_vector = embed_text(brief_text, ollama_host=ollama_host)
+    brief_vector = embed_text(
+        _bound_embed_input(brief_text, label="brief"), ollama_host=ollama_host
+    )
     payload = {
         "point_type": "session",
         "session_id": session_id,
@@ -228,7 +282,11 @@ def upsert_response(
     ollama_host: Optional[str] = None,
 ) -> dict:
     """Write the `response` object (set_payload) + patch the `response` vector
-    (update-vectors). Two partial writes — never a full upsert (§ 2.4 step 1)."""
+    (update-vectors). Two partial writes — never a full upsert (§ 2.4 step 1).
+
+    Like the brief path, the *embed input* for the `response` vector is bounded
+    (:func:`_bound_embed_input`) so a large response cannot 500 nomic-embed-text;
+    the **full** ``text`` is always stored in the payload unchanged."""
     pid = point_id_for(session_id)
     response = {
         "text": text,
@@ -239,7 +297,9 @@ def upsert_response(
     qdrant_http.set_payload(
         {"response": response}, [pid], collection=COLLECTION, api_key=api_key
     )
-    response_vector = embed_text(text, ollama_host=ollama_host)
+    response_vector = embed_text(
+        _bound_embed_input(text, label="response"), ollama_host=ollama_host
+    )
     qdrant_http.update_vectors(
         [{"id": pid, "vector": {"response": response_vector}}],
         collection=COLLECTION,
