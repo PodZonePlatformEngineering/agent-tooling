@@ -57,15 +57,23 @@ def get_qdrant_url(collection: str) -> str:
 
 
 def embed(text: str) -> list[float] | None:
+    # urllib, not requests: the self-contained home-repo runtime is requests-free
+    # (qdrant_http uses urllib; session-start.sh embeds via the curl primitive). A
+    # resident archivist hook must run on the same base python3 with no third-party
+    # deps — PROJ-039/T-011 C2b surfaced that `import requests` here ingested 0 turns
+    # in a self-contained repo where requests is absent.
+    import urllib.request
+    import urllib.error
     try:
-        import requests
-        r = requests.post(
+        data = json.dumps({"model": EMBED_MODEL, "prompt": text[:2000]}).encode("utf-8")
+        req = urllib.request.Request(
             f"{OLLAMA_URL}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text[:2000]},
-            timeout=30,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
         )
-        r.raise_for_status()
-        return r.json()["embedding"]
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))["embedding"]
     except Exception as e:
         print(f"[ingest-transcript] embed error: {e}", file=sys.stderr)
         return None
