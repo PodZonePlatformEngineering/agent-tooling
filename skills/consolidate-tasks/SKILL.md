@@ -106,7 +106,26 @@ ls team/*/outgoing/session-*.md 2>/dev/null
 This covers all current podzoneAgentTeam agents (Hermes, Hephaestus, Atlas, Thoth) plus
 any fissioned-team stub agents (Clio, Alex, Norma, Eben) whose stubs land here.
 
-List the files found. If none, print "No pending outbox files." and stop.
+### Step 1a — Migrated home-repo scan (PROJ-039/T-011 C2, T-007)
+
+Agents listed as `status: migrated` in
+`planning/projects/PROJ-032-agent-home-repos/migrated-agents.md` no longer write
+`team/{agent}/outgoing/` — their session results live in their home repo's `results/`.
+For each migrated agent, scan the home repo instead of (not in addition to) the legacy path:
+
+```bash
+# per migrated agent, from the home-repo clone (origin/main):
+git -C ~/workspace/{home_repo} show origin/main:results/ 2>/dev/null   # list session results
+# or, if a session PR is open on the home repo:
+gh pr list --repo PodZonePlatformEngineering/{home_repo} --search "session:" --json number,title
+```
+
+Treat each `results/session-{date}-{slug}.md` exactly as a legacy outbox file for parsing
+(Step 2 onwards). **Coexistence:** a migrated agent is scanned via its home repo *only* —
+do not double-count any residual `team/{agent}/outgoing/` file for that agent. Agents not
+in the registry are scanned the legacy way, unchanged.
+
+List the files found (legacy + migrated). If none, print "No pending outbox files." and stop.
 
 For each file, note: agent, date, and whether it appears already processed
 (look for a `<!-- consolidated -->` comment at the top).
@@ -283,6 +302,20 @@ For each draft, choose one of three outcomes:
 1. Move the draft to `team/hermes/incoming/rejected/{date}-{slug}.md` with a
    one-paragraph note explaining why. Never silently delete.
 
+**Applied-via-existing-task** — work already complete or absorbed:
+1. Trigger: draft header carries `<!-- applied YYYY-MM-DD —` marker, OR the draft's
+   proposed work is already complete on the tasklist (✅) at consolidation time.
+2. Move the draft to `team/hermes/incoming/applied/{date}-{slug}.md` (create the
+   `applied/` subfolder if missing). Preserve the file untouched for the audit
+   trail — do not strip headers or edit content.
+3. Note the disposition in the Step 8 report under `Drafts reconciled` with
+   reason `→ applied (already complete)`.
+
+**The `applied/` and `rejected/` subfolders MUST be excluded from the drafts scan**
+in this step and from `/session-start` outbox reconciliation. The `ls` glob above
+targets `incoming/drafts/*.md` directly (not recursive), so the subfolders are
+naturally excluded — but any future change must preserve that exclusion.
+
 ### Mark source outboxes reconciled
 
 For each outbox file that produced a draft, add `<!-- drafts reconciled YYYY-MM-DD -->`
@@ -315,6 +348,33 @@ For each completed/started/blocked task:
 - If a task cannot be found by slug, flag it — do not guess
 - Do not delete tasks
 
+## Step 3b — STATUS.md `### Martin` block reaper
+
+Before rewriting STATUS.md, sweep the existing `### Martin` block for stale items
+where the underlying artefact is now resolved. Verify each line that names a
+checkable artefact and strip the resolved ones.
+
+Apply this table:
+
+| Reference pattern | Verification command | Action if resolved |
+|---|---|---|
+| `{repo}#{n}` PR ref | `gh pr view {n} -R PodZonePlatformEngineering/{repo} --json state` | Strip line if `state` is `MERGED` or `CLOSED` |
+| `v{x.y.z}` tag ref | `gh release view {tag} -R PodZonePlatformEngineering/{repo}` (fallback: `git tag -l {tag}` in the repo) | Strip line if the tag exists in the PPE repo |
+| `transfer repos to ... org` (PROJ-028 close-out) | `gh repo list PodZonePlatformEngineering --limit 50` | Strip line if expected repo present |
+| Free-text decision (e.g. "Option A or B") | No automated check | Leave as-is; if older than 30 days, surface for explicit triage in the Step 8 report |
+
+**Failure handling:** `gh pr view` on a missing PR number returns non-zero — treat
+"not found" as a strip-and-log condition (the PR ref was likely typo'd or the repo
+was renamed; either way the item is no longer actionable).
+
+**Verbosity:** Make the reaper output verbose for the first 3 consolidation runs
+so misfires are visible. Surface every strip in the Step 8 report with the
+artefact age (e.g. "merged 41 d ago"). Silence after the protocol is stable.
+
+**Apex-only:** This step runs in full mode (Hermes consolidating podzoneAgentTeam).
+Fissioned teams typically have no `### Martin` block in their own STATUS.md — if
+the block is absent in local mode, skip this step silently.
+
 ## Step 4 — Update STATUS.md
 
 Rewrite `planning/STATUS.md` incorporating decisions and blocker changes from all
@@ -325,11 +385,64 @@ processed outbox files. Follow session-end STATUS.md format rules.
 Add `<!-- consolidated YYYY-MM-DD -->` as the first line of each processed file
 to prevent double-processing in future passes.
 
-## Step 6 — Report
+## Step 7 — Refresh sessions collection (gap-fill)
+
+After outbox files are marked processed, refresh the cloud Qdrant `sessions`
+collection so the Team Lead has current per-workspace usage data when writing
+the consolidation report.
+
+Run the existing backfill walker — it is idempotent and applies the §D6 status
+rules automatically (`in_progress` < 30 min, `idle` < 6 h, `ended` else):
+
+```bash
+python3 ~/workspace/agent-tooling/tools/backfill-sessions.py 2>&1 | tee /tmp/gapfill-output.txt
+```
+
+Capture the output's top-line summary for the Step 8 report. Specifically:
+
+- Total `Upserted` count
+- Per-workspace token totals (raw counts, no dollar values — Phase 1)
+- Any multi-agent attribution warnings
+
+If `backfill-sessions.py` is not on disk (agent-tooling not present): skip
+silently and note in Step 8 that the `sessions` collection was not refreshed
+this pass.
+
+Sessions whose JSONL mtime is > 6 h old will transition to `status: ended`
+on this run if they were still flagged `in_progress` from the Stop hook
+(window-close case — the gap this step closes).
+
+## Step 7b — Generate usage summary
+
+After the gap-fill, render a 7-day usage summary so the consolidation report
+carries current workspace/model/outlier figures. Step 0 of the tool runs a
+zombie-cleanup pass against the `sessions` collection (pre-T-005 heartbeat-only
+points missing `data_source`) — leave it on.
+
+```bash
+python3 ~/workspace/agent-tooling/tools/usage-report.py --days 7 2>&1 | tee /tmp/usage-report-output.txt
+```
+
+Capture the 6-line digest from stdout for the Step 8 report. The markdown
+file is written to `team/hermes/outgoing/usage-reports/{today}-usage-summary.md`
+(same-day overwrite — last consolidation of the day wins).
+
+If `usage-report.py` is not on disk or Qdrant is unreachable: skip silently
+and note in Step 8 that no usage summary was generated this pass.
+
+## Step 8 — Report
 
 ```
 Sessions registry: N in-flight, N concluded, N cleaned-up
   ⚠️  Lost session (no outbox): {session-id}   ← if applicable
+
+Sessions refreshed (Step 7):
+  Upserted: {N}  ({M} newly transitioned to status: ended)
+  Per-workspace totals: see /tmp/gapfill-output.txt
+
+Usage summary — last 7 days (Step 7b):
+  {paste the 6-line digest from /tmp/usage-report-output.txt verbatim}
+  Report: team/hermes/outgoing/usage-reports/{today}-usage-summary.md
 
 Consolidated: N files ({agent} {date}, ...)
 
@@ -342,6 +455,11 @@ Drafts reconciled (N):
   {source} → {recipient}: {slug} → promoted as {programme}:{project}:{task-slug}
   {source} → {recipient}: {slug} → merged into existing brief
   {source} → {recipient}: {slug} → rejected ({reason})
+  {source} → {recipient}: {slug} → applied (already complete) — preserved in team/hermes/incoming/applied/
+
+### Martin block reaper (Step 3b):
+  Stripped: {ref} ({state} {YYYY-MM-DD}) — was {N} d old
+  Surfaced for triage: {ref} — {N} d old, no automated check
 
 PRs for Martin approval (N):
   ⬆️  {repo}#{number} — {title} ({agent})

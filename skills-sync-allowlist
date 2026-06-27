@@ -1,0 +1,16 @@
+# skills-sync-allowlist — legitimate per-mirror skill exceptions (PROJ-039/T-034).
+#
+# By default every skill present in agent-tooling/skills/ (the source) must be
+# byte-identical in every mirror (podzoneAgentTeam / trainingTeam / roadmapTeam).
+# If a mirror MUST carry a different copy of a source skill for genuine environment
+# reasons, name it here so sync-skills.sh neither overwrites it nor flags it as drift.
+# This makes the exception EXPLICIT (reviewable in git) rather than silent drift —
+# the failure mode that motivated T-034.
+#
+# Format: one `mirror-basename:skill-name` per line. `#` comments and blank lines
+# are ignored. `mirror-basename` is the repo dir name, e.g.:
+#
+#   trainingTeam:session-end      # trainer-specific close-out flow, intentionally divergent
+#
+# There are currently NO exceptions: all four copies of every source skill are
+# byte-identical. Add an entry only with a one-line reason for the divergence.

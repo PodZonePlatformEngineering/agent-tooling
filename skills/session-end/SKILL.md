@@ -3,102 +3,100 @@ name: session-end
 description: Summarise the session and update the programme status digest
 ---
 
-## Identity Resolution
+Two variant bodies live in this single skill: **build** and **lead**. Resolve
+identity, select the variant, then execute **only that variant's section**.
+Stop after the memory prompt — do not fall through.
 
-Resolve the session identity the same way as session-start (identity file → workspace
-filename → fallback). Use `{operator}:{agent}:{scope}` in the session close header.
+## Identity
 
-## Session Close Summary
+Use the identity already resolved at session-start (operator:agent:scope from the
+briefing header). If session-start was not run this session (e.g. context resumed
+from compaction), fall back to the workspace's `claude.projectInstructions`
+`identity_file:` line — do not run the full 4-step chain.
 
-**Never use raw IDs (PROJ-XXX, T-XXX, PRG-XXX) in output.** Use semantic names throughout.
-See `agenticflows/operations/task-naming.md` for the full mapping table.
+## Variant Selection
 
-Format: `programme:project:task-slug {status-emoji}`
+Select by `task_filter` from the identity file:
 
-For each task, include links to relevant material (task brief, open PRs, spec docs, prior
-session outbox). Use relative paths from the podzoneAgentTeam root or full GitHub URLs.
+| task_filter | Variant |
+|---|---|
+| `Team Lead`, `Hermes` | **lead** (no branch / no PR — Hermes commits to main at `/consolidate-tasks`) |
+| anything else, or fallback | **build** (branch + PR flow — default for Hephaestus, Atlas, Alex, Thoth, etc.) |
 
-Cover:
+---
 
-1. **Completed this session** — shortform + one-line outcome, status to apply in tasklist
-2. **Started, not completed** — shortform + current state + next step
-3. **New blockers** — shortform + blocker description + resolution path
-4. **Decisions made** — for audit trail; one line each
-5. **Questions / escalations for Martin** — if any
-6. **Cross-team handoff** — drafts raised into other agents' inboxes + tasklist edits
-   proposed. See `agenticflows/operations/cross-team-handoff.md`. Always include the
-   `## Tasklist edits made this session` subheading with `(none)` — explicit negative
-   affirmation that this session did not edit `planning/team-tasklist.md` or
-   `planning/STATUS.md` (Hermes-only files).
-7. **Recommended focus next session** — shortform of top 1–2 tasks
+## Variant: build
 
-Example:
+Target: ≤ 705 K tokens, ≤ 8 tool calls. Default for Hephaestus, Atlas, Alex,
+Thoth, and all non-lead agents.
 
-```
-Session close: martin:hephaestus:gitopsapi
+### 1. Compose outbox
 
-Completed
-  gitops-product:gitopsapi:credential-objects-schema ✅ — Pydantic models + K8s CM/Secret storage layer merged
-  PR: MoTTTT/gitopsapi#12 — feat: credential objects schema
-  Brief: team/hephaestus/incoming/2026-03-28-credential-objects.md
+Write `team/{agent}/outgoing/session-YYYY-MM-DD-status.md` using the schema +
+example in [template-outbox.md](template-outbox.md). Use today's date; if a
+file for today already exists, append a `-2` suffix.
 
-Started
-  gitops-product:gitopsapi:cluster-chart-templates 🔄 — values added; PR not yet raised
-  Spec: planning/projects/PROJ-003-gitopsapi-product/spec.md
+Cover: Completed, Started / In Progress, Blockers, Decisions, Questions for
+Martin, Cross-team handoff (Drafts raised / Tasklist edits proposed / Tasklist
+edits made this session), PRs Raised, Recommended Focus Next Session.
 
-Decisions
-  gitops-product:gitopsapi storage: K8s ConfigMaps + Secrets (not SQLite). Confirmed by Martin.
+Use semantic names throughout (`programme:project:task-slug {emoji}`); never
+raw IDs. See `agenticflows/operations/task-naming.md`.
 
-Next session: gitops-product:gitopsapi:cluster-chart-templates (raise PR),
-  then gitops-product:gitopsapi:app-deployment-httproute
-```
+### 2. Branch + PR — home-repo routing
 
-## Session Branch and PR — Home Repo Routing
+Read `home_repo` from the identity YAML.
 
-At session end, read `home_repo` from the agent's identity YAML (resolved via the same
-identity-resolution chain as session-start: identity file → READMEFIRST → workspace filename).
+**Coexistence selector (PROJ-039/T-011 C2, T-005).** If `home_repo` matches
+`home-*` (e.g. `home-podzone-hephaestus`), this agent has **migrated** — use the
+**§ 2-migrated** flow below. Otherwise (`home_repo` ∈ {`podzoneAgentTeam`,
+`trainingTeam`, `roadmapTeam`}) use the legacy **§ 2-legacy** flow. Non-migrated
+agents are unaffected by C2.
 
-### Repo mapping
+#### § 2-migrated — home-repo layout (`home-*`)
 
-| `home_repo` value | Session branch lives in | PR target |
-|---|---|---|
-| `podzoneAgentTeam` | `~/sessions/{session-id}/podzoneAgentTeam` worktree | `PodZonePlatformEngineering/podzoneAgentTeam` main |
-| `trainingTeam` | `~/sessions/{session-id}/trainingTeam` worktree | `PodZonePlatformEngineering/trainingTeam` main |
-| `roadmapTeam` | `~/sessions/{session-id}/roadmapTeam` worktree | `PodZonePlatformEngineering/roadmapTeam` main |
-
-Extend this table as new fissioned teams are stood up. The general rule:
-`home_repo` value → `PodZonePlatformEngineering/{home_repo}`.
-
-### Standard agents (home_repo == podzoneAgentTeam)
-
-Every session runs with a `session/{agent}-{YYYY-MM-DD}-{task-slug}` branch in
-podzoneAgentTeam, created by `launch-session` as a worktree at
-`~/sessions/{session-id}/podzoneAgentTeam`.
-
-After writing your outbox and memory files, commit and push that branch, then raise a PR:
+Session branch lives in the home-repo worktree at `~/sessions/{session-id}/{home_repo}`.
+Results land in `results/`, not `team/{agent}/outgoing/`.
 
 ```bash
-cd ~/sessions/{session-id}/podzoneAgentTeam   # the worktree, NOT the main clone
+cd ~/sessions/{session-id}/{home_repo}   # the home-repo worktree
 
-git add team/{agent}/
+# Write the session result (v2.0 layout) — see .claude/output-format.md
+#   results/session-{YYYY-MM-DD}-{task-slug}.md
+
+git add results/ memory/
 git commit -m "chore: session-close {operator}:{agent}:{scope} {YYYY-MM-DD}"
-git push origin session/{agent}-{YYYY-MM-DD}-{task-slug}
 
-gh pr create \
-  --title "session: {agent} {YYYY-MM-DD} {task-slug}" \
-  --body "Session outbox + memory updates. Ref: {task CC numbers}." \
-  --base main \
-  --repo PodZonePlatformEngineering/podzoneAgentTeam
+if git push origin session/{agent}-{YYYY-MM-DD}-{task-slug}; then
+  gh pr create \
+    --title "session: {agent} {YYYY-MM-DD} {task-slug}" \
+    --body "Session result + memory updates. Ref: {task CC numbers}." \
+    --base main \
+    --repo PodZonePlatformEngineering/{home_repo}
+else
+  # T-005: record the push failure to Qdrant `sessions` so the team lead sees it.
+  python3 ~/workspace/agent-tooling/tools/upsert-current-session.py \
+    --session-id "$CLAUDE_SESSION_ID" --cwd "$PWD" \
+    --data-source session_end_skill --status ended --push-failed || true
+  # Surface the failing files for Martin and DO NOT mark close-out complete.
+fi
 ```
 
-### Fissioned agents (home_repo != podzoneAgentTeam)
+Stage **only** `results/` and `memory/`. Never stage `.workspace/`, `context/`,
+`.claude/settings.local.json`, or any other path. Then continue at § 3 (sanity check).
 
-The session PAT branch (`session/{agent}-{YYYY-MM-DD}-{task-slug}`) lives in the
-**fissioned team repo** worktree, not podzoneAgentTeam. The podzoneAgentTeam folder in
-the session workspace is a plain clone — do not commit or push to it.
+#### § 2-legacy — team-repo layout (not yet migrated)
+
+General rule: `home_repo` value → `PodZonePlatformEngineering/{home_repo}`.
+
+| `home_repo` | PR target |
+|---|---|
+| `podzoneAgentTeam` | `PodZonePlatformEngineering/podzoneAgentTeam` |
+| `trainingTeam` | `PodZonePlatformEngineering/trainingTeam` |
+| `roadmapTeam` | `PodZonePlatformEngineering/roadmapTeam` |
 
 ```bash
-cd ~/sessions/{session-id}/{home_repo}   # the fissioned repo worktree
+cd ~/sessions/{session-id}/{home_repo}   # the worktree, NOT the main clone
 
 git add team/{agent}/
 git commit -m "chore: session-close {operator}:{agent}:{scope} {YYYY-MM-DD}"
@@ -111,197 +109,108 @@ gh pr create \
   --repo PodZonePlatformEngineering/{home_repo}
 ```
 
-Outbox and memory files go to `team/{agent}/outgoing/` and `team/{agent}/memory/` in the
-fissioned repo worktree. This is already correct if the session was launched via `/launch-session`.
+Add the PR reference to `## PRs Raised` in the outbox:
 
-**Cross-team handoff from a fissioned agent:** Raise drafts to
-`team/{recipient}/incoming/drafts/` in your own fissioned repo. If the recipient is on a
-different team (apex or sibling), write the draft file in the plain podzoneAgentTeam clone
-at `~/workspace/podzoneAgentTeam/team/{recipient}/incoming/drafts/{date}-{slug}.md`.
-Hermes picks these up via the fissioned-team draft scan during `/consolidate-tasks`.
-
-**Rules (enforced by the home repo's Team Lead during structural review):**
-- Stage **only** `team/{agent}/` — this is the only permitted path
-- Never stage `planning/`, `specifications/`, `.claude/`, or any other agent's `team/` directory
-- `planning/sessions/active.md` is **Hermes-managed** — do not write, delete, or modify
-  this file. Session registration and cleanup are Hermes responsibilities.
-- Never write files into another agent's `team/{other-agent}/` directory — route cross-agent
-  findings via your own outbox (`team/{agent}/outgoing/`) and address them to the recipient
-- One PR per session — do not combine multiple sessions into one branch
-- If the session produced no home-repo changes (rare), skip the PR; note in outbox
-
-Add the PR reference to `## PRs Raised` in the outbox file:
 ```
 {home_repo}#{number} — session-close {agent} {date}
 ```
 
-The home repo's Team Lead reviews and merges during the next `/consolidate-tasks` pass.
+**Rules (enforced by the home-repo Team Lead during structural review):**
 
-## Agent Status File (do NOT edit team-tasklist.md or STATUS.md)
+- Stage **only** `team/{agent}/`. Never stage `planning/`, `specifications/`,
+  `.claude/`, or any other agent's `team/` directory.
+- `planning/sessions/active.md` is Hermes-managed — do not write, delete, or
+  modify it. Hermes handles session registration/cleanup at `/consolidate-tasks`.
+- Never write into another agent's `team/{other-agent}/`. Route cross-agent
+  findings via your own outbox addressed to the recipient.
+- One PR per session — do not combine multiple sessions on one branch.
+- Cross-team handoff from a fissioned agent: draft goes to
+  `team/{recipient}/incoming/drafts/` in your own fissioned repo. If the
+  recipient is on a different team (apex or sibling), write the draft into the
+  plain podzoneAgentTeam clone at
+  `~/workspace/podzoneAgentTeam/team/{recipient}/incoming/drafts/{date}-{slug}.md`.
+  Hermes picks these up via the fissioned-team draft scan during
+  `/consolidate-tasks`.
 
-Write the session summary to the agent's outbox — do NOT edit `planning/team-tasklist.md`
-or `planning/STATUS.md` directly. Both are shared coordination files written **only by
-Hermes during `/consolidate-tasks`**. Edits on feature branches cause guaranteed merge
-conflicts on PR merge.
+If `git push` fails (e.g. uncommitted/local-only state), surface the failing
+files for Martin and do not mark close-out complete.
 
-File path: `team/{agent}/outgoing/session-YYYY-MM-DD-status.md`
-(use today's date; if a file for today already exists, append a `-2` suffix)
+### 3. Post-push sanity check
 
-The Team Lead (Hermes) reads these outbox files and merges status updates into the tasklist
-and STATUS.md via a consolidation pass.
-
-**Outbox file format:**
-
-```markdown
-# Session Status — {operator}:{agent}:{scope} — YYYY-MM-DD
-
-## Completed
-- {programme}:{project}:{task-slug} ✅ — outcome; suggest status: ✅ Complete in tasklist
-  Brief: team/{agent}/incoming/{date}-{slug}.md
-  PR: {repo}#{number} — {title}
-
-## Started / In Progress
-- {programme}:{project}:{task-slug} 🔄 — current state; next step
-  Spec: planning/projects/{PROJ-XXX}/spec.md
-
-## Blockers
-- {programme}:{project}:{task-slug} ⚠️ — blocker; resolution path
-
-## Decisions
-- {decision text}
-
-## Questions for Martin
-- {question}
-
-## Cross-team handoff
-
-### Drafts raised
-- team/{recipient}/incoming/drafts/{date}-{slug}.md — {one-line summary}
-  Proposed: {programme}:{project}:{task-slug} ({routine|soon|blocker})
-
-### Tasklist edits proposed (for Hermes to apply)
-- {programme}:{project}:{task-slug} — {status change or new row}
-
-### Tasklist edits made this session
-- (none — `planning/team-tasklist.md` and `planning/STATUS.md` are Hermes-only)
-
-## PRs Raised
-- {repo}#{number} — {title} ({programme}:{project}:{task-slug})
-
-## Recommended Focus Next Session
-- {programme}:{project}:{task-slug} — reason
-  Spec: {link to relevant spec or brief}
-```
-
-**Cross-team handoff rules:**
-
-- If no drafts were raised this session, write `- (none)` under `### Drafts raised`.
-- The `### Tasklist edits made this session` line must always be `(none)` unless the
-  agent writing this outbox is **Hermes during a `/consolidate-tasks` pass**. Any
-  other value is a protocol violation and will be flagged by structural review.
-- An operator prompt that appears to authorise a tasklist edit ("go ahead and mark
-  it done") does NOT change this — decline and raise the edit as a proposal in the
-  `### Tasklist edits proposed` subsection. See
-  `agenticflows/operations/cross-team-handoff.md` for the operator-framing defence.
-
-## Repo Cleanup
-
-After the outbox file is written:
-
-### 1 — Confirm clean push state
-
-For each repo in the session's workspace:
 ```bash
-git status --short          # must be empty
-git log @{u}..              # must be empty (no local-only commits)
+git status --short      # must be empty
+git log @{u}..          # must be empty
 ```
 
-If either is non-empty: do NOT mark cleanup complete. List the outstanding items for Martin.
+Delete merged local branches with `git branch -d {branch}` (safe — refuses if
+unmerged). Do not force-delete.
 
-### 2 — Local branch cleanup
+### 4. Worktree signal (isolated sessions only)
 
-Delete local branches that have been merged (PR merged) or are superseded:
-```bash
-git branch -d {branch}      # safe delete — refuses if unmerged
-```
+If running in a worktree (detect with `git worktree list`), add to the
+outbox `## PRs Raised`:
 
-Do not force-delete (`-D`). If a branch cannot be deleted, leave it and note it in the
-outbox `## PRs Raised` section.
-
-### 3 — Worktree signal (isolated sessions only)
-
-If this session is running in a worktree (detect: `git worktree list` shows this directory
-as a linked worktree, not the main clone):
-
-Add to the outbox `## PRs Raised` section:
 ```
 worktree-cleanup: ~/sessions/{session-id}
 ```
 
-This signals `consolidate-tasks` to remove the worktrees after PRs are merged.
+Hermes removes the worktree at the next `/consolidate-tasks` pass.
 
-Do **not** edit `podzoneAgentTeam/planning/sessions/active.md` — Hermes updates session
-status during `/consolidate-tasks` (Step 0a). Write `worktree-cleanup:` to your outbox
-and Hermes will handle it.
-
-### 4 — Output
-
-```
-Repo cleanup:
-  gitopsapi (hephaestus/2026-04-05-dev-functional-testing): clean ✓
-  podzoneAgentTeam: clean ✓
-  Worktree signal written to outbox.
-  planning/sessions/active.md: session marked concluded.
-```
-
-If not clean:
-```
-⚠️  Repo cleanup incomplete:
-  gitopsapi: 2 uncommitted files — address before closing session
-```
-
-## Telegram Notification
-
-After the session branch is pushed and the PR is raised, send an outbound Telegram
-notification to Martin via `.claude/hooks/telegram-notify.py`.
-
-This is best-effort — if `TELEGRAM_CHAT_ID` is not set or secretctl is unavailable,
-log a warning and continue. Do not fail the session-end flow.
-
-### Session concluded (always)
+### 5. Upsert session usage to Qdrant
 
 ```bash
-python .claude/hooks/telegram-notify.py "✅ {agent} session done — {task-slug}. PR: {pr_url}"
+python3 ~/workspace/agent-tooling/tools/upsert-current-session.py \
+  --session-id "$CLAUDE_SESSION_ID" --cwd "$PWD" \
+  --data-source session_end_skill --status ended || true
 ```
 
-Omit the `PR: {pr_url}` part if no PR was raised this session.
+Schema: `agent-tooling/docs/sessions-schema.md`. Best-effort — if
+`agent-tooling` isn't on disk, `$CLAUDE_SESSION_ID` isn't set, or Qdrant
+isn't reachable, the script logs to stderr and exits 0.
 
-### Blocker surfaced (if ## Blockers in outbox is non-empty)
+### 6. Telegram
+
+Telegram notification is sent automatically by the `SessionEnd` hook
+(`.claude/hooks/ingest-transcript.py` → `telegram-notify.py`). **Do not call
+`telegram-notify.py` from this skill body.** If `TELEGRAM_CHAT_ID` is unset,
+the hook logs a warning and skips silently.
+
+### 7. Memory prompt
+
+Ask: "Any decisions or context worth committing to `team/{agent}/memory/`?"
+If yes, write the memory file and update `team/{agent}/memory/MEMORY.md` index.
+
+**Stop here.** Do not execute the lead variant.
+
+---
+
+## Variant: lead
+
+Target: ≤ 1.0 M tokens. For Hermes and fissioned Team Leads. **No branch / no
+PR** — Hermes commits to main during `/consolidate-tasks`; recording the same
+content as a feature-branch PR is duplicate work.
+
+### 1. Compose outbox
+
+Write `team/{agent}/outgoing/session-YYYY-MM-DD-status.md` using the schema +
+example in [template-outbox.md](template-outbox.md). Same content as the build
+variant. Note in the outbox that the session's substantive commits land at the
+next `/consolidate-tasks`.
+
+### 2. Upsert session usage to Qdrant
 
 ```bash
-python .claude/hooks/telegram-notify.py "⚠️ {agent} session ended with blocker: {one-line description}"
+python3 ~/workspace/agent-tooling/tools/upsert-current-session.py \
+  --session-id "$CLAUDE_SESSION_ID" --cwd "$PWD" \
+  --data-source session_end_skill --status ended || true
 ```
 
-Send the blocker notification **instead of** the session-concluded message when the
-session ends with an unresolved blocker.
+### 3. Telegram
 
-### Note on automated notifications
+Same as build variant — the `SessionEnd` hook handles it. Do not call
+`telegram-notify.py` from this skill body.
 
-The `SessionEnd` hook (`ingest-transcript.py`) also calls `telegram-notify.py`
-automatically for session-concluded events. The skill step above is the **primary**
-notification path because it has PR URL context; the hook fires as a fallback if the
-session ends without `/session-end` being called explicitly.
-
-### Setup (one-time, if not already done)
-
-If `TELEGRAM_CHAT_ID` is not yet set:
-
-1. Start a conversation with `@podzone_cloud_bot` in Telegram.
-2. Run: `secretctl run -k podzone_cloud_bot_token -- python3 -c "import os,requests; print(requests.get('https://api.telegram.org/bot'+os.environ['PODZONE_CLOUD_BOT_TOKEN']+'/getUpdates').json())"`
-3. Copy the `chat.id` from the response.
-4. Add to `.claude/settings.json` under `"env"`: `"TELEGRAM_CHAT_ID": "<id>"`
-
-## Memory Prompt
+### 4. Memory prompt
 
 Ask: "Any decisions or context worth committing to `team/{agent}/memory/`?"
 If yes, write the memory file and update `team/{agent}/memory/MEMORY.md` index.

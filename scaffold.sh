@@ -146,8 +146,20 @@ role_settings_json() {
     session_end_ingest=', { "type": "command", "command": "bash .claude/hooks/ingest-transcript.sh" }'
   fi
 
+  # Telemetry + finalise env (PROJ-039/T-032). Non-secret config only — the
+  # agent-telemetry remote the SessionEnd finalise pushes the session JSONL to
+  # (R-015 keystone), and the apex repo for the non-migrated finalise path. Secrets
+  # (PODZONE_QDRANT_APIKEY) are NEVER embedded here — they ride from the workstation
+  # apex env block (~/.claude/settings.json) per the T-016 pattern. Migrated home
+  # repos defer steps 6-7 to Hermes /consolidate-tasks + the /session-end skill, so
+  # PODZONEAGENTTEAM_REPO is inert for them but documents the apex path for the
+  # non-migrated path and any future use.
   cat <<SETTINGS
 {
+  "env": {
+    "PODZONE_TELEMETRY_REMOTE": "https://github.com/PodZonePlatformEngineering/agent-telemetry.git",
+    "PODZONEAGENTTEAM_REPO": "${HOME}/workspace/podzoneAgentTeam"
+  },
   "hooks": {
     "SessionStart": [
       { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash .claude/hooks/session-start.sh" } ] }
@@ -401,6 +413,25 @@ WORKSPACE
 cat > "${TARGET_DIR}/memory/MEMORY.md" <<MEMINDEX
 # Memory Index
 MEMINDEX
+
+# --- Telemetry backstop bootstrap (PROJ-039/T-032) ---
+# Best-effort: init the agent-telemetry repo the SessionEnd finalise pushes to
+# (R-015 keystone) so a freshly scaffolded home repo can push from its first session.
+# Idempotent — no-op if already a repo. Never fails the scaffold (the hook also
+# self-heals lazily). Skipped under --no-telemetry-bootstrap or when python can't
+# import the lib.
+
+if [[ "${NO_TELEMETRY_BOOTSTRAP:-0}" != "1" ]]; then
+  TELEMETRY_REMOTE="https://github.com/PodZonePlatformEngineering/agent-telemetry.git"
+  echo "==> Bootstrapping telemetry backstop (best-effort)..."
+  AGENT_TOOLING_DIR="$AGENT_TOOLING_DIR" TELEMETRY_REMOTE="$TELEMETRY_REMOTE" python3 - <<'PYBOOT' 2>/dev/null || echo "    (telemetry bootstrap skipped — hook will self-heal on first session-end)"
+import os, sys
+sys.path.insert(0, os.environ["AGENT_TOOLING_DIR"])
+from lib import telemetry_repo
+res = telemetry_repo.ensure_repo(remote=os.environ["TELEMETRY_REMOTE"])
+print(f"    telemetry repo: {res['repo_dir']} (initialised={res['initialised']}, origin set)")
+PYBOOT
+fi
 
 # --- Summary ---
 

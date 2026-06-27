@@ -3,8 +3,9 @@ name: session-start
 description: Load programme context and orient for this session
 ---
 
-Read `planning/STATUS.md` for the current programme digest, and `planning/team-tasklist.md`
-for any detail needed on active tasks.
+Three variant bodies live in this single skill: **build**, **archivist**, **lead**.
+Resolve identity first, then select the variant, then execute **only that variant's
+section**. Stop after rendering — do not fall through into the other variants.
 
 ## Identity Resolution
 
@@ -35,6 +36,73 @@ Print scope line at the top of the briefing:
 If an identity file was found, also print the `home_repo` (if set) as the primary working
 directory hint.
 
+## Variant Selection
+
+Select the variant by `task_filter` from the identity file:
+
+| task_filter | Variant |
+|---|---|
+| `Team Lead`, `Hermes` | **lead** (full briefing — sections below from Task Filtering onwards) |
+| `Archivist`, `Thoth` | **archivist** |
+| anything else, or fallback (no identity file resolved) | **build** (default for Hephaestus, Atlas, Alex, etc. — fallback defaults to **lead** instead, see below) |
+
+**Fallback rule:** if identity resolution fell through all four steps (no
+identity file, no READMEFIRST match, no workspace filename match), default to
+**lead** — surfaces more, not less.
+
+Execute only the selected variant's body. Stop after rendering.
+
+---
+
+## Variant: build
+
+Target: ≤ 225 K tokens, ≤ 4 tool calls, ≤ 8 lines of output. A build agent
+needs identity, the brief, and clean repo state — nothing else.
+
+1. **Read the brief** at `team/{agent}/incoming/{latest-by-mtime}.md`
+   (or the path passed via env var `CLAUDE_BRIEF` if set by `/launch-session`).
+2. **Check repo state** with `git status --short` of the home repo only.
+3. **Render the briefing** in this exact format:
+
+   ```
+   Session: {operator}:{agent}:{scope-from-brief-or-identity}
+   Brief: team/{agent}/incoming/{brief-filename}.md
+   Repo: {home_repo} ({branch}) — {clean | N dirty files}
+   Acceptance criteria: {first bullet from brief's "Acceptance criteria" section}
+
+   Recommended action: {one-line, from brief's "Scope" section}
+   ```
+
+Do not read `STATUS.md`. Do not read `planning/team-tasklist.md`. Do not run
+outbox reconciliation. Do not perform multi-repo checks. Do not perform
+semantic-name lookups — the brief filename is the slug.
+
+**Stop here.** Do not execute the archivist or lead variant.
+
+---
+
+## Variant: archivist
+
+Target: ≤ 600 K tokens, ≤ 8 tool calls. Build-variant orientation plus a
+narrow cross-team drafts scan and a single STATUS.md section read.
+
+1. Steps 1–3 of the **build** variant.
+2. `find team/*/incoming/drafts/*.md -mtime -7` — list any drafts addressed
+   to Thoth in the briefing.
+3. Grep STATUS.md for the `### Thoth` section only — do not read the full file.
+
+Do not perform outbox reconciliation across other agents.
+
+**Stop here.** Do not execute the lead variant.
+
+---
+
+## Variant: lead
+
+Read `planning/STATUS.md` for the current programme digest, and
+`planning/team-tasklist.md` for any detail needed on active tasks. Execute
+the sections below in order.
+
 ## Task Filtering
 
 Use `task_filter` from the identity file (or inferred agent name) to filter the tasklist:
@@ -44,6 +112,55 @@ Use `task_filter` from the identity file (or inferred agent name) to filter the 
 - Hermes / Team Lead: show only `Team Lead` and `Hermes` tasks
 - Thoth / Archivist: show only `Archivist` and `Thoth` tasks
 - Fallback (no filter): show all Claude-Code tasks
+
+## `### Martin` block freshness check
+
+Apply this **after** Task Filtering, **before** Task Reporting. Build / archivist
+variants of this skill may skip the check; the lead-variant briefing must run it.
+
+Defends against stale items lingering in `STATUS.md` `### Martin` long after the
+underlying artefact (PR, tag, decision) has been resolved — sibling defence to the
+`/consolidate-tasks` reaper (PROJ-035/T-002).
+
+### PR / tag verification
+
+For each line under the `### Martin` heading in `STATUS.md` that contains a PR or
+tag reference, verify via `gh` (best-effort):
+
+- PR-ref pattern: `\b([a-zA-Z0-9-]+)#(\d+)\b` — first capture is repo, second is
+  PR number. Default repo = `PodZonePlatformEngineering/{capture}` unless the
+  line names a full URL.
+- Tag-ref pattern: `\bv\d+\.\d+\.\d+\b` — coupled with a repo named earlier in
+  the same line.
+
+1. Run `gh pr view {n} -R {repo} --json state,mergedAt` (best-effort; if `gh` is
+   not available, skip the check and render the line as-is).
+2. If state ∈ {MERGED, CLOSED}: **omit** the line from the briefing entirely.
+3. If state is OPEN: render the line with `(OPEN since YYYY-MM-DD)` suffix.
+4. If `gh pr view` returns "not found": render the line with a `⚠️ stale?` prefix.
+5. If the verification chain itself fails (e.g. offline): render the line as-is
+   — do not block the briefing on network errors.
+
+### Free-text age rule
+
+For lines that don't carry a verifiable artefact, apply a 30-day-age rule:
+
+- If a `STATUS.md` commit-log search shows the line introduced more than 30 days
+  ago AND not modified since: prefix with `⚠️ stale?`.
+- Otherwise render as-is.
+
+### Cache
+
+Cache `gh pr view` results in `~/.cache/podzone/gh-pr-cache.json` with a 1 h TTL
+so repeated session-starts within an hour don't re-verify. Format:
+`{pr_key: {state, mergedAt, fetched_at}}`. Stale entries (> 1 h) are re-fetched;
+fresh entries hit the cache.
+
+### Performance budget
+
+≤ 1.5 s additional wall-clock per session-start with the cache cold. Graceful
+degradation: with `gh` unavailable or offline, the briefing renders with no
+errors and items are shown as-is.
 
 ## Task Reporting — Semantic Names
 

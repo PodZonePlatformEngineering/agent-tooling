@@ -24,6 +24,36 @@ from pathlib import Path
 from typing import Optional
 
 DEFAULT_REPO = os.path.expanduser("~/.claude/projects")
+DEFAULT_REMOTE_ENV = "PODZONE_TELEMETRY_REMOTE"
+
+# Scope (PROJ-039/T-032): the default telemetry repo IS the workstation-wide Claude
+# session-log dir (``~/.claude/projects``), which also holds the operator's unrelated
+# personal/other-project transcripts. The agent-telemetry backstop must carry only
+# *agent* session transcripts, so ensure_repo lays down a .gitignore that ignores
+# everything and re-includes only the agent session dirs. ``~/.claude/projects`` is
+# flat (one dir per cwd, slug = cwd path with ``/`` -> ``-``), so a top-level allowlist
+# is sufficient. Agent sessions always run under ``~/sessions/`` (launch-session
+# worktrees) or the resident agent clones under ``~/workspace`` (home-* repos + the
+# team repos + agent-tooling). Everything else (personal code, cluster-repos, academy…)
+# stays ignored and never leaves the workstation.
+def _scope_patterns(home: Optional[str] = None) -> list[str]:
+    home = home or os.path.expanduser("~")
+    # Claude encodes the cwd's absolute path into the dir name by replacing every
+    # "/" with "-", so the leading "/" becomes a LEADING "-": /Users/x -> -Users-x.
+    pfx = home.replace("/", "-")  # e.g. -Users-martincolley
+    return [
+        "# agent-telemetry scope (PROJ-039/T-032): track AGENT session transcripts only.",
+        "# Ignore everything, then re-include the agent session dirs. Personal/other-",
+        "# project transcripts stay out of the backstop.",
+        "/*",
+        "!/.gitignore",
+        f"!{pfx}-sessions-*/",            # launch-session worktrees (all agents)
+        f"!{pfx}-workspace-home-*/",      # resident migrated home repos
+        f"!{pfx}-workspace-podzoneAgentTeam/",
+        f"!{pfx}-workspace-trainingTeam/",
+        f"!{pfx}-workspace-roadmapTeam/",
+        f"!{pfx}-workspace-agent-tooling/",
+    ]
 
 
 def _git(repo_dir: str, *args: str, check: bool = True,
@@ -38,27 +68,57 @@ def resolve_repo_dir(repo_dir: Optional[str] = None) -> str:
     return repo_dir or os.environ.get("PODZONE_TELEMETRY_REPO") or DEFAULT_REPO
 
 
+def resolve_remote(remote: Optional[str] = None) -> Optional[str]:
+    return remote or os.environ.get(DEFAULT_REMOTE_ENV) or None
+
+
+def write_scope_gitignore(repo_dir: str, *, force: bool = False) -> bool:
+    """Write the agent-session scope .gitignore into ``repo_dir`` (default repo only).
+
+    Returns True if (re)written. Never overwrites an existing .gitignore unless
+    ``force`` — an operator may have customised the scope. Only applied when
+    ``repo_dir`` is the default ``~/.claude/projects`` (a custom, already-scoped
+    telemetry dir is left untouched).
+    """
+    if os.path.realpath(repo_dir) != os.path.realpath(DEFAULT_REPO):
+        return False
+    gi = Path(repo_dir) / ".gitignore"
+    if gi.exists() and not force:
+        return False
+    gi.write_text("\n".join(_scope_patterns()) + "\n", encoding="utf-8")
+    return True
+
+
 def ensure_repo(repo_dir: Optional[str] = None, *, remote: Optional[str] = None,
                 branch: str = "main") -> dict:
     """Ensure ``repo_dir`` is a git repo on ``branch`` with ``remote`` as origin.
 
-    Idempotent. Returns ``{"repo_dir", "initialised", "ok"}``. Never raises for
-    an already-correct repo; a genuine git failure propagates.
+    Bootstraps the agent-telemetry backstop (PROJ-039/T-032): inits the repo if
+    absent, lays down the agent-session scope .gitignore (default repo only), and
+    wires ``origin`` to ``remote`` (resolved from ``PODZONE_TELEMETRY_REMOTE`` if not
+    passed). Idempotent — safe to call lazily on every session-end (self-heal for
+    existing repos) and at scaffold time (new home repos). Returns
+    ``{"repo_dir", "initialised", "remote", "ok"}``. Never raises for an
+    already-correct repo; a genuine git failure propagates.
     """
     repo_dir = resolve_repo_dir(repo_dir)
+    remote = resolve_remote(remote)
     Path(repo_dir).mkdir(parents=True, exist_ok=True)
     initialised = False
     if not (Path(repo_dir) / ".git").exists():
         _git(repo_dir, "init")
         _git(repo_dir, "checkout", "-B", branch, check=False)
         initialised = True
+    # Scope BEFORE any add/commit so personal transcripts are never staged.
+    write_scope_gitignore(repo_dir)
     if remote:
         existing = _git(repo_dir, "remote", check=False)
         if "origin" not in (existing.stdout or "").split():
             _git(repo_dir, "remote", "add", "origin", remote, check=False)
         else:
             _git(repo_dir, "remote", "set-url", "origin", remote, check=False)
-    return {"repo_dir": repo_dir, "initialised": initialised, "ok": True}
+    return {"repo_dir": repo_dir, "initialised": initialised,
+            "remote": remote or "", "ok": True}
 
 
 def commit_and_push(

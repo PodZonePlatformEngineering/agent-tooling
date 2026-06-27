@@ -104,7 +104,16 @@ def _last_assistant_text(transcript_path: str) -> str:
     return last
 
 
-def finalise_session(session_id: str, transcript_path: str) -> int:
+def _is_migrated(cwd: str) -> bool:
+    """A migrated home-repo session runs under a ``home-*`` repo (the same selector
+    the session-end skill uses). For these, steps 6-7 (apex tasklist/STATUS apply +
+    brief-result PR) are owned elsewhere — see the gate below — so the finalise hook
+    must NOT mutate the apex clone. Detect from the explicit cwd, else CLAUDE_PROJECT_DIR."""
+    base = os.path.basename((cwd or os.environ.get("CLAUDE_PROJECT_DIR", "")).rstrip("/"))
+    return base.startswith("home-")
+
+
+def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> int:
     """Run the ordered finalise for one session. Idempotent + re-runnable.
 
     Records each step in the finalise ledger and marks the session complete on
@@ -172,6 +181,18 @@ def finalise_session(session_id: str, transcript_path: str) -> int:
         from datetime import datetime, timezone
 
         date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        # Lazily bootstrap the backstop so EXISTING home repos self-heal (T-032):
+        # init the repo if absent, lay down the agent-session scope .gitignore, and
+        # wire origin from PODZONE_TELEMETRY_REMOTE. Idempotent + no-op once bootstrapped.
+        remote = telemetry_repo.resolve_remote()
+        ens = telemetry_repo.ensure_repo(remote=remote)
+        if not remote:
+            _log("telemetry: no remote configured (PODZONE_TELEMETRY_REMOTE unset) — "
+                 "commit local-only; push will not land, CST prune stays gated.",
+                 session_id=session_id, level="WARN")
+        elif ens.get("initialised"):
+            _log(f"telemetry: bootstrapped repo at {ens['repo_dir']} (origin={remote})",
+                 session_id=session_id)
         res = telemetry_repo.commit_and_push(session_id, date=date)
         pushed = res.get("pushed", False)
         _log(
@@ -207,10 +228,33 @@ def finalise_session(session_id: str, transcript_path: str) -> int:
         _step("cst_prune", "skipped")
 
     agent_repo = os.environ.get("PODZONEAGENTTEAM_REPO", "")
+    migrated = _is_migrated(cwd)
+
+    # Steps 6-7 are apex-model operations: step 6 edits the apex
+    # planning/team-tasklist.md + STATUS.md in place, and step 7 does `checkout -B`
+    # + PR in `agent_repo`. On a MIGRATED home-repo session, pointing these at the
+    # resident apex clone would dirty it / move it off main — exactly what the
+    # launch-session + consolidate-tasks apex-on-main guards forbid. For migrated
+    # repos the same outcomes are owned elsewhere: tasklist/STATUS consolidation is
+    # Hermes's job at /consolidate-tasks (driven by the session point in Qdrant), and
+    # the brief-result lands in the home repo's results/ via the /session-end skill.
+    # So we DEFER 6-7 here (explicit, reasoned skip — not a silent gap), keeping the
+    # apex clone clean. The env is still wired (PODZONEAGENTTEAM_REPO) so the
+    # non-migrated apex path is unchanged. PROJ-039/T-032.
+    if migrated:
+        reason = ("deferred (migrated): tasklist/STATUS -> Hermes /consolidate-tasks "
+                  "(from session point); brief-result -> /session-end skill (home results/)")
+        _log(f"session-finalise {reason}", session_id=session_id)
+        _step("session_finalise", "skipped")
+        _log(f"brief-result PR {reason}", session_id=session_id)
+        _step("brief_pr", "skipped")
 
     # 6. session-finalise (§ 1.4): apply the 4 per-session consolidation steps
-    #    from the session point (tasklist + STATUS). Idempotent.
-    if agent_repo:
+    #    from the session point (tasklist + STATUS). Idempotent. (Apex model only —
+    #    migrated repos handled above.)
+    if migrated:
+        pass  # already recorded above
+    elif agent_repo:
         try:
             from pathlib import Path as _Path
             from lib import session_substrate, session_finalise
@@ -248,7 +292,9 @@ def finalise_session(session_id: str, transcript_path: str) -> int:
         finalise_ledger is not None
         and finalise_ledger.step_status(session_id, "brief_pr") == "done"
     )
-    if already_done:
+    if migrated:
+        pass  # already recorded above
+    elif already_done:
         _log("brief-result PR skipped: already done (ledger) — no duplicate PR",
              session_id=session_id)
     elif agent_repo:
@@ -347,11 +393,12 @@ def main() -> int:
 
     session_id = data.get("session_id")
     transcript_path = data.get("transcript_path", "")
+    cwd = data.get("cwd", "")
     if not session_id:
         _log("no session_id — nothing to finalise", level="WARN")
         return 0
 
-    return finalise_session(session_id, transcript_path)
+    return finalise_session(session_id, transcript_path, cwd)
 
 
 if __name__ == "__main__":

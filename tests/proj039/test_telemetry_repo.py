@@ -88,5 +88,51 @@ class TestTelemetryRepo(unittest.TestCase):
             self.assertFalse(res["pushed"])  # the gate the deletion checks
 
 
+class TestTelemetryScopeAndRemote(unittest.TestCase):
+    """PROJ-039/T-032: agent-session scope .gitignore + remote resolution."""
+
+    def test_scope_patterns_use_leading_dash_slug(self):
+        # Claude encodes /Users/x -> -Users-x (leading slash becomes a leading dash).
+        pats = telemetry_repo._scope_patterns(home="/Users/martincolley")
+        self.assertIn("/*", pats)
+        self.assertIn("!/.gitignore", pats)
+        self.assertIn("!-Users-martincolley-sessions-*/", pats)
+        self.assertIn("!-Users-martincolley-workspace-home-*/", pats)
+        # no pattern should drop the leading dash (the bug that would track nothing)
+        self.assertFalse(any(p.startswith("!/Users-") for p in pats),
+                         f"leading-dash slug missing in {pats}")
+
+    def test_scope_gitignore_skipped_for_non_default_repo(self):
+        # A custom telemetry dir is assumed already-scoped; ensure_repo must not
+        # drop a ~/.claude/projects-shaped allowlist into it.
+        with tempfile.TemporaryDirectory() as td:
+            r = Path(td) / "custom-telemetry"
+            r.mkdir()
+            wrote = telemetry_repo.write_scope_gitignore(str(r))
+            self.assertFalse(wrote)
+            self.assertFalse((r / ".gitignore").exists())
+
+    def test_resolve_remote_prefers_arg_then_env(self):
+        import os
+        self.assertEqual(telemetry_repo.resolve_remote("git@x:r.git"), "git@x:r.git")
+        old = os.environ.get(telemetry_repo.DEFAULT_REMOTE_ENV)
+        try:
+            os.environ[telemetry_repo.DEFAULT_REMOTE_ENV] = "https://env/remote.git"
+            self.assertEqual(telemetry_repo.resolve_remote(), "https://env/remote.git")
+        finally:
+            if old is None:
+                os.environ.pop(telemetry_repo.DEFAULT_REMOTE_ENV, None)
+            else:
+                os.environ[telemetry_repo.DEFAULT_REMOTE_ENV] = old
+
+    def test_ensure_repo_returns_remote_in_result(self):
+        with tempfile.TemporaryDirectory() as td:
+            r = Path(td) / "t"
+            r.mkdir()
+            res = telemetry_repo.ensure_repo(str(r), remote="git@x:y.git")
+            self.assertEqual(res["remote"], "git@x:y.git")
+            self.assertTrue(res["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()
