@@ -100,13 +100,16 @@ fi
 # session-end-finalise.py (SessionEnd) anchors the self-contained session-end
 # lifecycle — telemetry push → rollup → CST prune → session-finalise — and is
 # universal (every role finalises). PROJ-039/T-011 C2-v2.1c.
-# Kept byte-identical with scaffold.sh's role_hooks + role_settings_json.
+# archivist additionally carries the resident ingest-transcript SessionEnd hook
+# (embed user turns → Qdrant prompt_logs) — home-repo-resident, not workstation
+# -global (PROJ-039/T-011 C2b). Kept byte-identical with scaffold.sh's role_hooks
+# + role_settings_json.
 SUBSTRATE_BASE="session-start.sh user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py session-end-finalise.py"
 role_hooks() {
   case "$1" in
     team-lead)        echo "${SUBSTRATE_BASE}" ;;
     coder)            echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
-    archivist)        echo "${SUBSTRATE_BASE}" ;;
+    archivist)        echo "${SUBSTRATE_BASE} ingest-transcript.sh ingest-transcript.py" ;;
     trainer)          echo "${SUBSTRATE_BASE}" ;;
     cluster-operator) echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
   esac
