@@ -168,7 +168,7 @@ role_settings_json() {
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/stop.sh" } ] }
     ],
     "SessionEnd": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 .claude/hooks/session-end-finalise.py" }${session_end_ingest} ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 .claude/hooks/session-end-finalise.py", "timeout": 600 }${session_end_ingest} ] }
     ]${subagent_stop}
   }
 }

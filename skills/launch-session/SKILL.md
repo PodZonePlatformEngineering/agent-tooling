@@ -267,12 +267,51 @@ git -C ~/workspace/{repo-name} worktree add \
   -b {agent}/{YYYY-MM-DD}-{task-slug}
 ```
 
-If podzoneAgentTeam is in scope (read-only skills/ops doc access), reference the plain
-clone — no worktree, no session branch:
+If podzoneAgentTeam is in scope, decide **read-only vs. write-target** for this session:
 
+- **Read-only** (the common case — skills/ops-doc/identity access only): reference the
+  plain clone — no worktree, no session branch:
+
+  ```
+  podzoneAgentTeam path: ~/workspace/podzoneAgentTeam  (plain clone, read-only)
+  ```
+
+- **Write-target** (the session must commit apex planning artefacts to podzoneAgentTeam —
+  e.g. registry flips in `planning/projects/PROJ-032-agent-home-repos/migrated-agents.md`,
+  reconciliation reports, or an apex outbox): create a **proper podzoneAgentTeam worktree**
+  under the session directory on a `session/…` branch. **NEVER** branch the shared primary
+  clone `~/workspace/podzoneAgentTeam` — doing so leaves the apex clone off `main` and trips
+  the next Hermes consolidation push (the PROJ-039/T-031 / C2b defect: a `session/…` branch
+  was checked out in the primary clone and PR'd from there, #102).
+
+  ```bash
+  git -C ~/workspace/podzoneAgentTeam worktree add \
+    ~/sessions/{session-id}/podzoneAgentTeam \
+    -b session/{agent}-{YYYY-MM-DD}-{task-slug}
+  ```
+
+  The session writes apex artefacts in `~/sessions/{session-id}/podzoneAgentTeam` and PRs
+  from that branch to podzoneAgentTeam `main`. `git worktree add` does not move the primary
+  clone's HEAD, so the apex clone stays on `main`.
+
+#### Apex-clone-on-main guard (migrated write-target)
+
+Whenever a migrated session takes podzoneAgentTeam as a write-target, assert the shared
+primary clone is on `main` **before** creating the worktree and **after** it (and again at
+consolidation). This catches an accidental primary-clone branching before it propagates:
+
+```bash
+APEX_BRANCH=$(git -C ~/workspace/podzoneAgentTeam rev-parse --abbrev-ref HEAD)
+if [ "$APEX_BRANCH" != "main" ]; then
+  echo "ABORT: ~/workspace/podzoneAgentTeam is on '$APEX_BRANCH', expected 'main'." >&2
+  echo "The apex clone must stay on main; session work belongs in a worktree under" >&2
+  echo "~/sessions/{session-id}/podzoneAgentTeam. Restore with:" >&2
+  echo "  git -C ~/workspace/podzoneAgentTeam checkout main" >&2
+  exit 1
+fi
 ```
-podzoneAgentTeam path: ~/workspace/podzoneAgentTeam  (plain clone, read-only)
-```
+
+(`/consolidate-tasks` should run the same guard before its apex push — see that skill.)
 
 **Note — git remote config is not worktree-isolated:** `git remote set-url` modifies
 `.git/config` which is shared across all worktrees of the same repo. URL updates persist
@@ -385,10 +424,14 @@ else
   cp ~/workspace/agent-tooling/hooks/session-materialise.py "$WT/.claude/hooks/"
   chmod +x "$WT/.claude/hooks/session-materialise.py"
 
-  # 2) Exclude the copied hook from git (per-worktree exclude is shared via the main clone)
-  GITDIR=$(git -C "$WT" rev-parse --git-dir)
-  grep -qxF '.claude/hooks/session-materialise.py' "$GITDIR/info/exclude" 2>/dev/null \
-    || echo '.claude/hooks/session-materialise.py' >> "$GITDIR/info/exclude"
+  # 2) Exclude the copied hook from git (per-worktree exclude is shared via the main clone).
+  #    Use `--git-path info/exclude`, NOT `--git-dir`/info/exclude: in a worktree the latter
+  #    resolves to `.git/worktrees/<name>/info/exclude` (no `info/` subdir there) → "No such
+  #    file or directory", which aborts the launch under set -e. `--git-path info/exclude`
+  #    resolves to the shared common `…/.git/info/exclude` in every worktree (PROJ-039/T-031).
+  EXCLUDE=$(git -C "$WT" rev-parse --git-path info/exclude)
+  grep -qxF '.claude/hooks/session-materialise.py' "$EXCLUDE" 2>/dev/null \
+    || echo '.claude/hooks/session-materialise.py' >> "$EXCLUDE"
 
   # 3) Emit the gitignored settings.local.json (SessionStart materialise alongside resident CST)
   cat > "$WT/.claude/settings.local.json" <<'JSON'

@@ -5,12 +5,21 @@
 # Auth: PODZONE_QDRANT_APIKEY
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Best-effort runtime logging (PROJ-039/T-029) — file-only, never stdout (the
+# secret value is this primitive's stdout; logging must not pollute it).
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/log_primitive.sh" 2>/dev/null || true
+command -v log_primitive >/dev/null 2>&1 || log_primitive() { :; }
+
 SECRET_NAME="${1:-}"
 
 if [[ -z "${SECRET_NAME}" ]]; then
   echo "Usage: getSecret.sh <secret-name>" >&2
   exit 1
 fi
+
+log_primitive "getSecret.sh" "lookup secret '${SECRET_NAME}' in collection secrets"
 
 QDRANT_URL="${QDRANT_URL:-${AGENTSONLY_QDRANT_URL:-https://2dd1f0b8-5cf1-4caf-bc96-2b4811251f4c.eu-west-2-0.aws.cloud.qdrant.io}}"
 API_KEY="${PODZONE_QDRANT_APIKEY:?PODZONE_QDRANT_APIKEY not set}"
