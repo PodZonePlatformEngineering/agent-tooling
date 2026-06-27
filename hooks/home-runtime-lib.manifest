@@ -31,3 +31,5 @@ work_items_extract.py
 telemetry_repo.py
 cst_cleanup.py
 session_finalise.py
+runtime_log.py
+finalise_ledger.py

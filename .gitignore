@@ -1,3 +1,9 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Runtime logs (PROJ-039/T-029) — primitives.log / libraries.log / finalise-state.log.
+# Best-effort runtime files written by the logging helpers when exercised here
+# (e.g. tests / a local hook run); never committed.
+logs/
+*.log

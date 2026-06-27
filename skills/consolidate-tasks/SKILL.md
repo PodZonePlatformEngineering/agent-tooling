@@ -40,6 +40,22 @@ gh pr list --repo PodZonePlatformEngineering/podzoneAgentTeam \
 
 For each open session PR:
 
+**Apex-clone-on-main guard (PROJ-039/T-031) — assert BEFORE the push.** A migrated session
+that took podzoneAgentTeam as a write-target should have branched a worktree under
+`~/sessions/{sid}/podzoneAgentTeam`, never the shared primary clone. If the primary clone was
+branched by mistake (the C2b defect, #102), `push origin main` below would push the wrong ref
+or fail. Refuse to push unless the apex clone is on `main`:
+```bash
+APEX_BRANCH=$(git -C ~/workspace/podzoneAgentTeam rev-parse --abbrev-ref HEAD)
+if [ "$APEX_BRANCH" != "main" ]; then
+  echo "ABORT: ~/workspace/podzoneAgentTeam is on '$APEX_BRANCH', expected 'main'." >&2
+  echo "A session branch was checked out in the primary clone (should be a worktree under" >&2
+  echo "~/sessions/{sid}/podzoneAgentTeam). Restore before consolidating:" >&2
+  echo "  git -C ~/workspace/podzoneAgentTeam checkout main" >&2
+  exit 1
+fi
+```
+
 **Push before diff — prevents Hermes unpushed commits appearing as agent changes:**
 ```bash
 # Push any unpushed Hermes commits so gh pr diff uses the correct merge-base

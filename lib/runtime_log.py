@@ -1,0 +1,64 @@
+"""runtime_log.py — best-effort append-only runtime logging for resident
+home-repo Python libs and hooks (PROJ-039/T-029, CC-328).
+
+Writes timestamped, caller-identified lines to ``<project>/logs/libraries.log``.
+A log-write failure NEVER propagates — observability must not break a hook or a
+primitive (the same best-effort contract the SessionEnd finalise lives by).
+
+Stdlib-only by design: home-repo ``python3`` has no ``requests`` (see memory
+``feedback-substrate-hooks-requests-free``); this module imports nothing outside
+the standard library and nothing from ``lib/`` so it stays a leaf of the
+home-runtime-lib closure.
+
+Log line format (one per call)::
+
+    2026-06-27T17:48:03Z [INFO] session_finalise session=<sid>: rollup attached (tools=7)
+
+The log directory is resolved best-effort in priority order:
+  1. ``$PODZONE_LOG_DIR``           — explicit override (tests / odd layouts)
+  2. ``$CLAUDE_PROJECT_DIR``/logs   — the home-repo root Claude Code exports to hooks
+  3. ``<cwd>``/logs                 — fallback (hooks run with cwd = the worktree)
+"""
+
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+LIBRARIES_LOG = "libraries.log"
+
+
+def resolve_log_dir() -> Path:
+    """Best-effort resolution of the runtime ``logs/`` directory (not created here)."""
+    override = os.environ.get("PODZONE_LOG_DIR")
+    if override:
+        return Path(override)
+    project = os.environ.get("CLAUDE_PROJECT_DIR")
+    if project:
+        return Path(project) / "logs"
+    return Path.cwd() / "logs"
+
+
+def _utc_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def log_library(component: str, message: str, *, session_id: str | None = None,
+                level: str = "INFO") -> None:
+    """Append one best-effort line to ``logs/libraries.log``.
+
+    Never raises: any failure (unresolvable dir, unwritable file, encoding) is
+    swallowed so the calling lib/hook is unaffected. ``component`` identifies the
+    caller (e.g. ``"session_finalise"``); ``session_id`` is optional context.
+    """
+    try:
+        log_dir = resolve_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        sid = f" session={session_id}" if session_id else ""
+        line = f"{_utc_stamp()} [{level}] {component}{sid}: {message}\n"
+        with open(log_dir / LIBRARIES_LOG, "a", encoding="utf-8") as fh:
+            fh.write(line)
+    except Exception:
+        # Best-effort: observability must never break the caller (T-029 acceptance).
+        pass

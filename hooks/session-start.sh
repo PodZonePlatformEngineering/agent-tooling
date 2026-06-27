@@ -7,7 +7,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PRIMITIVES="${SCRIPT_DIR}/../primitives"
 COLLECTION="claude_session_telemetry"
 
+# Best-effort runtime logging (PROJ-039/T-029). Sourcing failure must not abort.
+# shellcheck source=/dev/null
+source "${PRIMITIVES}/log_primitive.sh" 2>/dev/null || true
+command -v log_primitive >/dev/null 2>&1 || log_primitive() { :; }
+
 STDIN="$(cat)"
+
+# Unfinalised-session guard (PROJ-039/T-030): before doing anything else, recover
+# any prior session whose SessionEnd finalise was truncated (killed / timed-out
+# mid-sequence). Idempotent + best-effort — never blocks startup.
+log_primitive "session-start.sh" "running unfinalised-session guard"
+# Guard writes only to stderr + logs/libraries.log; nothing on stdout reaches the
+# session context. Best-effort: a guard failure must never block SessionStart.
+python3 "${SCRIPT_DIR}/session-end-finalise.py" --guard </dev/null || true
 
 SESSION_ID="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['session_id'])" "${STDIN}")"
 CWD="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('cwd','.'))" "${STDIN}")"
