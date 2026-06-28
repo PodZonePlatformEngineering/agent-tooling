@@ -14,33 +14,56 @@ Ordered contract realised here — **order is load-bearing** (§ 2.4):
      delete and warn — deletion safety depends on the backstop existing (C-006).
   6. session-finalise (§ 1.4): read the session point and apply the 4 per-session
      consolidation steps (apply to tasklist + update STATUS).
-  7. Brief-result PR (R-011 / MVP-8): generate results/session-{date}-{slug}.md
-     from the session point, commit to the home-team-agent repo, raise a PR.
+  7. Session result + PR: author results/session-{date}-{slug}.md from the session
+     point and raise a PR that lands it on the repo's `main`.
 
-Steps 6-7 are best-effort and require PODZONE_QDRANT_APIKEY + PODZONEAGENTTEAM_REPO
-to be set; they are silently skipped if either is absent.
+Step 6/7 ownership splits by repo kind (the load-bearing T-035 decision):
+  * **Migrated home repo** (cwd basename `home-*`) — hooks-only by design (there is
+    NO `/session-end` skill). Step 6 (apex tasklist/STATUS) is DEFERRED to Hermes
+    `/consolidate-tasks` (driven by the session point in Qdrant); the hook must
+    never branch/commit in the apex clone. Step 7 is OWNED HERE: the hook authors
+    the home-repo result + PR on a branch off home `main`, decoupled from any work
+    PR (`lib.session_finalise.author_home_result`). PROJ-039/T-035.
+  * **Apex model** (non-migrated) — step 6 applies to the apex tasklist/STATUS in
+    PODZONEAGENTTEAM_REPO and step 7 raises the brief-result PR there. Best-effort;
+    skipped if PODZONEAGENTTEAM_REPO is unset.
 
-Robustness (PROJ-039/T-030, CC-329):
+Robustness (PROJ-039/T-030, CC-329 — load-bearing for T-035: the home-repo result
+now rides ENTIRELY on this hook completing):
   * Every step is recorded in a durable **finalise ledger** (`finalise_ledger`)
-    as done/skipped/failed, and the session is marked `complete` only once the
+    as done/skipped/failed (step 7 records its disposition done/exists/
+    deferred-cancelled), and the session is marked `complete` only once the
     sequence reaches the end. A killed/timed-out finalise therefore leaves a
     *detectable partial* (entry present, complete=false).
   * Re-running is a **safe no-op / top-up**: response/rollup/CST steps are
-    idempotent; the one non-idempotent step (`brief_pr`) is skipped when the
-    ledger already records it `done`, so a re-run never raises a duplicate PR.
+    idempotent; the one non-idempotent step (`brief_pr`/result) is skipped when the
+    ledger already records it `done`/`exists`, and the authoring path itself
+    re-checks the base branch + open PRs, so a re-run never duplicates the result.
+  * Result-authoring/PR runs LAST (after the telemetry push) so a timeout/cancel
+    never costs telemetry — the accepted residual gap is that a hook cancelled
+    *before* step 7 leaves the result un-authored; it is then re-derivable at the
+    next session-start guard or by Hermes from the substrate `response`.
   * `--guard` mode (invoked from session-start.sh) scans the ledger for partials
-    from prior sessions and re-runs the finalise for each — the SessionStart
-    recovery the brief calls for. It flags every partial via libraries.log.
+    from prior sessions and re-runs the finalise for each — against the originating
+    repo (persisted `cwd`) — the SessionStart recovery the brief calls for. It caps
+    retries (finalise_ledger.MAX_FINALISE_ATTEMPTS) and flags every partial via
+    libraries.log.
   * Which step a finalise reached is also written to `logs/libraries.log` via
     `runtime_log` (T-029) for post-hoc diagnostics.
+
+Reliability (terminal-launch requirement): migrated sessions launch standalone-
+terminal (`claude --session-id`, T-028) where SessionEnd fires reliably; the
+"sidebar SessionEnd doesn't fire" caveat does NOT bite migrated sessions. They MUST
+be terminal-launched (not the sidebar) for the finalise — and hence the result +
+PR — to fire. The `/launch-session` migrated flow already emits that command.
 
 Best-effort: logs and exits 0 on any failure (a session-end hook must not break
 teardown). Reads stdin JSON: ``session_id``, ``cwd``, ``transcript_path``.
 
-The MVP response.text is derived from the transcript's final assistant turn; the
-rich session-result authoring is the brief-result PR (PR-B / post-MVP). The key
-substrate properties (response present + vector set + brief preserved + rollups
-reconcile) hold regardless of how the text is authored.
+The response.text is derived from the transcript's final assistant turn; the home-
+repo result's structured sections (Completed / Started / Blockers / Decisions /
+Questions for Martin) are extracted from it, so the agent's final `/exit` turn
+should carry those headers for a rich result.
 """
 
 from __future__ import annotations
@@ -130,7 +153,7 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
             finalise_ledger.record_step(session_id, name, status)
 
     if finalise_ledger is not None:
-        finalise_ledger.begin(session_id, transcript_path)
+        finalise_ledger.begin(session_id, transcript_path, cwd)
 
     try:
         from lib import session_substrate
@@ -230,30 +253,27 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
     agent_repo = os.environ.get("PODZONEAGENTTEAM_REPO", "")
     migrated = _is_migrated(cwd)
 
-    # Steps 6-7 are apex-model operations: step 6 edits the apex
-    # planning/team-tasklist.md + STATUS.md in place, and step 7 does `checkout -B`
-    # + PR in `agent_repo`. On a MIGRATED home-repo session, pointing these at the
-    # resident apex clone would dirty it / move it off main — exactly what the
-    # launch-session + consolidate-tasks apex-on-main guards forbid. For migrated
-    # repos the same outcomes are owned elsewhere: tasklist/STATUS consolidation is
-    # Hermes's job at /consolidate-tasks (driven by the session point in Qdrant), and
-    # the brief-result lands in the home repo's results/ via the /session-end skill.
-    # So we DEFER 6-7 here (explicit, reasoned skip — not a silent gap), keeping the
-    # apex clone clean. The env is still wired (PODZONEAGENTTEAM_REPO) so the
-    # non-migrated apex path is unchanged. PROJ-039/T-032.
-    if migrated:
-        reason = ("deferred (migrated): tasklist/STATUS -> Hermes /consolidate-tasks "
-                  "(from session point); brief-result -> /session-end skill (home results/)")
-        _log(f"session-finalise {reason}", session_id=session_id)
-        _step("session_finalise", "skipped")
-        _log(f"brief-result PR {reason}", session_id=session_id)
-        _step("brief_pr", "skipped")
+    # Steps 6-7 split by repo kind. On a MIGRATED home repo (hooks-only, no
+    # `/session-end` skill):
+    #   * Step 6 (apex tasklist/STATUS) stays DEFERRED to Hermes /consolidate-tasks
+    #     (driven by the session point in Qdrant). The hook MUST NOT branch/commit in
+    #     the resident apex clone — that would dirty it / move it off main, exactly
+    #     what the launch-session + consolidate-tasks apex-on-main guards forbid. We
+    #     never reference agent_repo on this path, so the apex clone stays on main,
+    #     untouched (acceptance c).
+    #   * Step 7 is OWNED HERE: the hook authors the home-repo result + PR off home
+    #     `main`, decoupled from any work PR (PROJ-039/T-035). This replaces the old
+    #     deferral to a `/session-end` skill that does not exist in a migrated repo.
+    # The non-migrated apex path (env PODZONEAGENTTEAM_REPO) is unchanged.
+    home_repo = cwd or os.environ.get("CLAUDE_PROJECT_DIR", "")
 
     # 6. session-finalise (§ 1.4): apply the 4 per-session consolidation steps
-    #    from the session point (tasklist + STATUS). Idempotent. (Apex model only —
-    #    migrated repos handled above.)
+    #    from the session point (tasklist + STATUS). Idempotent. (Apex model only.)
     if migrated:
-        pass  # already recorded above
+        _log("session-finalise deferred (migrated): tasklist/STATUS -> Hermes "
+             "/consolidate-tasks (from session point); apex clone untouched",
+             session_id=session_id)
+        _step("session_finalise", "skipped")
     elif agent_repo:
         try:
             from pathlib import Path as _Path
@@ -285,18 +305,51 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
              session_id=session_id)
         _step("session_finalise", "skipped")
 
-    # 7. Brief-result PR (R-011 / MVP-8): generate results/session-{date}-{slug}.md,
-    #    commit to the home-team-agent repo, and raise a PR (best-effort).
-    #    NON-IDEMPOTENT — guard against a duplicate PR on re-run via the ledger.
-    already_done = (
-        finalise_ledger is not None
-        and finalise_ledger.step_status(session_id, "brief_pr") == "done"
+    # 7. Session result + PR. NON-IDEMPOTENT raise — guard against a duplicate on
+    #    re-run via the ledger (`done`/`exists`) AND, defensively, via the base-branch
+    #    + open-PR checks inside the authoring path. Runs LAST so a timeout/cancel
+    #    never costs telemetry.
+    prior = (
+        finalise_ledger.step_status(session_id, "brief_pr")
+        if finalise_ledger is not None else None
     )
-    if migrated:
-        pass  # already recorded above
-    elif already_done:
-        _log("brief-result PR skipped: already done (ledger) — no duplicate PR",
+    if prior in ("done", "exists"):
+        _log(f"session result skipped: already '{prior}' (ledger) — no duplicate",
              session_id=session_id)
+    elif migrated:
+        # T-035: the hook owns the home-repo result. Author it + PR off home `main`,
+        # decoupled from the work PR. Idempotent (re-checks base + open PRs).
+        if not home_repo:
+            _log("session result skipped (migrated): no home repo dir (cwd / "
+                 "CLAUDE_PROJECT_DIR unset)", session_id=session_id, level="WARN")
+            _step("brief_pr", "deferred-cancelled")
+        else:
+            try:
+                from lib import session_finalise as _sf, session_substrate as _ss
+                from datetime import datetime, timezone as _tz
+
+                point = _ss.get_session_point(session_id)
+                if point:
+                    date = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+                    res = _sf.author_home_result(
+                        point, session_id=session_id, repo_dir=home_repo,
+                        date=date, raise_pr=True,
+                    )
+                    _log(
+                        f"home result [{res['disposition']}]: ok={res['ok']} "
+                        f"branch={res['branch']} pr_url={res['pr_url'] or '(none)'} "
+                        f"{res.get('reason') or ''}",
+                        session_id=session_id,
+                    )
+                    _step("brief_pr", res["disposition"])
+                else:
+                    _log("session result skipped (migrated): session point not found",
+                         session_id=session_id, level="WARN")
+                    _step("brief_pr", "deferred-cancelled")
+            except Exception as exc:
+                _log(f"home result deferred-cancelled: {exc}",
+                     session_id=session_id, level="WARN")
+                _step("brief_pr", "deferred-cancelled")
     elif agent_repo:
         try:
             from lib import session_finalise as _sf, session_substrate as _ss
@@ -356,6 +409,12 @@ def run_guard() -> int:
     """SessionStart recovery: detect prior sessions whose finalise never reached
     completion (killed / timed-out mid-sequence) and re-run them. Flags each
     partial in libraries.log. Idempotent — runs a top-up, raises no duplicate PR.
+
+    Re-runs against the *originating* repo (the ``cwd`` persisted at begin()), so a
+    migrated session's step-7 result PR targets the right home repo even when the
+    guard fires from a different session. Caps retries at
+    ``finalise_ledger.MAX_FINALISE_ATTEMPTS`` so a finalise that truncates on every
+    attempt is flagged-and-dropped, not re-run forever (PROJ-039/T-030).
     """
     try:
         from lib import finalise_ledger
@@ -367,14 +426,27 @@ def run_guard() -> int:
     if not partials:
         return 0
 
+    cap = getattr(finalise_ledger, "MAX_FINALISE_ATTEMPTS", 5)
     for sid, entry in partials:
         steps = entry.get("steps", {})
+        attempts = int(entry.get("attempts", 0))
+        if attempts >= cap:
+            _log(
+                f"guard: UNFINALISED session exceeded retry cap "
+                f"(attempts={attempts} >= {cap}); flagged-and-dropped, not re-run. "
+                f"steps={steps}",
+                session_id=sid, level="ERROR",
+            )
+            continue
         _log(
-            f"guard: detected UNFINALISED prior session — steps={steps}; re-running",
+            f"guard: detected UNFINALISED prior session (attempts={attempts}) — "
+            f"steps={steps}; re-running",
             session_id=sid, level="WARN",
         )
         try:
-            finalise_session(sid, entry.get("transcript_path", ""))
+            finalise_session(
+                sid, entry.get("transcript_path", ""), entry.get("cwd", "")
+            )
         except Exception as exc:
             _log(f"guard: re-finalise raised (swallowed): {exc}",
                  session_id=sid, level="ERROR")
