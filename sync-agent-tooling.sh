@@ -22,7 +22,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-VALID_ROLES="team-lead coder archivist trainer cluster-operator"
+VALID_ROLES="team-lead coder archivist trainer cluster-operator curriculum-developer historian strategist"
 
 usage() {
   echo "Usage: bash sync-agent-tooling.sh --role {role-class} [--home-repo /path] [--agent-tooling /path] [--yes]"
@@ -104,14 +104,20 @@ fi
 # (embed user turns → Qdrant prompt_logs) — home-repo-resident, not workstation
 # -global (PROJ-039/T-011 C2b). Kept byte-identical with scaffold.sh's role_hooks
 # + role_settings_json.
+# curriculum-developer / historian / strategist are the C2c fissioned-team build
+# agents (hestia / clio / kronos, PROJ-039/T-037): producers, no subagent spawn,
+# no transcript-ingest — universal substrate base, same shape as team-lead/trainer.
 SUBSTRATE_BASE="session-start.sh user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py session-end-finalise.py"
 role_hooks() {
   case "$1" in
-    team-lead)        echo "${SUBSTRATE_BASE}" ;;
-    coder)            echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
-    archivist)        echo "${SUBSTRATE_BASE} ingest-transcript.sh ingest-transcript.py" ;;
-    trainer)          echo "${SUBSTRATE_BASE}" ;;
-    cluster-operator) echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
+    team-lead)             echo "${SUBSTRATE_BASE}" ;;
+    coder)                 echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
+    archivist)             echo "${SUBSTRATE_BASE} ingest-transcript.sh ingest-transcript.py" ;;
+    trainer)               echo "${SUBSTRATE_BASE}" ;;
+    cluster-operator)      echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
+    curriculum-developer)  echo "${SUBSTRATE_BASE}" ;;
+    historian)             echo "${SUBSTRATE_BASE}" ;;
+    strategist)            echo "${SUBSTRATE_BASE}" ;;
   esac
 }
 
