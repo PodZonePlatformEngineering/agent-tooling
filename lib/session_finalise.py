@@ -32,7 +32,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -333,6 +335,321 @@ def commit_brief_result(
     except Exception as exc:
         result["reason"] = str(exc)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Home-repo session result (PROJ-039/T-035 — hooks-only migrated home repos)
+# ---------------------------------------------------------------------------
+#
+# In a migrated home repo there is NO `/session-end` skill (the repo is hooks-only
+# by design — hooks + lib + primitives, no skills/). The SessionEnd finalise hook
+# therefore OWNS the session result: it authors `results/session-{date}-{slug}.md`
+# from the substrate point and raises a home-repo PR that lands it on home `main`,
+# decoupled from any work PR. The functions below are the testable core of that
+# step; the hook's migrated branch is a thin caller over them.
+
+# The canonical structured sections the home-repo result surfaces. Authored from
+# the substrate point's `response.text` (the agent's final `/exit` turn) when it
+# carries these headers; any section the response does not provide renders as
+# "_None recorded._". The agent's final turn is the source of truth — it should
+# carry these headers for a rich result.
+RESULT_SECTIONS = ("Completed", "Started", "Blockers", "Decisions",
+                   "Questions for Martin")
+
+# Header-text aliases → canonical label (matched case-insensitively).
+_SECTION_ALIASES = {
+    "completed": "Completed",
+    "complete": "Completed",
+    "done": "Completed",
+    "started": "Started",
+    "in progress": "Started",
+    "in-progress": "Started",
+    "blockers": "Blockers",
+    "blocked": "Blockers",
+    "blocker": "Blockers",
+    "decisions": "Decisions",
+    "decision": "Decisions",
+    "questions for martin": "Questions for Martin",
+    "questions": "Questions for Martin",
+    "open questions": "Questions for Martin",
+}
+
+_HEADER_RE = re.compile(r"^\s*#{1,6}\s+(?P<t>.+?)\s*$")
+_BOLD_RE = re.compile(r"^\s*\*\*(?P<t>.+?)\*\*:?\s*$")
+_COLON_RE = re.compile(r"^\s*(?P<t>[A-Za-z][A-Za-z ’'\-]{1,38}):\s*$")
+
+
+def _normalise_label(raw: str) -> str:
+    """Strip markdown/emphasis/emoji decoration from a header label and lowercase."""
+    s = raw.strip().strip("*").strip().rstrip(":").strip()
+    s = re.sub(r"^[^0-9A-Za-z]+", "", s)  # drop a leading emoji / bullet run
+    return s.lower()
+
+
+def _match_section_header(line: str) -> Optional[str]:
+    """Return the canonical section label if ``line`` is a header for one, else None.
+
+    Only header-shaped lines qualify (``## X``, ``**X**``, or a short ``X:`` line),
+    so prose that merely contains the word "completed" is never mistaken for a header.
+    """
+    for rx in (_HEADER_RE, _BOLD_RE, _COLON_RE):
+        m = rx.match(line)
+        if m:
+            key = _normalise_label(m.group("t"))
+            if key in _SECTION_ALIASES:
+                return _SECTION_ALIASES[key]
+    return None
+
+
+def extract_sections(text: str) -> dict[str, str]:
+    """Extract canonical sections from a response/summary markdown body.
+
+    Returns ``{canonical_label: body_text}`` for every recognised section header
+    found. Bodies are everything up to the next recognised header. Unrecognised
+    headers terminate the current section (so a section never bleeds into the next
+    heading) but are not themselves captured.
+    """
+    sections: dict[str, list[str]] = {}
+    current: Optional[str] = None
+    for line in (text or "").splitlines():
+        label = _match_section_header(line)
+        if label is not None:
+            current = label
+            sections.setdefault(current, [])
+            continue
+        # A non-canonical markdown header still ends the current section.
+        if current is not None and (_HEADER_RE.match(line) or _BOLD_RE.match(line)):
+            current = None
+            continue
+        if current is not None:
+            sections[current].append(line)
+    return {k: "\n".join(v).strip() for k, v in sections.items()}
+
+
+def generate_session_result(
+    session_point: dict,
+    *,
+    date: Optional[str] = None,
+) -> str:
+    """Render the home-repo ``results/session-{date}-{slug}.md`` from the point.
+
+    Surfaces the five canonical structured sections (Completed / Started /
+    Blockers / Decisions / Questions for Martin), extracted from the substrate
+    ``response.text`` where present, then the full brief, response and rollup as
+    the durable human-readable record. Pure — no I/O — so it is fully unit-tested.
+    """
+    date = date or _now_date()
+    session_id = session_point.get("session_id", "unknown")
+    agent = session_point.get("agent", "unknown")
+    work_item = session_point.get("work_item", "unknown")
+    brief = session_point.get("brief") or {}
+    response = session_point.get("response") or {}
+    rollup = session_point.get("rollup") or {}
+
+    brief_text = brief.get("text", "(no brief)")
+    dispatch_ts = brief.get("dispatch_ts", "")
+    response_text = response.get("text", "(no response)")
+    status_transition = response.get("status_transition") or ""
+    end_ts = response.get("end_ts", "")
+
+    extracted = extract_sections(response_text)
+    section_md = ""
+    for label in RESULT_SECTIONS:
+        body = extracted.get(label) or "_None recorded._"
+        section_md += f"## {label}\n\n{body}\n\n"
+
+    tool_usage = rollup.get("tool_usage", {})
+    cost_tokens = rollup.get("cost_tokens", {})
+    tool_lines = "\n".join(
+        f"  {tool}: {count}" for tool, count in sorted(tool_usage.items())
+    ) or "  (none)"
+    model_lines = "\n".join(
+        f"  {model}: input={stats.get('input_tokens', 0)} "
+        f"output={stats.get('output_tokens', 0)}"
+        for model, stats in sorted(cost_tokens.items())
+    ) or "  (none)"
+
+    return (
+        f"---\n"
+        f"type: session-result\n"
+        f"session_id: {session_id}\n"
+        f"agent: {agent}\n"
+        f"work_item: {work_item}\n"
+        f"date: {date}\n"
+        f"status_transition: {status_transition}\n"
+        f"---\n\n"
+        f"# Session result — {agent} / {work_item}\n\n"
+        f"{section_md}"
+        f"## Brief (dispatched {dispatch_ts})\n\n"
+        f"{brief_text}\n\n"
+        f"## Full response (ended {end_ts})\n\n"
+        f"{response_text}\n\n"
+        f"## Rollup\n\n"
+        f"### Tool usage\n{tool_lines}\n\n"
+        f"### Token cost\n{model_lines}\n"
+    )
+
+
+def _resolve_base_ref(repo_dir: str, base_branch: str) -> Optional[str]:
+    """Prefer ``origin/{base}``; fall back to a local ``{base}`` branch."""
+    if _git(repo_dir, "rev-parse", "--verify",
+            f"refs/remotes/origin/{base_branch}").returncode == 0:
+        return f"origin/{base_branch}"
+    if _git(repo_dir, "rev-parse", "--verify",
+            f"refs/heads/{base_branch}").returncode == 0:
+        return base_branch
+    return None
+
+
+def _result_on_base(repo_dir: str, base_ref: str, rel_path: str) -> bool:
+    """True if ``rel_path`` already exists on ``base_ref`` (result already merged)."""
+    return _git(repo_dir, "cat-file", "-e",
+                f"{base_ref}:{rel_path}").returncode == 0
+
+
+def _open_result_pr_exists(repo_dir: str, branch_name: str) -> bool:
+    """True if an open PR already carries the result branch (best-effort via gh)."""
+    r = subprocess.run(
+        ["gh", "pr", "list", "--head", branch_name, "--state", "open",
+         "--json", "number", "-q", ".[].number"],
+        capture_output=True, text=True, cwd=repo_dir, check=False,
+    )
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def _result_pr_body(session_id: str, work_item: str, date: str) -> str:
+    return (
+        f"Auto-authored session result for `{work_item}` "
+        f"(session `{session_id[:12]}`, {date}).\n\n"
+        f"Generated by the SessionEnd **finalise hook** (PROJ-039/T-035) in a "
+        f"hooks-only migrated home repo — there is no `/session-end` skill; the "
+        f"hook owns the result. Decoupled from any work PR so it cannot be "
+        f"orphaned.\n\n"
+        f"Please review the **Questions for Martin** section in the result file."
+    )
+
+
+def commit_home_result(
+    result_text: str,
+    *,
+    session_id: str,
+    work_item: str,
+    date: Optional[str],
+    repo_dir: str,
+    raise_pr: bool = True,
+    base_branch: str = "main",
+) -> dict:
+    """Author the home-repo session result on a decoupled branch off ``base_branch``
+    and (optionally) raise a PR landing it on ``base_branch``.
+
+    Uses an **isolated git worktree** off the base ref, so the live working tree
+    and the session's own branch are never touched — the result branch is wholly
+    independent of any work PR. Idempotent:
+
+      * if the result file already exists on ``base_branch`` → ``exists`` (no-op);
+      * if an open PR already carries the result branch → ``exists`` (no-op);
+      * otherwise it authors + pushes + PRs → ``done``.
+
+    Returns ``{"file_path", "branch", "pr_url", "ok", "reason", "disposition"}``
+    where ``disposition`` ∈ {``done``, ``exists``, ``deferred-cancelled``}.
+    Never raises — best-effort; any failure yields ``deferred-cancelled``.
+    """
+    date = date or _now_date()
+    slug = work_item.replace("/", "-").replace(" ", "-").lower()
+    filename = f"session-{date}-{slug}.md"
+    rel_path = f"results/{filename}"
+    branch_name = f"session-result/{date}-{slug}"
+
+    result = {"file_path": rel_path, "branch": branch_name, "pr_url": "",
+              "ok": False, "reason": "", "disposition": "deferred-cancelled"}
+
+    worktree: Optional[str] = None
+    try:
+        # Refresh origin so the idempotency checks + base ref are current (best-effort).
+        _git(repo_dir, "fetch", "origin", base_branch)
+        base_ref = _resolve_base_ref(repo_dir, base_branch)
+        if base_ref is None:
+            result["reason"] = f"base branch '{base_branch}' not found"
+            return result
+
+        # Idempotency — already landed, or an open PR already carries it.
+        if _result_on_base(repo_dir, base_ref, rel_path):
+            result.update(ok=True, disposition="exists",
+                          reason="result already on base branch")
+            return result
+        if raise_pr and _open_result_pr_exists(repo_dir, branch_name):
+            result.update(ok=True, disposition="exists",
+                          reason="open result PR already exists")
+            return result
+
+        # Author in an isolated worktree off base — the live tree/branch is untouched.
+        _git(repo_dir, "branch", "-D", branch_name)  # drop any stale local branch
+        worktree = tempfile.mkdtemp(prefix="session-result-")
+        add = _git(repo_dir, "worktree", "add", "-b", branch_name, worktree, base_ref)
+        if add.returncode != 0:
+            result["reason"] = f"worktree add failed: {add.stderr.strip()}"
+            return result
+
+        (Path(worktree) / "results").mkdir(parents=True, exist_ok=True)
+        (Path(worktree) / rel_path).write_text(result_text, encoding="utf-8")
+        _git(worktree, "add", rel_path)
+        commit = _git(worktree, "commit", "-m",
+                      f"chore(session-result): {work_item} ({date}) [{session_id[:8]}]")
+        out = (commit.stdout + commit.stderr).lower()
+        if commit.returncode != 0 and "nothing to commit" not in out:
+            result["reason"] = f"commit failed: {commit.stderr.strip()}"
+            return result
+
+        push = _git(worktree, "push", "--force-with-lease", "origin", branch_name)
+        if push.returncode != 0:
+            result["reason"] = f"push failed: {push.stderr.strip()}"
+            return result
+
+        if raise_pr:
+            pr = subprocess.run(
+                ["gh", "pr", "create", "--base", base_branch, "--head", branch_name,
+                 "--title", f"Session result: {work_item} ({date})",
+                 "--body", _result_pr_body(session_id, work_item, date)],
+                capture_output=True, text=True, cwd=worktree, check=False,
+            )
+            result["pr_url"] = pr.stdout.strip()
+            if pr.returncode != 0:
+                # Commit + push landed but the PR did not — not fully done; a clean
+                # re-run (no open PR, file not on base) will retry the PR.
+                result["reason"] = f"PR creation failed: {pr.stderr.strip()}"
+                return result
+
+        result.update(ok=True, disposition="done")
+    except Exception as exc:  # never break teardown
+        result["reason"] = str(exc)
+    finally:
+        if worktree:
+            _git(repo_dir, "worktree", "remove", "--force", worktree)
+            shutil.rmtree(worktree, ignore_errors=True)
+    return result
+
+
+def author_home_result(
+    session_point: dict,
+    *,
+    session_id: str,
+    repo_dir: str,
+    date: Optional[str] = None,
+    raise_pr: bool = True,
+) -> dict:
+    """Render + commit the home-repo result for ``session_point`` (T-035 step 7).
+
+    Thin composition of :func:`generate_session_result` + :func:`commit_home_result`
+    so the hook's migrated branch is a one-line call. Returns the
+    :func:`commit_home_result` dict.
+    """
+    date = date or _now_date()
+    work_item = session_point.get("work_item", "unknown")
+    text = generate_session_result(session_point, date=date)
+    return commit_home_result(
+        text, session_id=session_id, work_item=work_item, date=date,
+        repo_dir=repo_dir, raise_pr=raise_pr,
+    )
 
 
 # ---------------------------------------------------------------------------

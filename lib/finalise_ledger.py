@@ -44,6 +44,13 @@ LEDGER_FILE = "finalise-state.log"
 STEPS = ("response", "rollup", "telemetry_push", "cst_prune",
          "session_finalise", "brief_pr")
 
+# The SessionStart guard re-runs an unfinalised (truncated) session's finalise.
+# A finalise that truncates *every* attempt (e.g. it deterministically exceeds the
+# timeout) would otherwise be re-run on every session-start forever. Cap the
+# recovery attempts so a permanently-failing finalise is flagged-and-dropped, not
+# retried indefinitely. PROJ-039/T-030.
+MAX_FINALISE_ATTEMPTS = 5
+
 
 def _utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -82,9 +89,13 @@ def _save(ledger: dict) -> None:
         pass
 
 
-def begin(session_id: str, transcript_path: str = "") -> None:
+def begin(session_id: str, transcript_path: str = "", cwd: str = "") -> None:
     """Record the start of a finalise (or top-up of a re-run). Sets complete=False
-    and increments the attempt counter (the guard caps retries with it)."""
+    and increments the attempt counter (the guard caps retries with it).
+
+    Persists ``transcript_path`` (so a later re-run can recompute the rollup) and
+    ``cwd`` (so the SessionStart guard re-runs the finalise against the *originating*
+    home repo — the repo whose ``results/`` the step-7 PR must target, PROJ-039/T-035)."""
     if not session_id:
         return
     try:
@@ -96,6 +107,9 @@ def begin(session_id: str, transcript_path: str = "") -> None:
         # Keep a non-empty transcript path; a re-run with "" must not erase it.
         if transcript_path or not entry.get("transcript_path"):
             entry["transcript_path"] = transcript_path or entry.get("transcript_path", "")
+        # Same non-erasing discipline for cwd.
+        if cwd or not entry.get("cwd"):
+            entry["cwd"] = cwd or entry.get("cwd", "")
         entry.setdefault("steps", {})
         entry["complete"] = False
         ledger[session_id] = entry

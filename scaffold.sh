@@ -150,10 +150,12 @@ role_settings_json() {
   # agent-telemetry remote the SessionEnd finalise pushes the session JSONL to
   # (R-015 keystone), and the apex repo for the non-migrated finalise path. Secrets
   # (PODZONE_QDRANT_APIKEY) are NEVER embedded here — they ride from the workstation
-  # apex env block (~/.claude/settings.json) per the T-016 pattern. Migrated home
-  # repos defer steps 6-7 to Hermes /consolidate-tasks + the /session-end skill, so
-  # PODZONEAGENTTEAM_REPO is inert for them but documents the apex path for the
-  # non-migrated path and any future use.
+  # apex env block (~/.claude/settings.json) per the T-016 pattern. A migrated home
+  # repo is hooks-only (no skills/): the SessionEnd finalise hook OWNS the session
+  # result — step 6 (apex tasklist/STATUS) defers to Hermes /consolidate-tasks, and
+  # step 7 authors the result + PR in the home repo's own results/ off home main
+  # (PROJ-039/T-035). PODZONEAGENTTEAM_REPO is inert for migrated repos (the hook
+  # must never touch the apex clone) but documents the non-migrated apex path.
   cat <<SETTINGS
 {
   "env": {
@@ -201,6 +203,11 @@ role_hook_rows() {
 
 # --- Create directory structure ---
 
+# A migrated home repo is HOOKS-ONLY by design (PROJ-039/T-035 operator decision,
+# 2026-06-28): .claude/ carries hooks/ + lib/ + primitives/ but NO skills/. Agent
+# ceremony is fully hook-driven (SessionStart materialise, SessionEnd finalise);
+# there is no `/session-end` skill and none is added. (The Hermes apex repo stays
+# skill-based — that is a separate, deliberately different layout.)
 mkdir -p \
   "${TARGET_DIR}/.claude/hooks" \
   "${TARGET_DIR}/workspaces/identity" \

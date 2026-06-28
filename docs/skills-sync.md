@@ -29,6 +29,17 @@ teammate, with no signal until something breaks.
   for every skill the source defines. Never hand-edit a mirror — it will be
   reverted (and flagged) by the next sync / parity check.
 
+> **Migrated home repos are hooks-only — not skills mirrors (by design).**
+> The mirror list above is **apex + trainingTeam + roadmapTeam only**. The migrated
+> home repos (`home-podzone-hephaestus` / `-atlas` / `-thoth`) deliberately carry
+> **no `.claude/skills/`** — `scaffold.sh` emits hooks + `lib/` + `primitives/` and
+> nothing else. Their agent ceremony is fully **hook-driven**: SessionStart
+> materialise, SessionEnd finalise. In particular there is **no `/session-end`
+> skill** in a home repo — the SessionEnd **finalise hook owns the session result**
+> (authors `results/session-{date}-{slug}.md` + raises a home-repo PR off `main`,
+> PROJ-039/T-035). Home repos therefore receive only the hooks/lib/primitives sync
+> (`sync-agent-tooling.sh`), never the skills sync, and correctly never will.
+
 ### When a fix has only landed in a mirror
 
 If a skill was hardened in the **apex** copy first (the recurring real case — apex
