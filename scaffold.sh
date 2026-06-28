@@ -19,7 +19,7 @@ SCAFFOLD_DIR="${AGENT_TOOLING_DIR}/scaffold"
 HOOKS_DIR="${AGENT_TOOLING_DIR}/hooks"
 LIB_MANIFEST="${HOOKS_DIR}/home-runtime-lib.manifest"
 
-VALID_ROLES="team-lead coder archivist trainer cluster-operator"
+VALID_ROLES="team-lead coder archivist trainer cluster-operator curriculum-developer historian strategist"
 
 usage() {
   echo "Usage: bash scaffold.sh {team} {agent} {role-class} [--target-dir /path] [--force]"
@@ -90,14 +90,23 @@ echo "==> Scaffolding ${REPO_NAME} (role: ${ROLE}) → ${TARGET_DIR}"
 # archivist additionally carries the resident ingest-transcript SessionEnd hook
 # (embed user turns → Qdrant prompt_logs): a role nuance surfaced by C2b — it must
 # be home-repo-resident, not workstation-global. PROJ-039/T-011 C2b.
+# curriculum-developer / historian / strategist are the fissioned-team BUILD agents
+# (hestia / clio / kronos) migrated under C2c (PROJ-039/T-037). They are producers
+# that do not spawn subagents and carry no automatic transcript-ingest, so they take
+# the universal substrate base — same shape as team-lead/trainer. (The historian's
+# log/memory ingestion is explicit, agent-invoked toolchain work in its task repo,
+# NOT a SessionEnd transcript-embed hook like the archivist's — so no ingest hook.)
 SUBSTRATE_BASE="session-start.sh user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py session-end-finalise.py"
 role_hooks() {
   case "$1" in
-    team-lead)        echo "${SUBSTRATE_BASE}" ;;
-    coder)            echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
-    archivist)        echo "${SUBSTRATE_BASE} ingest-transcript.sh ingest-transcript.py" ;;
-    trainer)          echo "${SUBSTRATE_BASE}" ;;
-    cluster-operator) echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
+    team-lead)             echo "${SUBSTRATE_BASE}" ;;
+    coder)                 echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
+    archivist)             echo "${SUBSTRATE_BASE} ingest-transcript.sh ingest-transcript.py" ;;
+    trainer)               echo "${SUBSTRATE_BASE}" ;;
+    cluster-operator)      echo "${SUBSTRATE_BASE} subagent-stop.sh subagent-stop.py" ;;
+    curriculum-developer)  echo "${SUBSTRATE_BASE}" ;;
+    historian)             echo "${SUBSTRATE_BASE}" ;;
+    strategist)            echo "${SUBSTRATE_BASE}" ;;
   esac
 }
 
@@ -110,19 +119,25 @@ DEP_DIRS="primitives"
 
 role_title() {
   case "$1" in
-    team-lead)        echo "Team Lead" ;;
-    coder)            echo "Coder" ;;
-    archivist)        echo "Archivist" ;;
-    trainer)          echo "Trainer" ;;
-    cluster-operator) echo "Cluster Operator" ;;
+    team-lead)             echo "Team Lead" ;;
+    coder)                 echo "Coder" ;;
+    archivist)             echo "Archivist" ;;
+    trainer)               echo "Trainer" ;;
+    cluster-operator)      echo "Cluster Operator" ;;
+    curriculum-developer)  echo "Curriculum Developer" ;;
+    historian)             echo "Historian" ;;
+    strategist)            echo "Strategist" ;;
   esac
 }
 
 role_task_filter() {
   case "$1" in
-    team-lead)  echo "Team Lead" ;;
-    archivist)  echo "Archivist" ;;
-    *)          echo "Claude-Code" ;;
+    team-lead)             echo "Team Lead" ;;
+    archivist)             echo "Archivist" ;;
+    curriculum-developer)  echo "Curriculum Developer" ;;
+    historian)             echo "Historian" ;;
+    strategist)            echo "Strategist" ;;
+    *)                     echo "Claude-Code" ;;
   esac
 }
 
