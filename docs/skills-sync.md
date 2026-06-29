@@ -29,16 +29,49 @@ teammate, with no signal until something breaks.
   for every skill the source defines. Never hand-edit a mirror — it will be
   reverted (and flagged) by the next sync / parity check.
 
-> **Migrated home repos are hooks-only — not skills mirrors (by design).**
-> The mirror list above is **apex + trainingTeam + roadmapTeam only**. The migrated
-> home repos (`home-podzone-hephaestus` / `-atlas` / `-thoth`) deliberately carry
-> **no `.claude/skills/`** — `scaffold.sh` emits hooks + `lib/` + `primitives/` and
-> nothing else. Their agent ceremony is fully **hook-driven**: SessionStart
-> materialise, SessionEnd finalise. In particular there is **no `/session-end`
+> **Build-agent home repos are hooks-only — not skills mirrors (by design).**
+> The full-mirror list above is **apex + trainingTeam + roadmapTeam only**. Migrated
+> **build-agent** home repos (`home-podzone-hephaestus` / `home-training-hestia` / …)
+> deliberately carry **no `.claude/skills/`** — `scaffold.sh` emits hooks + `lib/` +
+> `primitives/` and nothing else. Their agent ceremony is fully **hook-driven**:
+> SessionStart materialise, SessionEnd finalise. In particular there is **no `/session-end`
 > skill** in a home repo — the SessionEnd **finalise hook owns the session result**
-> (authors `results/session-{date}-{slug}.md` + raises a home-repo PR off `main`,
-> PROJ-039/T-035). Home repos therefore receive only the hooks/lib/primitives sync
+> (authors `results/session-{date}-{slug}-{sid}.md` + raises a home-repo PR off `main`,
+> PROJ-039/T-035). Build-agent home repos receive only the hooks/lib/primitives sync
 > (`sync-agent-tooling.sh`), never the skills sync, and correctly never will.
+
+## Team-lead home-repo mirror class — the coordination **subset** (PROJ-039/T-038)
+
+A migrated **team lead** (e.g. Athena → `home-training-athena`, `role_class: team-lead`) is
+the one home-repo class that carries skills: a hooks-only base **plus** a `.claude/skills/`
+holding **only** the coordination subset it invokes to lead its team. This is a *fourth*
+mirror class, but with **subset-exact** parity rather than the source-scoped parity of the
+full mirrors:
+
+```
+  SOURCE  ── agent-tooling/skills/
+     └─push(subset)─▶ home-<team>-<lead>/.claude/skills/   (team-lead home repo)
+```
+
+| | Full mirrors (apex / team) | Team-lead home repo |
+|---|---|---|
+| Skills delivered | every source skill | only `scaffold/team-lead-skills.manifest` subset |
+| Extra skills allowed? | **yes** (apex-management / team-local) | **no** — subset-exact; out-of-subset = drift |
+| Delivered by | `sync-skills.sh` | `sync-agent-tooling.sh` (the home-repo syncer) |
+| Parity enforced by | `test_skills_parity.py` real-repo layer + `sync-skills.sh --check` | `test_skills_parity.py` `find_home_subset_drift` + `sync-agent-tooling.sh` invariant |
+
+**The subset** (`scaffold/team-lead-skills.manifest`): `consolidate-tasks`, `launch-session`.
+Both are canonical source skills, so they are byte-identity-enforced everywhere. **Excluded:**
+`session-start` / `session-end` (ceremony stays hook-driven; the finalise hook owns the result,
+T-035) and `usage-report` (not yet canonical — it drifts between the apex + training mirrors and
+references a non-resident workstation tool; canonicalising it is a separate reconciliation with
+roadmapTeam blast radius — **flagged to Hermes**, add to the subset once canonical).
+
+The subset is delivered by `sync-agent-tooling.sh --role team-lead` (which also **prunes** any
+out-of-subset skill, so session ceremony can never leak in) and asserted both there and by
+`test_skills_parity.py` (`TestTeamLeadHomeSubsetParity` + `TestTeamLeadScaffoldDelivery`). The
+canonical `lib/team_repo.py` resolves the **team repo** the lead consolidates against
+(`home-<team>-<agent>` → `<team>Team`) for the `home_repo ≠ team_repo` case.
 
 ### When a fix has only landed in a mirror
 

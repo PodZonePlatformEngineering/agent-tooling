@@ -18,6 +18,10 @@ AGENT_TOOLING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCAFFOLD_DIR="${AGENT_TOOLING_DIR}/scaffold"
 HOOKS_DIR="${AGENT_TOOLING_DIR}/hooks"
 LIB_MANIFEST="${HOOKS_DIR}/home-runtime-lib.manifest"
+SKILLS_SRC="${AGENT_TOOLING_DIR}/skills"
+# The team-lead variant (and ONLY it) carries this coordination skill subset under
+# .claude/skills/ (PROJ-039/T-038). Build-agent home repos remain hooks-only.
+TEAM_LEAD_SKILLS_MANIFEST="${SCAFFOLD_DIR}/team-lead-skills.manifest"
 
 VALID_ROLES="team-lead coder archivist trainer cluster-operator curriculum-developer historian strategist"
 
@@ -218,11 +222,17 @@ role_hook_rows() {
 
 # --- Create directory structure ---
 
-# A migrated home repo is HOOKS-ONLY by design (PROJ-039/T-035 operator decision,
-# 2026-06-28): .claude/ carries hooks/ + lib/ + primitives/ but NO skills/. Agent
-# ceremony is fully hook-driven (SessionStart materialise, SessionEnd finalise);
-# there is no `/session-end` skill and none is added. (The Hermes apex repo stays
-# skill-based — that is a separate, deliberately different layout.)
+# Layout by variant (PROJ-039/T-035 + T-038):
+#   * BUILD-agent home repo (coder/archivist/trainer/curriculum-developer/historian/
+#     strategist/cluster-operator) is HOOKS-ONLY: .claude/ carries hooks/ + lib/ +
+#     primitives/ but NO skills/. Agent ceremony is fully hook-driven (SessionStart
+#     materialise, SessionEnd finalise); there is no `/session-end` skill.
+#   * TEAM-LEAD home repo is a clean superset: the same hooks-only base PLUS the
+#     coordination skill subset (team-lead-skills.manifest) under .claude/skills/, so
+#     a fissioned lead can /consolidate-tasks + /launch-session for its team. Result
+#     authoring still rides the SessionEnd finalise hook (T-035) — session-end is NOT
+#     added as a skill.
+# (The Hermes apex repo stays fully skill-based — a separate, deliberately different layout.)
 mkdir -p \
   "${TARGET_DIR}/.claude/hooks" \
   "${TARGET_DIR}/workspaces/identity" \
@@ -294,6 +304,39 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 done < "$LIB_MANIFEST"
 echo "    copied: lib/ (${LIB_COUNT} modules from manifest)"
 
+# --- Copy coordination skills (team-lead variant only) ---
+# A team lead is the ONLY home-repo class that carries skills: the coordination
+# subset it invokes to lead its team (consolidate-tasks, launch-session). Build
+# agents get nothing here. Copied byte-identical from the canonical agent-tooling/
+# skills/ source per team-lead-skills.manifest; test_skills_parity.py enforces both
+# the byte-identity and the "subset only" shape. PROJ-039/T-038.
+
+if [[ "$ROLE" == "team-lead" ]]; then
+  echo "==> Copying coordination skills (team-lead variant) into .claude/skills/..."
+  if [[ ! -f "$TEAM_LEAD_SKILLS_MANIFEST" ]]; then
+    echo "Error: team-lead skills manifest not found: ${TEAM_LEAD_SKILLS_MANIFEST}"
+    exit 1
+  fi
+  mkdir -p "${TARGET_DIR}/.claude/skills"
+  SKILL_COUNT=0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    entry="${line%%#*}"; entry="${entry//[[:space:]]/}"
+    [[ -z "$entry" ]] && continue
+    src="${SKILLS_SRC}/${entry}"
+    dst="${TARGET_DIR}/.claude/skills/${entry}"
+    if [[ ! -d "$src" ]]; then
+      echo "Error: manifest lists skill '${entry}' but source is missing: ${src}"
+      exit 1
+    fi
+    rm -rf "$dst"
+    cp -R "$src" "$dst"
+    find "$dst" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+    SKILL_COUNT=$((SKILL_COUNT + 1))
+    echo "    copied: skills/${entry}"
+  done < "$TEAM_LEAD_SKILLS_MANIFEST"
+  echo "    copied: skills/ (${SKILL_COUNT} coordination skills)"
+fi
+
 # --- .gitignore ---
 
 cp "${SCAFFOLD_DIR}/gitignore.template" "${TARGET_DIR}/.gitignore"
@@ -306,6 +349,33 @@ role_settings_json "$ROLE" > "${TARGET_DIR}/.claude/settings.json"
 
 ROLE_TITLE="$(role_title "$ROLE")"
 EXTRA_HOOK_ROWS="$(role_hook_rows "$ROLE")"
+
+# Coordination-skills section (team-lead variant only). Build agents render nothing.
+COORD_SKILLS_SECTION=""
+if [[ "$ROLE" == "team-lead" ]]; then
+  COORD_SKILLS_SECTION="
+## Coordination skills (team-lead variant)
+
+This is the **team-lead** home-repo variant (PROJ-039/T-038): the hooks-only base
+**plus** the coordination skills a fissioned lead invokes to lead its team. These live
+under \`.claude/skills/\` and are kept byte-identical to the canonical
+\`agent-tooling/skills/\` source (parity enforced by test_skills_parity.py):
+
+| Skill | Purpose |
+|---|---|
+| \`/consolidate-tasks\` | Local-mode consolidation of this lead's **team repo** (\`${TEAM}Team\`) — outbox/results scan, tasklist + STATUS, session-PR review |
+| \`/launch-session\` | Launch this lead's team agents |
+
+Result authoring is NOT a skill — the SessionEnd finalise hook owns the session
+result (PROJ-039/T-035), exactly as for a build agent. Session ceremony stays
+hook-driven; \`/session-start\` and \`/session-end\` are deliberately not present.
+
+**home_repo ≠ team_repo:** this home repo (\`${REPO_NAME}\`) is NOT the team repo. The
+coordination skills resolve the team repo from identity (\`home-<team>-<agent>\` →
+\`<team>Team\`); the canonical resolver is \`lib/team_repo.py\` in agent-tooling (cloned
+to \`.workspace/\` on demand). Clone \`${TEAM}Team\` into \`.workspace/\` to consolidate/launch.
+"
+fi
 
 cat > "${TARGET_DIR}/AGENTS.md" <<AGENTS
 # ${AGENT_CAP} — ${ROLE_TITLE}
@@ -352,7 +422,7 @@ and deleted after PR merge.
 | Stop | \`stop.sh\` | CST Stop point + session_stop[] tasking append |
 | SessionEnd | \`session-end-finalise.py\` | Telemetry push → rollup → CST prune (post-push) → session-finalise |
 ${EXTRA_HOOK_ROWS}
-
+${COORD_SKILLS_SECTION}
 ## Constraints
 
 - Open sessions via \`${REPO_NAME}.code-workspace\` only
@@ -377,7 +447,7 @@ Role: ${ROLE_TITLE} — FILL IN one-line summary of primary responsibility
 Team: ${TEAM}; operator: Martin (system-owner)
 Task source: context/brief.md (pulled from Qdrant work_items at session start)
 Cross-team work: raise draft in podzoneAgentTeam/briefs/{recipient}/ — do not write to other agents' home repos
-Results: write to results/session-{date}-{slug}.md; hook pushes and raises PR
+Results: write to results/session-{date}-{slug}-{sid}.md; hook pushes and raises PR
 Memory: read memory/MEMORY.md; update memory/ when learning something durable
 INSTRUCTIONS
 

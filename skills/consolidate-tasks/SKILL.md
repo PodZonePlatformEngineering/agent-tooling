@@ -120,7 +120,7 @@ git -C ~/workspace/{home_repo} show origin/main:results/ 2>/dev/null   # list se
 gh pr list --repo PodZonePlatformEngineering/{home_repo} --search "session:" --json number,title
 ```
 
-Treat each `results/session-{date}-{slug}.md` exactly as a legacy outbox file for parsing
+Treat each `results/session-{date}-{slug}-{sid}.md` exactly as a legacy outbox file for parsing
 (Step 2 onwards). **Coexistence:** a migrated agent is scanned via its home repo *only* —
 do not double-count any residual `team/{agent}/outgoing/` file for that agent. Agents not
 in the registry are scanned the legacy way, unchanged.
@@ -159,19 +159,43 @@ Step 6 report and continue.
 Activated when `home_repo != podzoneAgentTeam` and `role_class` contains `team-lead`.
 The fissioned Team Lead consolidates their own team without depending on Hermes.
 
-**Step substitutions for local mode:**
+### Resolve the TEAM REPO first — `home_repo` may NOT be the team repo (PROJ-039/T-038)
+
+**Load-bearing for a migrated team lead.** Local mode used to assume the current repo
+*was* the team repo (true for the legacy fissioned layout where `home_repo == trainingTeam`).
+A **migrated** team lead's `home_repo` is `home-<team>-<agent>` (e.g. `home-training-athena`)
+— a hooks+coordination-skills home repo that is **not** the team repo and has no
+`team/*/outgoing/`, `planning/team-tasklist.md`, or `planning/STATUS.md`. Before any step,
+resolve the separate team repo from identity:
+
+```bash
+# canonical resolver (agent-tooling cloned to .workspace/ on demand):
+python3 .workspace/agent-tooling/lib/team_repo.py --home-repo "$HOME_REPO" --json
+# equivalently, decode by hand: home-<team>-<agent> -> <team>Team
+#   home-training-athena -> trainingTeam ; home-roadmap-X -> roadmapTeam
+```
+
+Use the resolved values for every local-mode step below — call the team repo's checkout
+`{team_repo}` (e.g. `~/workspace/trainingTeam`) and its GitHub repo `{github_repo}`
+(e.g. `PodZonePlatformEngineering/trainingTeam`). Clone `{team_repo}` into `.workspace/`
+if it is not already present. **Never** read/write the home repo for tasklist/STATUS/outbox
+— those live in `{team_repo}`. (Legacy fissioned lead: `{team_repo}` == `home_repo`, so the
+table below is unchanged for them.)
+
+**Step substitutions for local mode** ("own repo" = the resolved `{team_repo}`, which for a
+migrated lead is a DIFFERENT checkout from `home_repo`):
 
 | Full mode step | Local mode behaviour |
 |---|---|
-| Step 0 — sessions registry + podzoneAgentTeam PR review | **Skip** — fissioned session PRs are in own repo (handled in Step 0b equivalent below) |
+| Step 0 — sessions registry + podzoneAgentTeam PR review | **Skip** — fissioned session PRs are in `{team_repo}` (handled in Step 0b equivalent below) |
 | Step 1 — podzoneAgentTeam outbox scan | **Skip** — not applicable |
-| Step 1b — fissioned repo scan | **Run for own repo only**: `ls team/*/outgoing/session-*.md 2>/dev/null` in the fissioned repo worktree |
+| Step 1b — fissioned repo scan | **Run for `{team_repo}` only**: `ls {team_repo}/team/*/outgoing/session-*.md 2>/dev/null` (plus the migrated-home-repo `results/` scan of Step 1a for any migrated team members) |
 | Step 2 — read and parse | Same as full mode |
-| Step 2b — PR review | Look up session PRs in the **fissioned team repo** (e.g. `PodZonePlatformEngineering/trainingTeam`) |
-| Step 2c — drafts reconciliation | Scan `team/*/incoming/drafts/*.md` in own repo only |
-| Step 3 — apply to tasklist | Update **own** `planning/team-tasklist.md`, not podzoneAgentTeam's |
-| Step 4 — update STATUS.md | Update **own** `planning/STATUS.md` |
-| Step 5 — mark outbox files | Write `<!-- consolidated YYYY-MM-DD -->` in own repo outbox files |
+| Step 2b — PR review | Look up session PRs in `{github_repo}` (e.g. `PodZonePlatformEngineering/trainingTeam`) |
+| Step 2c — drafts reconciliation | Scan `{team_repo}/team/*/incoming/drafts/*.md` only |
+| Step 3 — apply to tasklist | Update `{team_repo}/planning/team-tasklist.md`, not podzoneAgentTeam's and not the home repo's |
+| Step 4 — update STATUS.md | Update `{team_repo}/planning/STATUS.md` |
+| Step 5 — mark outbox files | Write `<!-- consolidated YYYY-MM-DD -->` in `{team_repo}` outbox files |
 | Step 6 — report | Same format with header `[LOCAL MODE — {TeamName}]` |
 
 **Optional upward-sync step (after Step 5):**
@@ -185,8 +209,13 @@ new for the apex.
 
 **Local mode Step 0b equivalent — fissioned session PR review:**
 
+Session PRs for the team's own work live in the **team repo** (`{github_repo}`), not the
+lead's home repo. For a migrated team member the session-result PR lands on that member's
+*home* repo (`PodZonePlatformEngineering/home-<team>-<member>`) — review those via the
+Step 1a migrated scan. The team-repo session PRs:
+
 ```bash
-gh pr list --repo PodZonePlatformEngineering/{home_repo} \
+gh pr list --repo {github_repo} \
   --head session/{agent}-{YYYY-MM-DD}-{task-slug} --json number,state,title,files
 ```
 

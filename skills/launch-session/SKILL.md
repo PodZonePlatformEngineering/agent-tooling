@@ -46,6 +46,15 @@ in the registry says so (Step 1).
 
 ## Step 1 — Resolve agent identity and repos
 
+> **Launching from a migrated team-lead home repo (PROJ-039/T-038).** When the operator
+> driving this skill is a *migrated* team lead (their own `home_repo` is `home-<team>-<agent>`,
+> e.g. Athena in `home-training-athena`), the team they launch agents for lives in a SEPARATE
+> team repo (`<team>Team`), not the home repo. Resolve that team repo from identity —
+> `python3 .workspace/agent-tooling/lib/team_repo.py --home-repo "$HOME_REPO" --json` (or decode
+> `home-<team>-<agent>` → `<team>Team`) — and clone it into `.workspace/` so the team's
+> `workspaces/identity/` and briefs are reachable. The "fissioned team repo" in the identity
+> search below IS that resolved `<team>Team`.
+
 Read the agent's identity YAML. Search in this order:
 1. `podzoneAgentTeam/workspaces/identity/{agent}.identity.yaml`
 2. `podzoneAgentTeam/workspaces/identity/martin-{agent}-*.identity.yaml`

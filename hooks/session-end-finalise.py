@@ -14,8 +14,10 @@ Ordered contract realised here — **order is load-bearing** (§ 2.4):
      delete and warn — deletion safety depends on the backstop existing (C-006).
   6. session-finalise (§ 1.4): read the session point and apply the 4 per-session
      consolidation steps (apply to tasklist + update STATUS).
-  7. Session result + PR: author results/session-{date}-{slug}.md from the session
-     point and raise a PR that lands it on the repo's `main`.
+  7. Session result + PR: author results/session-{date}-{slug}-{sid}.md from the
+     session point and raise a PR that lands it on the repo's `main`. The {sid}
+     suffix keys result idempotency on session_id (T-039), so a re-set-up session on
+     the same date+slug authors its own result instead of skipping on the prior one.
 
 Step 6/7 ownership splits by repo kind (the load-bearing T-035 decision):
   * **Migrated home repo** (cwd basename `home-*`) — hooks-only by design (there is
