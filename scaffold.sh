@@ -423,6 +423,26 @@ and deleted after PR merge.
 | SessionEnd | \`session-end-finalise.py\` | Telemetry push → rollup → CST prune (post-push) → session-finalise |
 ${EXTRA_HOOK_ROWS}
 ${COORD_SKILLS_SECTION}
+## Headless operating model (PROJ-039/T-040 + T-041)
+
+Autonomous builds are launched **headless** (\`claude --session-id {uuid} -p "<continue+escalate
+prompt>"\`) — a non-interactive one-shot, not a long-lived interactive session. The continue+escalate
+prompt instructs: *continue the brief, commit and push all PRs when done, and if anything needs
+operator direction you cannot resolve, raise it to the team lead with progress so far via the
+session response and exit.* This avoids the resume-reload prompt-cache tax of continuing an
+interactive session after a subscription-limit halt; a limit-exit is the **preferred** failure
+mode (re-launch **fresh** from committed state — never resume).
+
+**Operating rule (build agents AND the team-lead variant):** when a brief cannot complete without
+operator direction, **raise to the team lead with progress so far via the session response, and
+exit.** Do **not** block interactively and do **not** \`AskUserQuestion\`-and-wait — \`AskUserQuestion\`
+is incompatible with headless (no operator on the line). The escalation channel is the substrate
+**response**: the SessionEnd finalise records it and the team lead picks it up at
+\`/consolidate-tasks\`. For self-contained briefs, prefer *pick the simplest reasonable option, note
+it for the team lead, and keep going* over escalating; reserve raise-and-exit for genuine
+operator-only decisions. (Team-lead apex / Hermes stays interactive by design — this model is for
+migrated home-repo agents.)
+
 ## Constraints
 
 - Open sessions via \`${REPO_NAME}.code-workspace\` only
@@ -449,6 +469,7 @@ Task source: context/brief.md (pulled from Qdrant work_items at session start)
 Cross-team work: raise draft in podzoneAgentTeam/briefs/{recipient}/ — do not write to other agents' home repos
 Results: write to results/session-{date}-{slug}-{sid}.md; hook pushes and raises PR
 Memory: read memory/MEMORY.md; update memory/ when learning something durable
+Headless (PROJ-039/T-041): if the brief needs operator direction you cannot resolve, raise it to your team lead with progress so far via the session response and exit — never block, never AskUserQuestion-and-wait (no operator is on the line)
 INSTRUCTIONS
 
 # --- .claude/guardrails.md ---
@@ -456,7 +477,7 @@ INSTRUCTIONS
 cat > "${TARGET_DIR}/.claude/guardrails.md" <<GUARDRAILS
 Never commit context/ — it is ephemeral and gitignored
 Never open task repos directly — always use ${REPO_NAME}.code-workspace
-FILL IN role-specific prohibition 1
+Never AskUserQuestion-and-wait or block interactively when operator-blocked — raise to your team lead via the session response and exit (headless: no operator is on the line — PROJ-039/T-041)
 FILL IN role-specific prohibition 2
 Secrets via getSecret.sh only — never hardcode or log secret values
 If a secret appears in context, stop and notify Martin immediately
