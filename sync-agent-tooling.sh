@@ -130,6 +130,11 @@ role_hooks() {
 # Kept byte-identical with scaffold.sh.
 DEP_DIRS="primitives"
 LIB_MANIFEST="${HOOKS_SRC}/home-runtime-lib.manifest"
+SKILLS_SRC="${AGENT_TOOLING_DIR}/skills"
+# Team-lead variant only: the coordination skill subset delivered under
+# .claude/skills/, byte-identical to canonical, subset-exact. Build agents stay
+# skill-free. PROJ-039/T-038.
+TEAM_LEAD_SKILLS_MANIFEST="${AGENT_TOOLING_DIR}/scaffold/team-lead-skills.manifest"
 
 # --- Sync ---
 
@@ -302,6 +307,97 @@ else
   find "$LIB_DST" -mindepth 1 -type d -empty -delete 2>/dev/null || true
 fi
 
+# --- Coordination skills (team-lead variant only) ---
+# A team-lead home repo carries the coordination skill subset under .claude/skills/,
+# byte-identical to the canonical agent-tooling/skills/ source and EXACTLY the subset
+# (any out-of-subset skill is pruned — session ceremony stays hook-driven). Build-agent
+# home repos stay skill-free: if a .claude/skills/ exists for a non-team-lead role it is
+# flagged (and pruned on confirm). PROJ-039/T-038.
+
+SKILLS_DST="${HOME_REPO}/.claude/skills"
+SUBSET_SET=""
+echo ""
+if [[ "$ROLE" == "team-lead" ]]; then
+  echo "==> Syncing coordination skills (team-lead) → ${SKILLS_DST}"
+  if [[ ! -f "$TEAM_LEAD_SKILLS_MANIFEST" ]]; then
+    echo "  SKIP  skills/ — manifest not found (${TEAM_LEAD_SKILLS_MANIFEST})"
+    ((SKIPPED++))
+  else
+    mkdir -p "$SKILLS_DST"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      entry="${line%%#*}"; entry="${entry//[[:space:]]/}"
+      [[ -z "$entry" ]] && continue
+      SUBSET_SET="${SUBSET_SET} ${entry}"
+      src="${SKILLS_SRC}/${entry}"
+      dst="${SKILLS_DST}/${entry}"
+      if [[ ! -d "$src" ]]; then
+        echo "  SKIP  skills/${entry} — not found in agent-tooling (${src})"
+        ((SKIPPED++)); continue
+      fi
+      if [[ -d "$dst" ]] && diff -rq -x '__pycache__' -x '*.pyc' "$src" "$dst" > /dev/null 2>&1; then
+        echo "  OK    skills/${entry} — unchanged"
+        ((UNCHANGED++)); continue
+      fi
+      if [[ -d "$dst" ]]; then
+        echo "  DIFF  skills/${entry}:"
+        diff -rq -x '__pycache__' -x '*.pyc' "$dst" "$src" || true
+      else
+        echo "  NEW   skills/${entry} — not present in home repo"
+      fi
+      if [[ $YES -eq 0 ]]; then
+        printf "  Overwrite skills/%s? [y/N] " "$entry"
+        read -r answer </dev/tty
+        if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+          echo "  Skipped."; ((SKIPPED++)); continue
+        fi
+      fi
+      rm -rf "$dst"
+      cp -R "$src" "$dst"
+      find "$dst" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+      echo "  Updated: skills/${entry}"
+      ((UPDATED++))
+    done < "$TEAM_LEAD_SKILLS_MANIFEST"
+
+    # Prune any skill NOT in the subset (session ceremony / drift).
+    if [[ -d "$SKILLS_DST" ]]; then
+      while IFS= read -r d; do
+        name="$(basename "$d")"
+        case " ${SUBSET_SET} " in
+          *" ${name} "*) : ;;  # in subset — keep
+          *)
+            if [[ $YES -eq 0 ]]; then
+              printf "  Prune out-of-subset skills/%s? [y/N] " "$name"
+              read -r answer </dev/tty
+              [[ "$answer" == "y" || "$answer" == "Y" ]] || { echo "  Kept."; continue; }
+            fi
+            rm -rf "$d"
+            echo "  Pruned: skills/${name} (not in team-lead-skills.manifest)"
+            ((UPDATED++))
+            ;;
+        esac
+      done < <(find "$SKILLS_DST" -mindepth 1 -maxdepth 1 -type d)
+    fi
+  fi
+else
+  # Build-agent home repos are hooks-only. A stray skills/ is a regression.
+  if [[ -d "$SKILLS_DST" ]]; then
+    echo "==> WARNING: role '${ROLE}' is hooks-only but .claude/skills/ exists."
+    if [[ $YES -eq 0 ]]; then
+      printf "  Remove .claude/skills/ (build agents carry no skills)? [y/N] "
+      read -r answer </dev/tty
+      if [[ "$answer" == "y" || "$answer" == "Y" ]]; then
+        rm -rf "$SKILLS_DST"; echo "  Removed: .claude/skills/"; ((UPDATED++))
+      else
+        echo "  Kept — note: this will FAIL the byte-identity invariant below."
+      fi
+    else
+      rm -rf "$SKILLS_DST"; echo "  Removed: .claude/skills/"; ((UPDATED++))
+    fi
+  else
+    echo "==> Skills: none (role '${ROLE}' is hooks-only — correct)"
+  fi
+fi
+
 echo ""
 echo "Sync complete: ${UPDATED} updated, ${UNCHANGED} unchanged, ${SKIPPED} skipped."
 
@@ -341,8 +437,28 @@ if [[ -f "$LIB_MANIFEST" ]]; then
   done < <(find "$LIB_DST" -type f ! -path '*/__pycache__/*' 2>/dev/null)
 fi
 
+# Skills invariant (PROJ-039/T-038): a team-lead home repo's .claude/skills/ MUST be
+# exactly the coordination subset, each byte-identical to source; a build-agent home
+# repo MUST have NO .claude/skills/ at all.
+if [[ "$ROLE" == "team-lead" && -f "$TEAM_LEAD_SKILLS_MANIFEST" ]]; then
+  for skill in $SUBSET_SET; do
+    diff -rq -x '__pycache__' -x '*.pyc' "${SKILLS_SRC}/${skill}" "${SKILLS_DST}/${skill}" > /dev/null 2>&1 \
+      || { echo "  DRIFT: skills/${skill} (not byte-identical to source / missing)"; DRIFT=1; }
+  done
+  while IFS= read -r d; do
+    name="$(basename "$d")"
+    case " ${SUBSET_SET} " in
+      *" ${name} "*) : ;;
+      *) echo "  DRIFT: skills/${name} (out of subset — not in team-lead-skills.manifest)"; DRIFT=1 ;;
+    esac
+  done < <(find "$SKILLS_DST" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+elif [[ "$ROLE" != "team-lead" && -d "$SKILLS_DST" ]]; then
+  echo "  DRIFT: .claude/skills/ present for hooks-only role '${ROLE}' (build agents carry no skills)"
+  DRIFT=1
+fi
+
 if [[ $DRIFT -eq 0 ]]; then
-  echo "Byte-identity invariant: PASS — hooks + ${DEP_DIRS} + lib closure match agent-tooling."
+  echo "Byte-identity invariant: PASS — hooks + ${DEP_DIRS} + lib closure + skills match agent-tooling."
 else
   echo "Byte-identity invariant: FAIL — drift listed above (re-run without --skip, or investigate)."
   exit 1

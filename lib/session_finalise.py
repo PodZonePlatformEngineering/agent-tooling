@@ -14,8 +14,9 @@ than the legacy outbox-markdown file. DTD § 1.4:
 
 Plus § 2.4 steps 6-7 (the deferred bits):
   6. session-finalise reads the session point and applies steps 1-4 above.
-  7. Brief-result PR: generate `results/session-{date}-{slug}.md` from the
-     session point, commit to the home-team-agent repo, raise a PR.
+  7. Brief-result PR: generate `results/session-{date}-{slug}-{sid}.md` from the
+     session point, commit to the home-team-agent repo, raise a PR. The `{sid}`
+     suffix keys idempotency on session_id (T-039).
 
 **Scope guard (brief § "Out of scope"):** this module does NOT reshape the
 live `consolidate-tasks` skill — it is a library/tool implementation.  The
@@ -220,7 +221,7 @@ def generate_brief_result(
     *,
     date: Optional[str] = None,
 ) -> str:
-    """Render a ``results/session-{date}-{slug}.md`` from the session point payload.
+    """Render a ``results/session-{date}-{slug}-{sid}.md`` from the session point payload.
 
     This is the commit-able brief-result that fulfils the PR obligation (R-011).
     It is deliberately plain text: the git history + the PR description carry the
@@ -295,10 +296,14 @@ def commit_brief_result(
     """
     date = date or _now_date()
     slug = work_item.replace("/", "-").replace(" ", "-").lower()
-    branch_name = branch_name or f"session/{date}-{slug}-result"
+    # Key the filename + branch on session_id (T-039) so a re-set-up session on the
+    # same date+slug authors a distinct result rather than clobbering the prior one;
+    # a same-sid re-run resolves to the same names and stays idempotent.
+    sid = (session_id or "nosid")[:8]
+    branch_name = branch_name or f"session/{date}-{slug}-{sid}-result"
     results_dir = Path(repo_dir) / "results"
     results_dir.mkdir(exist_ok=True)
-    filename = f"session-{date}-{slug}.md"
+    filename = f"session-{date}-{slug}-{sid}.md"
     file_path = results_dir / filename
 
     result = {"file_path": str(file_path), "branch": branch_name,
@@ -343,7 +348,7 @@ def commit_brief_result(
 #
 # In a migrated home repo there is NO `/session-end` skill (the repo is hooks-only
 # by design — hooks + lib + primitives, no skills/). The SessionEnd finalise hook
-# therefore OWNS the session result: it authors `results/session-{date}-{slug}.md`
+# therefore OWNS the session result: it authors `results/session-{date}-{slug}-{sid}.md`
 # from the substrate point and raises a home-repo PR that lands it on home `main`,
 # decoupled from any work PR. The functions below are the testable core of that
 # step; the hook's migrated branch is a thin caller over them.
@@ -431,7 +436,7 @@ def generate_session_result(
     *,
     date: Optional[str] = None,
 ) -> str:
-    """Render the home-repo ``results/session-{date}-{slug}.md`` from the point.
+    """Render the home-repo ``results/session-{date}-{slug}-{sid}.md`` from the point.
 
     Surfaces the five canonical structured sections (Completed / Started /
     Blockers / Decisions / Questions for Martin), extracted from the substrate
@@ -553,12 +558,20 @@ def commit_home_result(
     Returns ``{"file_path", "branch", "pr_url", "ok", "reason", "disposition"}``
     where ``disposition`` ∈ {``done``, ``exists``, ``deferred-cancelled``}.
     Never raises — best-effort; any failure yields ``deferred-cancelled``.
+
+    **Idempotency keys on ``session_id`` (PROJ-039/T-039).** The result filename
+    and branch carry a short session-id suffix, so the existence/no-op checks are
+    per-session: a *distinct* session always authors its own result (a re-set-up
+    session on the same ``date``+``slug`` after a crash no longer sees the prior
+    attempt's file and silently skip), while a *same-sid* re-run resolves to the
+    same filename and stays idempotent (the T-035 recovery behaviour).
     """
     date = date or _now_date()
     slug = work_item.replace("/", "-").replace(" ", "-").lower()
-    filename = f"session-{date}-{slug}.md"
+    sid = (session_id or "nosid")[:8]
+    filename = f"session-{date}-{slug}-{sid}.md"
     rel_path = f"results/{filename}"
-    branch_name = f"session-result/{date}-{slug}"
+    branch_name = f"session-result/{date}-{slug}-{sid}"
 
     result = {"file_path": rel_path, "branch": branch_name, "pr_url": "",
               "ok": False, "reason": "", "disposition": "deferred-cancelled"}

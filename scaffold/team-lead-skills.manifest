@@ -1,0 +1,33 @@
+# team-lead-skills.manifest — the coordination skill subset a *team-lead* home repo
+# carries under .claude/skills/ (PROJ-039/T-038).
+#
+# A migrated build-agent home repo is HOOKS-ONLY (no skills/ at all). A migrated
+# team LEAD additionally needs the coordination skills it actually invokes to lead
+# its team — and ONLY those. This manifest names that subset; scaffold.sh and
+# sync-agent-tooling.sh copy these skills (and no others) from the canonical
+# agent-tooling/skills/ source into a team-lead home repo's .claude/skills/,
+# byte-identical, and test_skills_parity.py enforces it (subset present + byte-
+# identical + NO out-of-subset skill, e.g. session ceremony stays hook-driven).
+#
+# Subset = the skills a fissioned team lead invokes to LEAD (not for its own
+# session-end — result authoring stays with the SessionEnd finalise hook, T-035):
+#
+#   consolidate-tasks   local-mode consolidation of the lead's team repo
+#   launch-session      launching the lead's team agents
+#
+# DELIBERATELY EXCLUDED (kept hook-driven / out of the parity-enforced subset):
+#   session-start / session-end   — agent ceremony is hook-driven in every home repo;
+#                                    the finalise hook owns the result (T-035). A team
+#                                    lead does not need them as skills.
+#   usage-report                  — NOT yet canonical in agent-tooling/skills/ (it
+#                                    drifts between the apex + training mirrors and
+#                                    references a non-resident workstation tool). Adding
+#                                    it to a byte-identity-enforced subset would force a
+#                                    premature canonicalisation with roadmapTeam blast
+#                                    radius. Flagged to Hermes; add once canonicalised.
+#
+# Format: one canonical skill name per line (must exist as agent-tooling/skills/<name>/).
+# Blank lines and lines starting with '#' are ignored.
+
+consolidate-tasks
+launch-session

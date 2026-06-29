@@ -33,6 +33,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SOURCE = REPO_ROOT / "skills"
 ALLOWLIST = REPO_ROOT / "skills-sync-allowlist"
+# Team-lead home-repo coordination subset (PROJ-039/T-038).
+TEAM_LEAD_SKILLS_MANIFEST = REPO_ROOT / "scaffold" / "team-lead-skills.manifest"
 
 # Mirror skills dirs, relative to agent-tooling's parent. Kept in sync with the
 # default MIRRORS in sync-skills.sh.
@@ -108,6 +110,105 @@ def mirror_key(mirror: Path) -> str:
     return p.name
 
 
+def read_subset_manifest(path: Path) -> list[str]:
+    """Skill names from a subset manifest (comments/blanks stripped)."""
+    out: list[str] = []
+    if not path.is_file():
+        return out
+    for line in path.read_text().splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if entry:
+            out.append(entry)
+    return out
+
+
+def find_home_subset_drift(source: Path, home_skills: Path, subset: list[str]) -> list[str]:
+    """Drift for a team-lead home repo's .claude/skills (empty == parity holds).
+
+    Unlike a team mirror (which may carry extra skills), a team-lead home repo's
+    skills set is EXACT: every subset skill present + byte-identical to source, AND
+    no skill outside the subset (session ceremony stays hook-driven). PROJ-039/T-038.
+    """
+    drift: list[str] = []
+    subset_set = set(subset)
+    for skill in subset:
+        dst = home_skills / skill
+        if not dst.is_dir():
+            drift.append(f"home/{skill}: missing in team-lead home repo")
+            continue
+        if not _dirs_identical(source / skill, dst):
+            drift.append(f"home/{skill}: not byte-identical to source")
+    if home_skills.is_dir():
+        for d in sorted(p for p in home_skills.iterdir() if p.is_dir()):
+            if d.name not in subset_set:
+                drift.append(f"home/{d.name}: out-of-subset skill (not in manifest)")
+    return drift
+
+
+class TestTeamLeadHomeSubsetParity(unittest.TestCase):
+    """T-038 — a team-lead home repo carries EXACTLY the coordination subset,
+    byte-identical to source; a build-agent home repo carries no skills at all."""
+
+    def _build_source(self, root: Path) -> Path:
+        source = root / "agent-tooling" / "skills"
+        source.mkdir(parents=True)
+        for skill in ("consolidate-tasks", "launch-session", "session-end", "session-start"):
+            (source / skill).mkdir()
+            (source / skill / "SKILL.md").write_text(f"{skill} body\n")
+        return source
+
+    SUBSET = ["consolidate-tasks", "launch-session"]
+
+    def _build_home(self, root: Path, source: Path, skills: list[str]) -> Path:
+        home = root / "home-training-athena" / ".claude" / "skills"
+        home.mkdir(parents=True)
+        for skill in skills:
+            (home / skill).mkdir()
+            (home / skill / "SKILL.md").write_text((source / skill / "SKILL.md").read_text())
+        return home
+
+    def test_pass_when_subset_byte_identical(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = self._build_source(root)
+            home = self._build_home(root, source, self.SUBSET)
+            self.assertEqual(find_home_subset_drift(source, home, self.SUBSET), [])
+
+    def test_fails_when_subset_skill_missing(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = self._build_source(root)
+            home = self._build_home(root, source, ["consolidate-tasks"])  # launch-session absent
+            drift = find_home_subset_drift(source, home, self.SUBSET)
+            self.assertTrue(any("launch-session" in d and "missing" in d for d in drift), drift)
+
+    def test_fails_when_subset_skill_drifts(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = self._build_source(root)
+            home = self._build_home(root, source, self.SUBSET)
+            (home / "consolidate-tasks" / "SKILL.md").write_text("drifted\n")
+            drift = find_home_subset_drift(source, home, self.SUBSET)
+            self.assertTrue(any("consolidate-tasks" in d for d in drift), drift)
+
+    def test_fails_on_out_of_subset_skill(self):
+        """Session ceremony (or any non-subset skill) in the home repo is drift."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source = self._build_source(root)
+            home = self._build_home(root, source, self.SUBSET + ["session-end"])
+            drift = find_home_subset_drift(source, home, self.SUBSET)
+            self.assertTrue(any("session-end" in d and "out-of-subset" in d for d in drift), drift)
+
+    def test_manifest_skills_exist_in_source(self):
+        """Every skill named in the real subset manifest must be a real source skill."""
+        subset = read_subset_manifest(TEAM_LEAD_SKILLS_MANIFEST)
+        self.assertTrue(subset, "team-lead skills manifest is empty/missing")
+        for skill in subset:
+            self.assertTrue((SOURCE / skill).is_dir(),
+                            f"manifest names '{skill}' but agent-tooling/skills/{skill} is absent")
+
+
 class TestSkillsParityHermetic(unittest.TestCase):
     """Self-contained: no real repos. Proves the checker pass/fail/allowlist logic."""
 
@@ -169,6 +270,38 @@ class TestSkillsParityHermetic(unittest.TestCase):
             allowed = {f"{mirror_key(mirror)}:alpha"}
             self.assertEqual(find_drift(source, mirror, allowed), [],
                              "allowlisted skill must not be reported as drift")
+
+
+class TestTeamLeadScaffoldDelivery(unittest.TestCase):
+    """T-038 — scaffold.sh delivers the coordination subset to a team-lead home repo
+    (byte-identical, subset-exact) and NO skills to a build-agent home repo."""
+
+    import subprocess as _sp
+
+    def _scaffold(self, team: str, agent: str, role: str, target: Path) -> None:
+        env = {**__import__("os").environ, "NO_TELEMETRY_BOOTSTRAP": "1"}
+        self._sp.run(
+            ["bash", str(REPO_ROOT / "scaffold.sh"), team, agent, role,
+             "--target-dir", str(target), "--force"],
+            cwd=str(REPO_ROOT), check=True, capture_output=True, text=True, env=env,
+        )
+
+    def test_team_lead_gets_exact_subset_byte_identical(self):
+        subset = read_subset_manifest(TEAM_LEAD_SKILLS_MANIFEST)
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "home-training-athena"
+            self._scaffold("training", "athena", "team-lead", target)
+            home_skills = target / ".claude" / "skills"
+            self.assertTrue(home_skills.is_dir(), "team-lead home repo must have .claude/skills/")
+            drift = find_home_subset_drift(SOURCE, home_skills, subset)
+            self.assertEqual(drift, [], f"team-lead skills drift: {drift}")
+
+    def test_build_agent_has_no_skills(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "home-podzone-coder"
+            self._scaffold("podzone", "somecoder", "coder", target)
+            self.assertFalse((target / ".claude" / "skills").exists(),
+                             "build-agent home repo must NOT carry .claude/skills/")
 
 
 class TestSkillsParityRealRepos(unittest.TestCase):

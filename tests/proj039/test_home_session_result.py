@@ -235,5 +235,85 @@ class TestCommitHomeResult(unittest.TestCase):
             self.assertEqual(second["disposition"], "exists", second)
 
 
+class TestSessionIdIdempotencyKey(unittest.TestCase):
+    """T-039 — the result idempotency key is the **session_id**, not date+slug.
+
+    Regression for the C2c-build result that was hidden on 2026-06-29: a session
+    re-set-up on the same day (after a crash) shares the prior attempt's
+    ``date``+``slug``. When the existence check keyed on ``session-{date}-{slug}.md``
+    the second (real) session saw the first attempt's file → ``exists`` → silently
+    skipped authoring its own result. Keying on session_id fixes both directions:
+
+      * two distinct sids on the same date+slug → **two** results (no skip);
+      * the same sid re-run → **one** result (still idempotent — T-035 recovery).
+    """
+
+    SID_A = "11111111-aaaa-4bbb-8ccc-1111aaaa1111"
+    SID_B = "22222222-bbbb-4ccc-8ddd-2222bbbb2222"
+
+    def test_two_sids_same_date_slug_author_two_results(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            work = self._setup_repo(d)
+            point_a = {**SESSION_POINT, "session_id": self.SID_A}
+            point_b = {**SESSION_POINT, "session_id": self.SID_B}
+            text_a = session_finalise.generate_session_result(point_a, date=FIXED_DATE)
+            text_b = session_finalise.generate_session_result(point_b, date=FIXED_DATE)
+
+            res_a = session_finalise.commit_home_result(
+                text_a, session_id=self.SID_A, work_item=SESSION_POINT["work_item"],
+                date=FIXED_DATE, repo_dir=work, raise_pr=False, base_branch="main",
+            )
+            # Land A on main, simulating the first attempt's PR merging.
+            self._merge_branch_to_main(work, res_a["branch"])
+
+            # The SECOND session shares date+slug but has a distinct sid: it must
+            # NOT see A's result as its own — it authors a fresh one (no skip).
+            res_b = session_finalise.commit_home_result(
+                text_b, session_id=self.SID_B, work_item=SESSION_POINT["work_item"],
+                date=FIXED_DATE, repo_dir=work, raise_pr=False, base_branch="main",
+            )
+
+            self.assertEqual(res_a["disposition"], "done", res_a)
+            self.assertEqual(res_b["disposition"], "done", res_b)
+            self.assertNotEqual(res_a["file_path"], res_b["file_path"])
+            self.assertNotEqual(res_a["branch"], res_b["branch"])
+            self.assertIn(self.SID_A[:8], res_a["file_path"])
+            self.assertIn(self.SID_B[:8], res_b["file_path"])
+
+    def test_same_sid_rerun_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            work = self._setup_repo(d)
+            point = {**SESSION_POINT, "session_id": self.SID_A}
+            text = session_finalise.generate_session_result(point, date=FIXED_DATE)
+
+            first = session_finalise.commit_home_result(
+                text, session_id=self.SID_A, work_item=SESSION_POINT["work_item"],
+                date=FIXED_DATE, repo_dir=work, raise_pr=False, base_branch="main",
+            )
+            self.assertEqual(first["disposition"], "done", first)
+            self._merge_branch_to_main(work, first["branch"])
+
+            # Same sid, same date+slug → resolves to the same filename → no-op.
+            second = session_finalise.commit_home_result(
+                text, session_id=self.SID_A, work_item=SESSION_POINT["work_item"],
+                date=FIXED_DATE, repo_dir=work, raise_pr=False, base_branch="main",
+            )
+            self.assertEqual(second["disposition"], "exists", second)
+            self.assertEqual(first["file_path"], second["file_path"])
+
+    # -- helpers (reuse TestCommitHomeResult's repo setup) ------------------
+    _setup_repo = TestCommitHomeResult._setup_repo
+
+    @staticmethod
+    def _merge_branch_to_main(work: str, branch: str) -> None:
+        _git(work, "fetch", "origin", branch)
+        _git(work, "checkout", "main")
+        _git(work, "merge", "--no-edit", "FETCH_HEAD")
+        _git(work, "push", "origin", "main")
+        _git(work, "checkout", "session/work-branch")
+
+
 if __name__ == "__main__":
     unittest.main()
