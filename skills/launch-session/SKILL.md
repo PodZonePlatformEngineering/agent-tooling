@@ -1,6 +1,6 @@
 ---
 name: launch-session
-description: Launch an isolated concurrent agent session — VS Code worktree (legacy standard/fissioned) or standalone-terminal materialise flow (migrated home-repo) (Team Lead only)
+description: Launch an isolated concurrent agent session — VS Code worktree (legacy standard/fissioned) or standalone-terminal materialise flow (migrated home-repo; headless one-shot or interactive) (Team Lead only)
 ---
 
 This skill is for **the Team Lead** of each team. It creates an isolated working environment
@@ -21,6 +21,30 @@ It has **two launch shapes**, selected per-agent by mode (see Step 1):
 
 The two paths **coexist** during the C2 migration window — an agent is migrated iff its row
 in the registry says so (Step 1).
+
+### Migrated launch mode — interactive vs headless (PROJ-039/T-040)
+
+The migrated home-repo launch has **two modes**, selected per-session at launch (Step 1, the
+`mode` input):
+
+- **headless** (default for autonomous / build briefs) — emits a **one-shot** command
+  `claude --session-id {uuid} -p "<continue+escalate prompt>"`. The agent runs the brief to
+  completion in a single non-interactive pass, commits + pushes its PRs, and exits; a
+  subscription-limit halt is the *preferred* failure mode (re-launch **fresh** from committed
+  state — never resume). Pairs with the T-041 raise-to-lead-and-exit role convention so a
+  headless agent never blocks waiting for an operator who is not on the line.
+- **interactive** (default for **team-lead** / high-uncertainty work) — emits the
+  standalone-terminal `claude --session-id {uuid}` command (no `-p`); the operator drives the
+  session live.
+
+**Why headless is the default for builds (operator principle, 2026-06-29):** an interactive
+session *continued* after a subscription-limit pays the full prompt-cache **reload** even when
+most of the work is done — evidence: session `45474746` was alive ~67 h but active ~8 h across 4
+bursts, the idle gaps expiring the ~5-min cache and driving **83.8 M** cache-creation tokens
+(≈82 % of its headline). Headless one-shot avoids the resume-reload tax. Memory:
+`feedback_headless_autonomous_sessions`. The only delta between the two modes is the **emitted
+command** (Step 8) and, for headless, the **continue+escalate prompt** — pin/author/materialise/
+register are identical.
 
 ## Prerequisites
 
@@ -43,6 +67,17 @@ in the registry says so (Step 1).
 - **agent** — e.g. `hephaestus`, `atlas`, `thoth`
 - **task-slug** — short identifier for the session work, e.g. `dev-functional-testing`
 - **repos** — which repos the session needs (default: from the agent's identity file)
+- **mode** — `headless` | `interactive` (migrated home-repo mode only; PROJ-039/T-040).
+  **Default by work type:** autonomous / build briefs → `headless`; **team-lead** or
+  high-uncertainty briefs → `interactive`. This is an explicit operator choice at launch —
+  ask Martin if the brief's nature is unclear. (See "Migrated launch mode" above and Step 8.)
+
+  > **Mode-selection mechanism (operator-DECIDED simplest option, PROJ-039/T-040, flagged to
+  > Hermes to confirm):** the mode is a **launch-time input to this skill** (the Team Lead
+  > picks it when launching), not a brief front-matter field. Rationale: the launcher already
+  > takes conversational inputs and the Team Lead is the natural decision point, so no new
+  > YAML-parse step is added to brief authoring. A brief front-matter `mode:` field can be
+  > layered on later as an override without changing this default.
 
 ## Step 1 — Resolve agent identity and repos
 
@@ -97,8 +132,10 @@ The shared Steps 1–2 run first, then the migrated-only steps:
 6. **Wire SessionStart materialise + SessionEnd finalise — conditionally** (Step 6,
    migrated subsection): a no-op once the materialise hook is resident (C4).
 7. **Register** the session in the apex `active.md` (Step 7).
-8. **Emit a standalone-terminal launch command** + clean-`/exit` reminder (Step 8); then
-   optionally **verify the materialise resolves** before handing off (Step 9).
+8. **Emit the launch command for the selected mode** (Step 8) — headless one-shot
+   (`-p "<continue+escalate prompt>"`) for builds, interactive standalone-terminal for
+   team-lead/high-uncertainty work — + clean-`/exit` reminder; then optionally **verify the
+   materialise resolves** before handing off (Step 9).
 
 (Steps below are ordered for execution: shared 1–2, worktrees 3, then migrated 4→5→6→7,
 launch 8, verify 9. Pin-then-author-then-worktree is also valid — the only hard ordering
@@ -512,20 +549,50 @@ for a manual finalise:
   --new-window ~/sessions/{session-id}/session.code-workspace
 ```
 
-### Migrated home-repo mode — emit standalone-terminal launch command
+### Migrated home-repo mode — emit launch command (interactive | headless)
 
 Do **not** open a VS Code window. Emit a command for Martin to run in a **standalone
-terminal**, launching from the home-repo worktree (the cwd materialise writes into) with
-the pinned id:
+terminal**, launching from the home-repo worktree (the cwd materialise writes into) with the
+pinned id. The command shape depends on the `mode` input (Step 1).
+
+#### interactive (team-lead / high-uncertainty — operator drives the session live)
 
 ```bash
 cd ~/sessions/{session-id}/{home_repo} && claude --session-id {pinned-uuid}
 ```
 
+#### headless (default for autonomous / build briefs — one-shot, non-interactive)
+
+Emit the same launch but with a `-p` one-shot prompt. The agent runs the brief to completion,
+commits + pushes its PRs, and exits without an operator on the line:
+
+```bash
+cd ~/sessions/{session-id}/{home_repo} && claude --session-id {pinned-uuid} \
+  -p "Hi {Agent}. Continue with the brief. Commit and push all PRs when done. If anything needs operator direction you cannot resolve, raise it to {team_lead} with progress so far via your session response, and exit — do not wait."
+```
+
+**Standard continue+escalate prompt (template — the launcher fills the fields):**
+
+> "Hi **{Agent}**. Continue with the brief. Commit and push all PRs when done. If anything needs
+> operator direction you cannot resolve, raise it to **{team_lead}** with progress so far via
+> your session response, and exit — do not wait."
+
+- `{Agent}` — capitalised agent name (e.g. `Hephaestus`).
+- `{team_lead}` — the agent's team lead for escalation (e.g. `Hermes`; for a fissioned team,
+  that team's lead). The escalation channel is the substrate **response** — finalise records it
+  and the lead picks it up at `/consolidate-tasks` (proven path; no interactive block).
+- The launcher MAY append task refs (e.g. "— T-040 then T-041") and a one-line "pick the
+  simplest reasonable option and note it for {team_lead}" allowance for self-contained briefs,
+  but the raise-to-lead-**and-exit** clause is mandatory and must not be dropped.
+- **Headless ⇒ no `AskUserQuestion`-and-wait** (no operator on the line — T-041 role
+  convention). The prompt instructs raise-to-lead-and-exit precisely so the agent never blocks.
+
 > ⚠️ **Finish with a clean `/exit`.** SessionEnd finalise (response + rollup + telemetry
 > push + push-then-delete + brief-result PR) hangs off the SessionEnd hook; a clean `/exit`
-> is what fires it reliably. Closing the terminal / killing the process can skip
-> finalisation. If SessionEnd is missed, finalise manually:
+> is what fires it reliably. In **headless** mode, `claude -p` exits cleanly when the one-shot
+> completes, which fires SessionEnd; a subscription-limit halt is the preferred failure mode
+> (re-launch **fresh** from committed state — never resume). Closing the terminal / killing the
+> process can skip finalisation. If SessionEnd is missed, finalise manually:
 > `echo '{"session_id":"{pinned-uuid}","transcript_path":"<path>"}' | python3 ~/sessions/{session-id}/{home_repo}/.claude/hooks/session-end-finalise.py`
 
 ## Step 9 — Verify the materialise resolves (migrated home-repo mode; recommended)
@@ -598,15 +665,21 @@ Session prepared: hephaestus-2026-06-25-proj039-t028
                     [or "resident — no-op" once C4 lands]
   SessionEnd:       resident (session-end-finalise.py, C2-v2.1c)
   Registered:       planning/sessions/active.md (podzoneAgentTeam, apex)
+  Mode:             headless (autonomous build — default; T-040)
   Verify:           materialise OK {'brief': 1, 'tasks': 50}
 
-Run this in a standalone terminal:
+Run this in a standalone terminal (headless one-shot):
 
   cd ~/sessions/hephaestus-2026-06-25-proj039-t028/home-podzone-hephaestus && \
-    claude --session-id 46a03b8e-c90c-4ce7-9f93-ae839a696b43
+    claude --session-id 46a03b8e-c90c-4ce7-9f93-ae839a696b43 \
+    -p "Hi Hephaestus. Continue with the brief. Commit and push all PRs when done. If anything needs operator direction you cannot resolve, raise it to Hermes with progress so far via your session response, and exit — do not wait."
+
+  # interactive mode (team-lead / high-uncertainty) would instead be:
+  #   cd ~/sessions/.../home-podzone-hephaestus && claude --session-id 46a03b8e-…
 
 ⚠️ Finish with a clean /exit — that fires the resident SessionEnd finalise (response +
-rollup + telemetry + push-then-delete + brief-result PR). At session end the agent's
+rollup + telemetry + push-then-delete + brief-result PR). In headless mode `claude -p` exits
+cleanly when the one-shot completes, which fires SessionEnd. At session end the agent's
 `.workspace/` was materialised from Qdrant at SessionStart; there is no .code-workspace.
 ```
 
