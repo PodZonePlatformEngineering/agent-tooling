@@ -85,15 +85,32 @@ Mark session `concluded-merged` in `active.md`.
 
 **Outcome B** — path violation or missing outbox: flag to Martin; do not merge.
 
-### 0c — Worktree cleanup
+### 0c — Clone-on-main + local session-branch cleanup (PROJ-039/T-045)
 
-For each session `concluded-merged` where all task-repo PRs are also merged:
+**Serial simple-repo mode (default).** Sessions now run directly in the primary clone
+(`~/workspace/{repo}`) on a session branch — there are no `~/sessions/{sid}/` worktrees
+to reap. The session-end finalise guard already returns each touched clone to `main` and
+deletes its pushed session branch; this step is the belt-and-suspenders sweep for a
+session that crashed before finalise ran (its branch is still checked out).
+
+For each session `concluded-merged` where all task-repo PRs are also merged, return any
+clone still on that session's branch to a fast-forwarded `main` and drop the merged local
+branch. The `session_guard` helper does the safe thing (skips a clone already on main,
+never deletes an unpushed branch):
 ```bash
-git -C ~/workspace/{repo} worktree remove ~/sessions/{session-id}/{repo-name} --force
-git -C ~/workspace/podzoneAgentTeam worktree remove ~/sessions/{session-id}/podzoneAgentTeam --force
-rmdir ~/sessions/{session-id}   # only if empty
+# per touched clone (home repo + task repos):
+python3 ~/workspace/agent-tooling/lib/session_guard.py return-to-main \
+  --repo ~/workspace/{repo} --branch session/{agent}-{YYYY-MM-DD}-{task-slug}
 ```
-Mark session `cleaned-up` in `active.md`.
+Any clone reported `returned-branch-kept-unpushed` (tip not on a remote) is an anomaly —
+surface it to Martin rather than force-deleting. Mark the session `cleaned-up` in
+`active.md`.
+
+> **Legacy worktree option.** For a session launched with the retired
+> `--legacy-worktree` flag (see `/launch-session`), fall back to the old reap —
+> `git -C ~/workspace/{repo} worktree remove ~/sessions/{session-id}/{repo-name} --force`
+> then `rmdir ~/sessions/{session-id}` if empty. Default (primary-clone) sessions never
+> need this.
 
 ## Step 1 — Discover unprocessed outbox files
 

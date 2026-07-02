@@ -1,6 +1,6 @@
 ---
 name: launch-session
-description: Launch an isolated concurrent agent session — VS Code worktree (legacy standard/fissioned) or standalone-terminal materialise flow (migrated home-repo; headless one-shot or interactive) (Team Lead only)
+description: Launch an agent session — migrated home-repo default is serial simple-repo mode (runs in the primary clone on a session branch, guarded; T-045), with the VS Code worktree path retired to a --legacy-worktree option; headless one-shot or interactive (Team Lead only)
 ---
 
 This skill is for **the Team Lead** of each team. It creates an isolated working environment
@@ -96,9 +96,11 @@ Pass it either inline on the launch command (simplest, headless) or via the `set
 **Launch (Step 8, brief-first) — headless:**
 
 ```bash
-cd ~/sessions/{session-id}/{home_repo} && BRIEF_ID="{team}/{date}-{task-slug}" \
+cd ~/workspace/{home_repo} && BRIEF_ID="{team}/{date}-{task-slug}" \
   claude -p "Hi {Agent}. Continue with the brief. Commit and push all PRs when done. If the brief is now FULLY complete, include a line \`Brief-Status: complete\` in your final response; otherwise it stays in_progress for the next session. If anything needs operator direction you cannot resolve, raise it to {team_lead} with progress so far via your session response, and exit — do not wait."
 ```
+(Serial simple-repo default — launch cwd is the primary clone on its session branch, T-045.
+A `--legacy-worktree` launch uses `~/sessions/{session-id}/{home_repo}` instead.)
 
 The `Brief-Status: complete` line is the **deterministic completion signal** SessionEnd finalise
 reads to stamp the brief `complete` + `completed_at`; absent it, the brief stays `in_progress` so
@@ -187,8 +189,10 @@ The shared Steps 1–2 run first, then the migrated-only steps:
 3. **Pin a pre-generated `--session-id`** (Step 4) and persist it.
 4. **Author the brief as a `session_substrate` session point** keyed to the pinned id
    (Step 5); verify read-back.
-5. **Create the home-repo worktree** under `~/sessions/{session-id}/` (the launch cwd) +
-   task-repo worktrees (Step 3, migrated subsection; Step 3a still applies).
+5. **Preflight + branch the primary clone** (Step 3, migrated subsection): the session
+   runs directly in `~/workspace/{home_repo}` (the launch cwd) on a session branch — **no
+   worktree, no `~/sessions/{sid}/` dir**. The `session_guard` preflight asserts the clone
+   is clean + on a ff'd `main` (or HALTs), takes a one-session lock, then branches.
 6. **Wire SessionStart materialise + SessionEnd finalise — conditionally** (Step 6,
    migrated subsection): a no-op once the materialise hook is resident (C4).
 7. **Register** the session in the apex `active.md` (Step 7).
@@ -197,9 +201,41 @@ The shared Steps 1–2 run first, then the migrated-only steps:
    team-lead/high-uncertainty work — + clean-`/exit` reminder; then optionally **verify the
    materialise resolves** before handing off (Step 9).
 
-(Steps below are ordered for execution: shared 1–2, worktrees 3, then migrated 4→5→6→7,
-launch 8, verify 9. Pin-then-author-then-worktree is also valid — the only hard ordering
-is *pin the id before authoring the point*, since the point is keyed by it.)
+(Steps below are ordered for execution: shared 1–2, preflight+branch 3, then migrated
+4→5→6→7, launch 8, verify 9. Pin-then-author-then-branch is also valid — the only hard
+ordering is *pin the id before authoring the point*, since the point is keyed by it.)
+
+### Serial simple-repo mode (default, PROJ-039/T-045)
+
+**Parallel same-agent sessions are given up** (operator decision 2026-07-02 — the merge
+gate serialises sessions anyway, and per-agent home repos already give the isolation
+worktrees used to). A migrated session therefore runs **directly in the primary clones**,
+each on a session branch, with **no worktrees and no `~/sessions/{sid}/` directory**. The
+migrated launch collapses toward:
+
+```bash
+cd ~/workspace/{home_repo} && BRIEF_ID={brief_id} claude --model … -p "…"
+```
+
+Worktree isolation is retired to a documented **legacy option** (`--legacy-worktree`, kept
+one release for a genuine parallel need). Its safety is replaced by three **main-guards**
+(`lib/session_guard.py` — one CLI call each, so this skill carries no worktree bash):
+
+- **Start guard (pre-branch, Step 3).** `session_guard.py preflight --repo ~/workspace/{repo}`
+  asserts the clone is clean and on a fast-forwarded `main`; a leftover session branch from a
+  prior crash **HALTs with a recovery message** (auto-recovers only if the T-030 finalise
+  ledger shows that clone's last session finalised). Do not branch on a `halt`.
+- **One-session lock.** `session_guard.py lock --repo ~/workspace/{repo} --sid {sid}` refuses
+  a concurrent launch against the same clone (`~/.claude/session-locks/{repo}.lock`); the
+  finalise releases it. A `halt`/refuse is a clean stop, not a failure to paper over.
+- **End guard (session-end).** The SessionEnd finalise returns each touched clone to a ff'd
+  `main` and deletes the pushed session branch (`session_guard.return_to_main`) — resident,
+  nothing to wire here. A crash before it leaves the branch in place; the next launch's start
+  guard catches it.
+
+The steps below are written for this default. The legacy worktree ceremony is retained under
+explicitly-labelled **Legacy worktree option** subsections; take it only when launched with
+`--legacy-worktree`.
 
 ## Step 2 — Pre-flight brief check
 
@@ -251,19 +287,60 @@ Before creating any worktrees, confirm a commission brief for this session exist
    ```
    Do not create worktrees, workspace files, or session registry entries.
 
-## Step 3 — Create session directory and worktrees
+## Step 3 — Preflight + branch the primary clones
 
-Session ID format: `{agent}-{YYYY-MM-DD}-{task-slug}`
-Session directory: `~/sessions/{session-id}/`
+### Migrated home-repo mode (default) — serial simple-repo, no worktree (PROJ-039/T-045)
+
+The session runs **in the primary clones** on session branches — there is **no
+`~/sessions/{sid}/` directory and no worktree**. For each repo in scope (the home repo +
+each task repo from the identity `repos` list), run the start guard, take the lock, and
+branch the clone itself. The `session_guard` CLI replaces the old worktree + ff + exclude
+bash with one call each:
 
 ```bash
-mkdir -p ~/sessions/{session-id}
+SID=…            # the pinned runtime UUID (Step 4)
+for repo in {home_repo} {task_repos…}; do
+  CLONE=~/workspace/$repo
+  # Start guard: clone must be clean + on a ff'd main, else HALT (recovers only a
+  # leftover branch whose session already finalised). rc!=0 ⇒ do NOT launch.
+  python3 ~/workspace/agent-tooling/lib/session_guard.py preflight --repo "$CLONE" || {
+    echo "preflight HALT for $CLONE — resolve and re-launch"; exit 1; }
+  # One-session lock (finalise releases it). rc 4 ⇒ a session already holds this clone.
+  python3 ~/workspace/agent-tooling/lib/session_guard.py lock --repo "$CLONE" --sid "$SID" || {
+    echo "clone $CLONE is locked by a live session — refuse"; exit 1; }
+  # Branch the clone: session/{agent}-{date}-{slug} for the home/PAT repo,
+  # {agent}/{date}-{slug} for a task repo.
+  git -C "$CLONE" checkout -b {branch}
+done
+```
+
+Branch naming is unchanged: `session/{agent}-{YYYY-MM-DD}-{task-slug}` for the home/PAT
+repo, `{agent}/{YYYY-MM-DD}-{task-slug}` for task repos (append `-2`, `-3` on a same-slug
+retry). preflight already fast-forwarded `main`, so the branch starts from current origin —
+the per-worktree fast-forward dance of Step 3a is gone (one fetch+ff per clone, inside
+preflight). The launch cwd is `~/workspace/{home_repo}` (Step 8). **podzoneAgentTeam as a
+write-target:** branch the **primary** `~/workspace/podzoneAgentTeam` on a `session/…`
+branch via the same guard+lock — the T-031 "never branch the apex primary clone" rule is
+now the *normal* path, so its end-guard returns it to main at finalise (read-only apex use
+still references the plain clone, unbranched).
+
+> **Legacy worktree option (`--legacy-worktree`).** The pre-T-045 worktree ceremony below is
+> retained for one release for a genuine parallel need. Take it **only** when the launch was
+> explicitly requested with `--legacy-worktree`; otherwise use the primary-clone default
+> above and skip to Step 4. Under the legacy flag the session dir + worktrees + Step 3a apply
+> as written, and `/consolidate-tasks` Step 0c reaps the worktree instead of the branch.
+
+Session ID format: `{agent}-{YYYY-MM-DD}-{task-slug}`
+Session directory (legacy only): `~/sessions/{session-id}/`
+
+```bash
+mkdir -p ~/sessions/{session-id}   # legacy worktree option only
 ```
 
 > **Migrated note:** this human-readable `{session-id}` names the **session directory** only.
 > The runtime `--session-id` is a separate **pinned UUID** (Step 4) — the two are distinct.
 
-### Step 3a — Fast-forward local mains before branching
+### Step 3a — Fast-forward local mains before branching (legacy worktree option only)
 
 `git worktree add ... -b {branch}` branches from the **local** clone's `main`, not
 from origin. If a prior session's PRs merged on GitHub since the last local pull, the
@@ -352,7 +429,11 @@ reference it as a plain folder — do not create a worktree or session branch:
 podzoneAgentTeam path: ~/workspace/podzoneAgentTeam  (plain clone, read-only)
 ```
 
-### Migrated home-repo mode (home_repo matches home-*)
+### Migrated home-repo mode — Legacy worktree option (`--legacy-worktree` only, PROJ-039/T-045)
+
+> **Retired default.** Serial simple-repo mode (above) is the default — this worktree
+> ceremony applies **only** under an explicit `--legacy-worktree` launch. It is kept one
+> release for a genuine parallel need and flagged for deletion later.
 
 The **home repo worktree is the launch cwd** — the agent runs `claude` from inside it,
 and the SessionStart materialise hook writes `.workspace/` there. Create it on the PAT
@@ -612,13 +693,15 @@ for a manual finalise:
 ### Migrated home-repo mode — emit launch command (interactive | headless)
 
 Do **not** open a VS Code window. Emit a command for Martin to run in a **standalone
-terminal**, launching from the home-repo worktree (the cwd materialise writes into) with the
-pinned id. The command shape depends on the `mode` input (Step 1).
+terminal**, launching from the **primary home-repo clone** `~/workspace/{home_repo}` (the cwd
+materialise writes into, now on the session branch from Step 3) with the pinned id. The command
+shape depends on the `mode` input (Step 1). (Legacy `--legacy-worktree` launches instead use
+`~/sessions/{session-id}/{home_repo}`.)
 
 #### interactive (team-lead / high-uncertainty — operator drives the session live)
 
 ```bash
-cd ~/sessions/{session-id}/{home_repo} && claude --session-id {pinned-uuid}
+cd ~/workspace/{home_repo} && claude --session-id {pinned-uuid}
 ```
 
 #### headless (default for autonomous / build briefs — one-shot, non-interactive)
@@ -627,7 +710,7 @@ Emit the same launch but with a `-p` one-shot prompt. The agent runs the brief t
 commits + pushes its PRs, and exits without an operator on the line:
 
 ```bash
-cd ~/sessions/{session-id}/{home_repo} && claude --session-id {pinned-uuid} \
+cd ~/workspace/{home_repo} && claude --session-id {pinned-uuid} \
   -p "Hi {Agent}. Continue with the brief. Commit and push all PRs when done. If anything needs operator direction you cannot resolve, raise it to {team_lead} with progress so far via your session response, and exit — do not wait."
 ```
 
@@ -652,8 +735,9 @@ cd ~/sessions/{session-id}/{home_repo} && claude --session-id {pinned-uuid} \
 > is what fires it reliably. In **headless** mode, `claude -p` exits cleanly when the one-shot
 > completes, which fires SessionEnd; a subscription-limit halt is the preferred failure mode
 > (re-launch **fresh** from committed state — never resume). Closing the terminal / killing the
-> process can skip finalisation. If SessionEnd is missed, finalise manually:
-> `echo '{"session_id":"{pinned-uuid}","transcript_path":"<path>"}' | python3 ~/sessions/{session-id}/{home_repo}/.claude/hooks/session-end-finalise.py`
+> process can skip finalisation. If SessionEnd is missed, finalise manually (primary-clone
+> default; note the `cwd` so the end-guard returns the right clone to main):
+> `echo '{"session_id":"{pinned-uuid}","cwd":"'$HOME'/workspace/{home_repo}","transcript_path":"<path>"}' | python3 ~/workspace/{home_repo}/.claude/hooks/session-end-finalise.py`
 
 ## Step 9 — Verify the materialise resolves (migrated home-repo mode; recommended)
 
@@ -743,9 +827,16 @@ cleanly when the one-shot completes, which fires SessionEnd. At session end the 
 `.workspace/` was materialised from Qdrant at SessionStart; there is no .code-workspace.
 ```
 
-## Cleanup (done by consolidate-tasks, not here)
+## Cleanup
 
-After all PRs (task repos + the PAT/home repo) are merged:
+**Serial simple-repo mode (default, T-045):** there is **nothing to reap** — no worktree, no
+`~/sessions/{sid}/` dir. The SessionEnd finalise end-guard already returned each touched clone
+to `main` and deleted its pushed session branch, and released the one-session lock;
+`/consolidate-tasks` Step 0c is only the belt-and-suspenders sweep for a session that crashed
+before finalise ran. Mark the session `cleaned-up` in `planning/sessions/active.md`.
+
+**Legacy worktree option (`--legacy-worktree`), done by consolidate-tasks, not here.** After
+all PRs (task repos + the PAT/home repo) are merged:
 
 ```bash
 git -C ~/workspace/{repo} worktree remove ~/sessions/{session-id}/{repo-name}
@@ -754,5 +845,3 @@ rmdir ~/sessions/{session-id}   # only if empty
 ```
 
 (For standard mode the PAT worktree is `~/sessions/{session-id}/podzoneAgentTeam`.)
-
-Mark the session `cleaned-up` in `planning/sessions/active.md`.
