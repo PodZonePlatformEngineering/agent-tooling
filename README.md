@@ -193,6 +193,10 @@ Qdrant collection schemas live in `collections/`. Each YAML file documents the
 collection's dimensions, distance metric, and payload contract.
 
 `work_items.yaml` is the canonical schema for cross-agent task records.
+`briefs.yaml` is the canonical schema for first-class **briefs** — a brief is
+decoupled from any one session and worked across many (PROJ-039/T-043); create it
+with `hooks/setup-briefs-collection.sh` (indexes-before-ingest) and author points
+with `tools/create-brief.py`.
 
 ---
 

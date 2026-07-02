@@ -128,6 +128,7 @@ def create_session_point(
     brief_text: str,
     target_agent: Optional[str] = None,
     dispatch_ts: Optional[str] = None,
+    brief_id: Optional[str] = None,
     api_key: Optional[str] = None,
     ollama_host: Optional[str] = None,
 ) -> dict:
@@ -136,6 +137,12 @@ def create_session_point(
     Full-point upsert — creation only. Sets the `brief` named vector from
     ``brief_text``; the `response` vector is added later at session-end via
     update-vectors. Returns ``{"point_id", "ok"}``.
+
+    ``brief_id`` is the optional reverse link to a first-class `briefs`-collection
+    point (PROJ-039/T-043): set on the **brief-first** materialise path so a
+    session point records which brief it was stood up from (and session-end can
+    stamp that brief complete). Absent on the legacy pinned-sid path
+    (backwards-compatible — the field is simply omitted).
 
     The *embed input* is head-truncated to a safe token budget
     (:func:`_bound_embed_input`) so a large brief cannot 500 nomic-embed-text and
@@ -161,6 +168,8 @@ def create_session_point(
         "response": None,
         "rollup": None,
     }
+    if brief_id is not None:
+        payload["brief_id"] = brief_id
     qdrant_http.upsert_points(
         [{"id": pid, "vector": {"brief": brief_vector}, "payload": payload}],
         collection=COLLECTION,

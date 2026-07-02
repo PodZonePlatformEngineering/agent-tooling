@@ -27,6 +27,7 @@ jsonl_scrape.py
 qdrant_http.py
 session_metadata.py
 session_substrate.py
+brief_substrate.py
 work_items_extract.py
 telemetry_repo.py
 cst_cleanup.py

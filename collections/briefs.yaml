@@ -1,0 +1,107 @@
+# briefs — Qdrant collection schema (PROJ-039/T-043)
+#
+# A brief is a FIRST-CLASS point, NOT linked to a specific session. It is
+# authored once (per dispatch, or per trainee) and worked across many sessions;
+# each session's runtime id is appended to `session_ids[]` at SessionStart (the
+# reverse link). This decouples the brief from the pinned-session-id ceremony the
+# `session_substrate` launch flow required (ADR-008 D1/D5 evolve, not reopen).
+#
+# Snake_case plural, sibling to `sessions` / `work_items`.
+#
+# Spec: home-podzone-hephaestus .workspace/brief.md (PROJ-039/T-043 § Schema)
+# Lib:  agent-tooling/lib/brief_substrate.py
+# Setup: agent-tooling/hooks/setup-briefs-collection.sh (indexes-before-ingest)
+
+collection: briefs
+scope: programme-wide
+
+# Named `brief` vector — 768-dim nomic-embed-text over `body`. Embed input is
+# token-safe (T-027): the full `body` is stored unchanged; only the embed input
+# is head-truncated below the ~2048-token nomic-embed-text ceiling.
+vectors:
+  brief:
+    size: 768
+    distance: Cosine
+    embed_field: body
+    embed_model: nomic-embed-text
+    embed_via: ollama-workstation
+
+# Point ID: uuid5(NAMESPACE_DNS, brief_id) — deterministic, re-upsert-convergent
+# (same construction as a session point). brief_id human key:
+#   {team}/{date}-{slug}                              (agent form)
+#   training/{date}-{curriculum-slug}-{trainee}       (trainee form)
+
+payload_fields:
+  # --- Identity ---
+  - name: point_type
+    type: keyword
+    index: true
+    description: Always "brief" (point-class discriminator, shared-collection convention).
+
+  - name: brief_id
+    type: keyword
+    index: true
+    description: Human key {team}/{date}-{slug} (trainee form training/{date}-{curriculum-slug}-{trainee}).
+
+  - name: team
+    type: keyword
+    index: true
+    description: Owning team (e.g. podzone, training).
+
+  - name: author
+    type: keyword
+    index: false
+    description: Who authored the brief (agent name or operator).
+
+  - name: assignee
+    type: keyword
+    index: true
+    description: Canonical agent name or trainee id the brief is worked by.
+
+  - name: assignee_type
+    type: keyword
+    index: false
+    description: agent | trainee.
+
+  - name: status
+    type: keyword
+    index: true
+    description: draft | approved | in_progress | complete | superseded. `approved` is the ADR-008 D5 execution gate.
+
+  # --- Temporal ---
+  - name: created_at
+    type: datetime
+    index: false
+    description: ISO-8601 when the brief point was authored.
+
+  - name: completed_at
+    type: datetime
+    index: false
+    description: ISO-8601 when the brief transitioned to complete. Null until done.
+
+  # --- Links ---
+  - name: session_ids
+    type: keyword
+    index: false
+    description: JSON array of runtime session ids, appended at each SessionStart (the reverse link). Many sessions per brief.
+
+  - name: work_items
+    type: keyword
+    index: false
+    description: JSON array of canonical work-item refs (PROJ-XXX/T-YYY).
+
+  # --- Content ---
+  - name: summary
+    type: string
+    index: false
+    description: Short one-line summary of the brief.
+
+  - name: body
+    type: string
+    index: false
+    description: Full brief markdown; the embed source for the `brief` vector.
+
+  - name: origin_path
+    type: string
+    index: false
+    description: Committed brief file path (git stays the human/PR record per D4).
