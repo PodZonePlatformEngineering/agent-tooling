@@ -26,6 +26,7 @@ and the additionalContext, not in the exit code.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,6 +59,121 @@ def _write_status(workspace: Path, status: dict) -> None:
     (workspace / ".materialise-status.json").write_text(
         json.dumps(status, indent=2), encoding="utf-8"
     )
+
+
+def _materialise_files(workspace: Path, *, brief_text: str, tasks: list,
+                       agent: str, work_item: str | None, session_id: str,
+                       brief_id: str | None = None) -> None:
+    """Write the three `.workspace` files from resolved substrate content.
+
+    Shared by the legacy (session-point-keyed) and brief-first paths so the
+    on-disk shape the agent orients against is byte-identical between them.
+    """
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "brief.md").write_text(brief_text, encoding="utf-8")
+    (workspace / "tasks.json").write_text(json.dumps(tasks, indent=2), encoding="utf-8")
+    identity = {"agent": agent, "work_item": work_item, "session_id": session_id}
+    if brief_id is not None:
+        identity["brief_id"] = brief_id
+    (workspace / "identity.json").write_text(json.dumps(identity, indent=2), encoding="utf-8")
+
+
+def materialise_brief_first(session_id: str, cwd: str, brief_id: str) -> dict:
+    """Brief-first materialise (PROJ-039/T-043): resolve a first-class `briefs`
+    point by ``brief_id``, stand up the session point keyed by the RUNTIME
+    ``session_id``, and materialise `.workspace` from the brief body.
+
+    The flow that kills the pinned-sid ceremony (brief § Flow step 3):
+      1. resolve the brief; refuse if absent/empty or not past the execution gate
+         (``approved`` — ADR-008 D5). No stale fabrication on failure (SD-3-002).
+      2. create the session point under the runtime sid with a ``brief_id`` ref
+         (creation only; skipped idempotently if the point already exists, e.g. a
+         resume — never a re-upsert that would null the `response` vector).
+      3. append the runtime sid to ``briefs.session_ids[]`` (idempotent) — the
+         reverse link; two distinct sessions accumulate two ids.
+      4. advance the brief ``approved → in_progress`` on first materialise.
+
+    Returns the status dict; ``{"ok": False, "reason": …}`` on any failure.
+    """
+    workspace = Path(cwd) / ".workspace"
+    try:
+        from lib import session_substrate, brief_substrate
+    except Exception as exc:  # pragma: no cover — import failure is fatal
+        status = {"ok": False, "reason": f"lib-import: {exc}", "ts": _now()}
+        _write_status(workspace, status)
+        return status
+
+    # 1. Resolve the brief point.
+    try:
+        brief = brief_substrate.get_brief(brief_id)
+    except Exception as exc:
+        status = {"ok": False, "reason": f"qdrant-unreachable: {exc}", "ts": _now()}
+        _write_status(workspace, status)
+        return status
+    if not brief or not (brief.get("body") or "").strip():
+        status = {"ok": False, "reason": f"brief-not-found: {brief_id}", "ts": _now()}
+        _write_status(workspace, status)
+        return status
+    if brief.get("status") not in brief_substrate.EXECUTABLE_STATUSES:
+        status = {"ok": False, "reason": f"brief-not-approved: {brief_id} "
+                  f"(status={brief.get('status')})", "ts": _now()}
+        _write_status(workspace, status)
+        return status
+
+    body = brief["body"]
+    agent = brief.get("assignee", "unknown")
+    work_items = brief.get("work_items") or []
+    work_item = work_items[0] if work_items else None
+
+    # 2. Create the session point under the runtime sid (creation only; skip on
+    #    resume so a re-materialise never re-upserts an existing point).
+    try:
+        existing = session_substrate.get_session_point(session_id)
+        if existing is None:
+            session_substrate.create_session_point(
+                session_id=session_id, agent=agent,
+                work_item=work_item or brief_id, brief_text=body,
+                brief_id=brief_id,
+            )
+    except Exception as exc:
+        status = {"ok": False, "reason": f"session-point-create: {exc}", "ts": _now()}
+        _write_status(workspace, status)
+        return status
+
+    # 3. Append the runtime sid to the brief's reverse link (idempotent).
+    try:
+        brief_substrate.append_session_id(brief_id, session_id)
+    except Exception as exc:
+        status = {"ok": False, "reason": f"append-session-id: {exc}", "ts": _now()}
+        _write_status(workspace, status)
+        return status
+
+    # 4. Advance approved → in_progress on first materialise (idempotent).
+    try:
+        brief_substrate.start_brief(brief_id)
+    except Exception as exc:
+        status = {"ok": False, "reason": f"brief-start: {exc}", "ts": _now()}
+        _write_status(workspace, status)
+        return status
+
+    # 5. Active work items for the agent (non-fatal — the brief is the gate).
+    try:
+        tasks = session_substrate.active_work_items(agent)
+    except Exception:
+        tasks = []
+
+    # 6. Materialise files + success sentinel.
+    _materialise_files(workspace, brief_text=body, tasks=tasks, agent=agent,
+                       work_item=work_item, session_id=session_id, brief_id=brief_id)
+    status = {
+        "ok": True,
+        "ts": _now(),
+        "source": "brief",
+        "brief_id": brief_id,
+        "counts": {"brief": 1, "tasks": len(tasks)},
+    }
+    _write_status(workspace, status)
+    return status
 
 
 def materialise(session_id: str, cwd: str, *, agent: str = "unknown",
@@ -102,14 +218,9 @@ def materialise(session_id: str, cwd: str, *, agent: str = "unknown",
         tasks = []  # tasks are non-fatal; the brief is the gating context
 
     # 4. Materialise files.
-    workspace.mkdir(parents=True, exist_ok=True)
-    (workspace / "brief.md").write_text(brief["text"], encoding="utf-8")
-    (workspace / "tasks.json").write_text(json.dumps(tasks, indent=2), encoding="utf-8")
-    (workspace / "identity.json").write_text(json.dumps({
-        "agent": point_agent,
-        "work_item": point.get("work_item"),
-        "session_id": session_id,
-    }, indent=2), encoding="utf-8")
+    _materialise_files(workspace, brief_text=brief["text"], tasks=tasks,
+                       agent=point_agent, work_item=point.get("work_item"),
+                       session_id=session_id, brief_id=point.get("brief_id"))
 
     # 5. Success sentinel.
     status = {
@@ -131,6 +242,27 @@ def main() -> int:
 
     session_id = data.get("session_id", "")
     cwd = data.get("cwd", ".")
+
+    # Brief-first path (PROJ-039/T-043): a BRIEF_ID env var (settings.local.json
+    # env block or shell env at launch) selects the decoupled flow — resolve the
+    # brief, stand up the session point under the runtime sid, append the reverse
+    # link. BRIEF_ID unset → the legacy session-point-keyed path below, unchanged
+    # (backwards compatible; no fleet re-wiring, coexistence per C-003).
+    brief_id = os.environ.get("BRIEF_ID", "").strip()
+    if brief_id:
+        status = materialise_brief_first(session_id, cwd, brief_id)
+        if status.get("ok"):
+            counts = status.get("counts", {})
+            _emit_context(
+                f"✅ Session materialised from brief `{brief_id}` "
+                f"(briefs collection) — .workspace populated (brief + "
+                f"{counts.get('tasks', 0)} active tasks), session point keyed to "
+                f"the runtime sid, sid appended to session_ids[]. "
+                f"Authoritative context is .workspace/, not this digest."
+            )
+        else:
+            _emit_context(f"{HALT_MESSAGE}\n(reason: {status.get('reason')})")
+        return 0
 
     # Best-effort identity (the session point is authoritative for agent/work_item).
     agent = "unknown"

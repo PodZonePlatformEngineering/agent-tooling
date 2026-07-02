@@ -46,6 +46,66 @@ bursts, the idle gaps expiring the ~5-min cache and driving **83.8 M** cache-cre
 command** (Step 8) and, for headless, the **continue+escalate prompt** — pin/author/materialise/
 register are identical.
 
+### Brief-first launch variant (PROJ-039/T-043) — no pinned sid
+
+A **brief is a first-class point, not linked to a specific session** (`briefs` collection). The
+brief-first variant kills the pinned-`--session-id` ceremony: the brief is authored **once** and
+may be worked across **many** sessions (re-launch-fresh after a limit-stop re-materialises the
+*same* brief; the training case authors one brief **per trainee** and works it over a curriculum).
+It coexists with the pinned-sid path above — pick per launch (C-003; the pinned-sid path stays for
+legacy/one-shot dispatches). The deltas against the migrated pinned-sid steps:
+
+| step | pinned-sid path (above) | **brief-first variant** |
+|------|--------------------------|--------------------------|
+| Step 4 (pin sid) | `uuidgen` → `--session-id`, persist | **skip** — no pinned sid; the runtime/sidebar auto-id is safe (materialise keys the session point to it) |
+| Step 5 (author point) | `create-session-point.py` (session point, keyed to pinned sid) | **`create-brief.py`** — author/approve the `briefs` point from the committed brief file (keyed to `brief_id`); verify read-back |
+| Step 6 (wiring) | materialise resolves by pinned sid | materialise resolves by **`BRIEF_ID`** env var → stands up the session point under the **runtime** sid, appends the sid to `briefs.session_ids[]` |
+| Step 8 (launch) | `claude --session-id {uuid}` | `BRIEF_ID={brief_id} claude` (no `--session-id`); headless adds a brief-complete instruction |
+
+**`brief_id` format:** `{team}/{date}-{slug}` (agent form); `training/{date}-{curriculum-slug}-{trainee}`
+(trainee form). The `briefs` point id is `uuid5(NAMESPACE_DNS, brief_id)` — re-authoring the same
+`brief_id` converges on the same point (idempotent). Author before launch:
+
+```bash
+mcp__secrets__secret_run -k podzone_qdrant_apikey -- \
+  python3 ~/workspace/agent-tooling/tools/create-brief.py \
+    --brief-id "{team}/{date}-{task-slug}" \
+    --team {team} --author {team_lead} --assignee {agent} --assignee-type agent \
+    --work-item PROJ-XXX/T-YYY \
+    --body-file ~/workspace/{home_repo}/team-lead/briefs/{date}-{task-slug}.md \
+    --approve      # promotes to `approved` — the ADR-008 D5 execution gate
+```
+
+`--approve` (or `--status approved`) is **required before launch**: materialise refuses to stand up
+a session for a brief that has not cleared the gate. **Verify read-back** (`get_brief` returns a
+body + `status` in {approved, in_progress, complete}) before launching — an unapproved / missing
+brief HALTs the agent at SessionStart (SD-3-002, no stale fabrication).
+
+**Wiring (Step 6, brief-first):** the SessionStart materialise reads `BRIEF_ID` from the environment.
+Pass it either inline on the launch command (simplest, headless) or via the `settings.local.json`
+`env` block:
+
+```json
+{ "env": { "BRIEF_ID": "{team}/{date}-{task-slug}" },
+  "hooks": { "SessionStart": [ { "matcher": "startup|resume",
+    "hooks": [ { "type": "command", "command": "python3 .claude/hooks/session-materialise.py" } ] } ] } }
+```
+
+`BRIEF_ID` unset → the legacy session-point-keyed path runs unchanged (backwards compatible).
+
+**Launch (Step 8, brief-first) — headless:**
+
+```bash
+cd ~/sessions/{session-id}/{home_repo} && BRIEF_ID="{team}/{date}-{task-slug}" \
+  claude -p "Hi {Agent}. Continue with the brief. Commit and push all PRs when done. If the brief is now FULLY complete, include a line \`Brief-Status: complete\` in your final response; otherwise it stays in_progress for the next session. If anything needs operator direction you cannot resolve, raise it to {team_lead} with progress so far via your session response, and exit — do not wait."
+```
+
+The `Brief-Status: complete` line is the **deterministic completion signal** SessionEnd finalise
+reads to stamp the brief `complete` + `completed_at`; absent it, the brief stays `in_progress` so
+the next session against the same `BRIEF_ID` accumulates its sid and continues. (Interactive
+brief-first is the same launch without `-p`.) **Verify (Step 9)** by simulating materialise with
+`BRIEF_ID` set and asserting the sentinel reports `source: brief` and `session_ids[]` grew.
+
 ## Prerequisites
 
 - All required repos already cloned under `~/workspace/`

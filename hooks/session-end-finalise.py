@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -129,6 +130,23 @@ def _last_assistant_text(transcript_path: str) -> str:
     return last
 
 
+# A brief-first session (PROJ-039/T-043) declares its brief COMPLETE in the final
+# response by an explicit marker; absent it, the brief stays `in_progress` for the
+# next session (many-sessions-per-brief). The marker is deterministic so a headless
+# agent's `/exit` turn controls the transition without an operator on the line —
+# the brief-first launch prompt instructs the agent to emit it only when the brief
+# is fully done. Accepted forms (case-insensitive): a `Brief-Status: complete` line,
+# or a standalone `BRIEF-COMPLETE` / `BRIEF COMPLETE` token.
+_BRIEF_COMPLETE_RE = re.compile(
+    r"(?im)^\s*(?:brief[-_ ]?status\s*:\s*complete\b|brief[-_ ]complete\b)\s*$"
+)
+
+
+def _declares_brief_complete(text: str) -> bool:
+    """True if the response text carries an explicit brief-complete declaration."""
+    return bool(text) and bool(_BRIEF_COMPLETE_RE.search(text))
+
+
 def _is_migrated(cwd: str) -> bool:
     """A migrated home-repo session runs under a ``home-*`` repo (the same selector
     the session-end skill uses). For these, steps 6-7 (apex tasklist/STATUS apply +
@@ -179,6 +197,32 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
     except Exception as exc:
         _log(f"response upsert skipped: {exc}", session_id=session_id, level="WARN")
         _step("response", "failed")
+
+    # 2. Brief-first completion stamp (PROJ-039/T-043). If this session was stood
+    #    up from a first-class `briefs` point (the session point carries a
+    #    `brief_id`), stamp the brief complete ONLY when the result declares it —
+    #    else leave it `in_progress` for the next session (many-sessions-per-brief).
+    #    Best-effort + idempotent (complete_brief is a set_payload no-op if re-run).
+    try:
+        point = session_substrate.get_session_point(session_id)
+        brief_id = (point or {}).get("brief_id")
+        if not brief_id:
+            _log("brief-status skipped: session not brief-first (no brief_id)",
+                 session_id=session_id)
+            _step("brief_status", "skipped")
+        elif _declares_brief_complete(response_text):
+            from lib import brief_substrate
+            brief_substrate.complete_brief(brief_id)
+            _log(f"brief {brief_id} stamped complete (result declared it)",
+                 session_id=session_id)
+            _step("brief_status", "complete")
+        else:
+            _log(f"brief {brief_id} left in_progress (result did not declare complete)",
+                 session_id=session_id)
+            _step("brief_status", "in_progress")
+    except Exception as exc:
+        _log(f"brief-status skipped: {exc}", session_id=session_id, level="WARN")
+        _step("brief_status", "failed")
 
     # 3. Rollups (tool_usage + cost_tokens) from the JSONL — reconciles (DT-006).
     if transcript_path:
