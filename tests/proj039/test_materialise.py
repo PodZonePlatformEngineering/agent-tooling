@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -154,11 +155,17 @@ class TestMainEmitsContext(unittest.TestCase):
         import io
         from contextlib import redirect_stdout
 
+        # Hermetic against a live session's env: T-045 serial mode runs sessions
+        # inside the primary clone, so BRIEF_ID may be set — which would send the
+        # hook down the brief-first success path and mask the failure we assert.
+        # patch.dict(clear=False) snapshots os.environ and restores it on exit.
         with tempfile.TemporaryDirectory() as td, \
+             patch.dict(os.environ, clear=False), \
              patch.object(session_substrate, "get_session_point",
                           lambda *a, **k: None), \
              patch.object(sys, "stdin", io.StringIO(
                  json.dumps({"session_id": "s", "cwd": td}))):
+            os.environ.pop("BRIEF_ID", None)
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = sm.main()
