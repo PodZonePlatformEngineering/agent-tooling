@@ -34,3 +34,4 @@ cst_cleanup.py
 session_finalise.py
 runtime_log.py
 finalise_ledger.py
+session_guard.py

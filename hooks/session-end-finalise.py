@@ -431,6 +431,30 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
              session_id=session_id)
         _step("brief_pr", "skipped")
 
+    # Session-end main-guard (PROJ-039/T-045): in serial simple-repo mode the session
+    # ran directly in the primary clone on a session branch — return it to a ff'd main
+    # and delete the now-pushed session branch, and release the one-session lock. This
+    # is the load-bearing substitute for worktree isolation; a crash before here leaves
+    # the branch in place and the launch-time preflight guard catches it next time.
+    # Self-guarding + best-effort: a no-op on a legacy linked worktree (cwd under
+    # ~/sessions/) and on a clone already on main, so it is safe during the migration
+    # window while some sessions still run in worktrees.
+    guard_repo = cwd or os.environ.get("CLAUDE_PROJECT_DIR", "")
+    if guard_repo:
+        try:
+            from lib import session_guard
+            res = session_guard.return_to_main(guard_repo)
+            _log(f"session-end main-guard: {res['disposition']} — {res['reason']}",
+                 session_id=session_id,
+                 level="INFO" if res["ok"] else "WARN")
+            _step("return_to_main", res["disposition"] if res["ok"] else "failed")
+            released = session_guard.SessionLock(guard_repo, session_id).release()
+            _log(f"session lock released: {released}", session_id=session_id)
+        except Exception as exc:  # never break teardown
+            _log(f"session-end main-guard skipped: {exc}",
+                 session_id=session_id, level="WARN")
+            _step("return_to_main", "failed")
+
     # Reached the end of the sequence — mark complete. The `complete` flag means
     # "the finalise ran to the end" (no truncation), which is the failure mode the
     # SessionStart guard recovers: a killed / timed-out finalise leaves begin()

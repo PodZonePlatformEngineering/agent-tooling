@@ -18,11 +18,13 @@ Also covers:
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
@@ -226,6 +228,85 @@ class TestGenerateBriefResult(unittest.TestCase):
         out = session_finalise.generate_brief_result({}, date=FIXED_DATE)
         self.assertIsInstance(out, str)
         self.assertGreater(len(out), 20)
+
+
+def _fake_git(repo_dir, *args):
+    """Stand-in for ``session_finalise._git`` — every git call succeeds silently.
+
+    ``_resolve_base_ref`` reads ``.returncode == 0`` from its ``rev-parse`` probes,
+    so returning 0 resolves the base ref to ``origin/main`` without touching a repo.
+    """
+    return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+
+def _fake_gh_run(cmd, **kwargs):
+    """Stand-in for ``subprocess.run`` (the ``gh pr create`` call) — success + a URL."""
+    return subprocess.CompletedProcess(
+        args=cmd, returncode=0, stdout="https://github.com/x/y/pull/1", stderr="")
+
+
+class TestResultBranchSidScoping(unittest.TestCase):
+    """T-046 (CC-346): the home-result **branch** and the open-PR existence check are
+    sid-scoped, so two sessions on the same ``date``+``slug`` each author their own
+    result — the re-set-up-same-day recovery path that becomes the *normal* path under
+    T-045 serial simple-repo mode — while a same-sid re-run stays idempotent (T-035).
+
+    Regression guard for the reset-session finding (operator libraries.log, 2026-07-03):
+    reset sid ``257e8e9d`` found the first run's PR still open on the shared
+    ``session-result/{date}-{slug}`` branch → ``exists`` → silently skipped authoring the
+    resumed run's narrative. The fix is to sid-suffix the branch (landed T-039) so the
+    existence check at :func:`commit_home_result` queries a *per-session* branch.
+
+    Drives :func:`session_finalise.commit_home_result` end-to-end with the git/gh
+    boundary mocked, so no network, clone, or worktree is touched.
+    """
+
+    WORK_ITEM = "PROJ-039/T-044"
+    DATE = "2026-07-02"
+    SID_A = "257e8e9d1111aaaa"   # the reset-finding sid
+    SID_B = "31465cdc2222bbbb"   # a distinct same-day re-set-up sid
+
+    def _author(self, session_id, open_pr_branches):
+        """Author a result with ``open_pr_branches`` standing in for 'has an open PR'."""
+        with mock.patch.object(session_finalise, "_git", _fake_git), \
+             mock.patch.object(session_finalise, "_result_on_base", return_value=False), \
+             mock.patch.object(
+                 session_finalise, "_open_result_pr_exists",
+                 side_effect=lambda repo, branch: branch in open_pr_branches), \
+             mock.patch.object(session_finalise.subprocess, "run", _fake_gh_run):
+            return session_finalise.commit_home_result(
+                "result body", session_id=session_id, work_item=self.WORK_ITEM,
+                date=self.DATE, repo_dir="/tmp/does-not-matter", raise_pr=True,
+            )
+
+    def test_branch_and_file_carry_sid_suffix(self) -> None:
+        r = self._author(self.SID_A, open_pr_branches=set())
+        self.assertTrue(r["branch"].endswith(self.SID_A[:8]),
+                        f"branch {r['branch']!r} must carry the sid8 suffix")
+        self.assertIn(self.SID_A[:8], r["file_path"])
+
+    def test_second_sid_authors_despite_first_pr_open(self) -> None:
+        # First session authors + leaves its result PR open.
+        a = self._author(self.SID_A, open_pr_branches=set())
+        self.assertEqual(a["disposition"], "done")
+
+        # Second session, SAME date+slug, sees sid A's PR still open — and must still
+        # author its own result (the bug was that it resolved to `exists` and skipped).
+        b = self._author(self.SID_B, open_pr_branches={a["branch"]})
+        self.assertEqual(b["disposition"], "done",
+                         "second sid skipped authoring — branch/PR check collided across sids")
+        self.assertNotEqual(a["branch"], b["branch"])
+        self.assertNotEqual(a["file_path"], b["file_path"])
+
+    def test_same_sid_rerun_is_idempotent(self) -> None:
+        # First run authors and opens the PR.
+        a = self._author(self.SID_A, open_pr_branches=set())
+        self.assertEqual(a["disposition"], "done")
+
+        # A same-sid re-run (T-035 crash recovery) sees ITS OWN open PR → no-op.
+        again = self._author(self.SID_A, open_pr_branches={a["branch"]})
+        self.assertEqual(again["disposition"], "exists")
+        self.assertEqual(a["branch"], again["branch"])
 
 
 if __name__ == "__main__":
