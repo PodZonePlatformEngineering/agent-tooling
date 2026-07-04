@@ -155,14 +155,14 @@ role_settings_json() {
   if [[ "$role" == "coder" || "$role" == "cluster-operator" ]]; then
     subagent_stop=',
     "SubagentStop": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/subagent-stop.sh" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-stop.sh" } ] }
     ]'
   fi
   # archivist: ingest the transcript to Qdrant prompt_logs on SessionEnd, alongside
   # the universal session-end-finalise.py. Resident hook (PROJ-039/T-011 C2b).
   local session_end_ingest=""
   if [[ "$role" == "archivist" ]]; then
-    session_end_ingest=', { "type": "command", "command": "bash .claude/hooks/ingest-transcript.sh" }'
+    session_end_ingest=', { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/ingest-transcript.sh" }'
   fi
 
   # Telemetry + finalise env (PROJ-039/T-032). Non-secret config only — the
@@ -183,25 +183,25 @@ role_settings_json() {
   },
   "hooks": {
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash .claude/hooks/session-start.sh" } ] }
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" } ] }
     ],
     "UserPromptSubmit": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/user-prompt-submit.sh" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" } ] }
     ],
     "PreToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash .claude/hooks/pre-tool-use.sh" } ] }
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-tool-use.sh" } ] }
     ],
     "PostToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash .claude/hooks/post-tool-use.sh" } ] }
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-tool-use.sh" } ] }
     ],
     "PostCompact": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/post-compact.sh" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-compact.sh" } ] }
     ],
     "Stop": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/stop.sh" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop.sh" } ] }
     ],
     "SessionEnd": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 .claude/hooks/session-end-finalise.py", "timeout": 600 }${session_end_ingest} ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end-finalise.py", "timeout": 600 }${session_end_ingest} ] }
     ]${subagent_stop}
   }
 }
