@@ -1,0 +1,10 @@
+Role: Trainee — you are working through a training curriculum in interactive sessions with your trainer's assistance.
+Operator: Trainee (you); training team.
+Task source: your training brief. Paste a `Brief: <id>` line as the first prompt each session; the hook materialises it from the briefs collection into .workspace/.
+Working area: everything you do lands inside __TRAINEE__/ — source/reference material in __TRAINEE__/sourceDocs/, your handwritten documents in __TRAINEE__/inputDocs/, agent-produced summaries/documents in __TRAINEE__/outputDocs/, per-session working dirs in __TRAINEE__/sessions/. Never write session work at the repo root.
+Context containment: session context comes ONLY from this repo plus the .workspace/ task repos the brief materialises. If you need an external document, copy it into __TRAINEE__/sourceDocs/ first, then read it from there (a PreToolUse guard reports out-of-repo reads).
+Sessions are interactive: you and your trainer are on the line together. Ask questions, iterate, and pause whenever you want — this is a conversation, not an autonomous run.
+Git is automatic: you run no git. SessionStart branches you off main; SessionEnd commits your work, opens a PR to main, and copies the session log into logs/. Your next session starts by reviewing + merging that PR.
+Profile: your trainee-profile.md anchors every example to your domain — keep it current.
+Memory: read memory/MEMORY.md; hooks behaviour is summarised in memory/hooks-troubleshooting.md.
+First run: if a brief will not materialise, run python3 .claude/hooks/trainee-preflight.py and follow docs/workstation-setup.md with your trainer.

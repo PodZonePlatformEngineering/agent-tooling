@@ -111,7 +111,7 @@ role_hooks() {
     curriculum-developer)  echo "${SUBSTRATE_BASE}" ;;
     historian)             echo "${SUBSTRATE_BASE}" ;;
     strategist)            echo "${SUBSTRATE_BASE}" ;;
-    trainee)               echo "${SUBSTRATE_BASE} session-materialise.py first-prompt-brief.py trainee-session-branch.py" ;;
+    trainee)               echo "${SUBSTRATE_BASE} session-materialise.py first-prompt-brief.py trainee-session-branch.py trainee-preflight.py trainee-read-guard.py" ;;
   esac
 }
 
@@ -132,6 +132,7 @@ role_title() {
     curriculum-developer)  echo "Curriculum Developer" ;;
     historian)             echo "Historian" ;;
     strategist)            echo "Strategist" ;;
+    trainee)               echo "Trainee" ;;
   esac
 }
 
@@ -152,6 +153,48 @@ role_task_filter() {
 # Hephaestus canary settings.json.
 role_settings_json() {
   local role="$1"
+
+  # trainee: a deliberately SLIM env (PROJ-011/T-025 R-14). No PODZONE_TELEMETRY_REMOTE
+  # (pushing every student workstation's logs to a fleet telemetry repo will not scale —
+  # the finalise copies the session log into logs/ before the session commit instead,
+  # riding the R-3 session PR) and no PODZONEAGENTTEAM_REPO (no apex clone in trainee
+  # context). Only TRAINEE_RUNTIME=1 remains. SessionStart also runs the fail-soft
+  # preflight (R-13) + branch hook; UserPromptSubmit the brief parser (R-1); PreToolUse
+  # the context-containment read guard (R-9).
+  if [[ "$role" == "trainee" ]]; then
+    cat <<'TRAINEE_SETTINGS'
+{
+  "env": {
+    "TRAINEE_RUNTIME": "1"
+  },
+  "hooks": {
+    "SessionStart": [
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-preflight.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-session-branch.py" } ] }
+    ],
+    "UserPromptSubmit": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/first-prompt-brief.py" } ] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-tool-use.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-read-guard.py" } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-tool-use.sh" } ] }
+    ],
+    "PostCompact": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-compact.sh" } ] }
+    ],
+    "Stop": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop.sh" } ] }
+    ],
+    "SessionEnd": [
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end-finalise.py", "timeout": 600 } ] }
+    ]
+  }
+}
+TRAINEE_SETTINGS
+    return 0
+  fi
+
   local subagent_stop=""
   if [[ "$role" == "coder" || "$role" == "cluster-operator" ]]; then
     subagent_stop=',
@@ -264,6 +307,60 @@ touch "${TARGET_DIR}/results/.gitkeep"
 touch "${TARGET_DIR}/session-reports/.gitkeep"
 touch "${TARGET_DIR}/memory/.gitkeep"
 
+# --- Trainee structure (PROJ-011/T-025 R-5, R-6, R-10, R-13) ---
+# The generated trainee repo carries a directory named for the trainee (placeholder
+# "Trainee" in the template; personalise-trainee.py rewrites it to the handle at setup
+# — R-8), equivalent to academy-prompt-engineering/trainees/{name}/. Session work lands
+# inside it, never at the repo root (baseline defect: answer.md at root). Plus logs/
+# (R-6) and docs/ (R-13). Non-trainee roles are unchanged.
+TRAINEE_NAME="Trainee"
+if [[ "$ROLE" == "trainee" ]]; then
+  mkdir -p \
+    "${TARGET_DIR}/${TRAINEE_NAME}/sourceDocs" \
+    "${TARGET_DIR}/${TRAINEE_NAME}/inputDocs" \
+    "${TARGET_DIR}/${TRAINEE_NAME}/outputDocs" \
+    "${TARGET_DIR}/${TRAINEE_NAME}/sessions" \
+    "${TARGET_DIR}/logs" \
+    "${TARGET_DIR}/docs"
+  touch \
+    "${TARGET_DIR}/${TRAINEE_NAME}/sourceDocs/.gitkeep" \
+    "${TARGET_DIR}/${TRAINEE_NAME}/inputDocs/.gitkeep" \
+    "${TARGET_DIR}/${TRAINEE_NAME}/outputDocs/.gitkeep" \
+    "${TARGET_DIR}/${TRAINEE_NAME}/sessions/.gitkeep" \
+    "${TARGET_DIR}/logs/.gitkeep"
+
+  # R-13 docs: dependency analysis + trainer-assisted workstation setup.
+  cp "${SCAFFOLD_DIR}/trainee/docs/dependency-analysis.md" "${TARGET_DIR}/docs/dependency-analysis.md"
+  cp "${SCAFFOLD_DIR}/trainee/docs/workstation-setup.md"    "${TARGET_DIR}/docs/workstation-setup.md"
+
+  # R-10 profile: the profile template's canonical home is this template family (docs/);
+  # seed the trainee's own trainee-profile.md from it. The academy _template/ copy becomes
+  # a pointer (retired with the data take-on, T-026..T-029).
+  cp "${SCAFFOLD_DIR}/trainee/docs/trainee-profile-template.md" "${TARGET_DIR}/docs/trainee-profile-template.md"
+  cp "${SCAFFOLD_DIR}/trainee/docs/trainee-profile-template.md" "${TARGET_DIR}/${TRAINEE_NAME}/trainee-profile.md"
+
+  # Session-management set, equivalent to academy-prompt-engineering/trainees/{name}/.
+  cat > "${TARGET_DIR}/${TRAINEE_NAME}/training-state.md" <<'TSTATE'
+# Training state
+
+Where you are in the curriculum. Updated as sessions progress.
+
+- **Current module:** (not started)
+- **Sessions completed:** 0
+- **Next up:** paste your `Brief:` line to begin (see README.md).
+TSTATE
+  cat > "${TARGET_DIR}/${TRAINEE_NAME}/feedback.md" <<'TFEEDBACK'
+# Feedback
+
+Your trainer's running feedback across sessions.
+TFEEDBACK
+  cat > "${TARGET_DIR}/${TRAINEE_NAME}/improvement-recommendations.md" <<'TIMPROVE'
+# Improvement recommendations
+
+Concrete, prioritised recommendations from your trainer.
+TIMPROVE
+fi
+
 # --- Copy hooks ---
 
 echo "==> Copying hooks for role '${ROLE}'..."
@@ -356,8 +453,17 @@ if [[ "$ROLE" == "team-lead" ]]; then
 fi
 
 # --- .gitignore ---
-
-cp "${SCAFFOLD_DIR}/gitignore.template" "${TARGET_DIR}/.gitignore"
+# Trainee (R-6): session log files are COMMITTED (they ride the R-3 session PR — R-14),
+# consistent with the T-048 sid-keyed committed-logs decision, so the trainee .gitignore
+# must NOT ignore *.log. Other roles keep the standard template unchanged (T-048 lands
+# the fleet-wide *.log drop separately).
+if [[ "$ROLE" == "trainee" ]]; then
+  grep -v '^\*\.log$' "${SCAFFOLD_DIR}/gitignore.template" \
+    | sed 's|^# Local tool state$|# Local tool state (session logs under logs/ ARE committed — T-048/R-14)|' \
+    > "${TARGET_DIR}/.gitignore"
+else
+  cp "${SCAFFOLD_DIR}/gitignore.template" "${TARGET_DIR}/.gitignore"
+fi
 
 # --- .claude/settings.json ---
 
@@ -395,6 +501,13 @@ to \`.workspace/\` on demand). Clone \`${TEAM}Team\` into \`.workspace/\` to con
 "
 fi
 
+if [[ "$ROLE" == "trainee" ]]; then
+  # R-7/R-8: the trainee AGENTS.md is an operating manual ONLY — no scaffold provenance,
+  # no R-/T-numbers, no headless model (trainee sessions are interactive), no template
+  # naming. Rendered from the trainee source with the placeholder name substituted.
+  sed -e "s|__TRAINEE__|${TRAINEE_NAME}|g" -e "s|__REPO_NAME__|${REPO_NAME}|g" \
+    "${SCAFFOLD_DIR}/trainee/AGENTS.template" > "${TARGET_DIR}/AGENTS.md"
+else
 cat > "${TARGET_DIR}/AGENTS.md" <<AGENTS
 # ${AGENT_CAP} — ${ROLE_TITLE}
 
@@ -467,9 +580,15 @@ migrated home-repo agents.)
 - Do not open task repos directly — identity resolution requires home repo as CWD
 - \`context/\` is ephemeral — do not commit its contents
 AGENTS
+fi
 
 # --- README.md ---
 
+if [[ "$ROLE" == "trainee" ]]; then
+  # R-7: trainee operating manual (structure map + launch/review rituals), no provenance.
+  sed -e "s|__TRAINEE__|${TRAINEE_NAME}|g" -e "s|__REPO_NAME__|${REPO_NAME}|g" \
+    "${SCAFFOLD_DIR}/trainee/README.template" > "${TARGET_DIR}/README.md"
+else
 cat > "${TARGET_DIR}/README.md" <<README
 # ${REPO_NAME} — ${AGENT_CAP} (${ROLE_TITLE})
 
@@ -477,9 +596,18 @@ Home repo for the ${AGENT_CAP} agent (team: ${TEAM}, role: ${ROLE}).
 
 Open \`${REPO_NAME}.code-workspace\` to start a session.
 README
+fi
 
-# --- .claude/instructions.md ---
+# --- .claude/instructions.md + guardrails.md + output-format.md ---
+# Trainee (R-9/R-12): operator = "Trainee", interactive (no headless model), context
+# containment; training-appropriate output format. Rendered from the trainee source with
+# the placeholder name substituted — no FILL-IN survives generation (R-8).
 
+if [[ "$ROLE" == "trainee" ]]; then
+  sed "s|__TRAINEE__|${TRAINEE_NAME}|g" "${SCAFFOLD_DIR}/trainee/instructions.template" > "${TARGET_DIR}/.claude/instructions.md"
+  sed "s|__TRAINEE__|${TRAINEE_NAME}|g" "${SCAFFOLD_DIR}/trainee/guardrails.template"   > "${TARGET_DIR}/.claude/guardrails.md"
+  sed "s|__TRAINEE__|${TRAINEE_NAME}|g" "${SCAFFOLD_DIR}/trainee/output-format.template" > "${TARGET_DIR}/.claude/output-format.md"
+else
 cat > "${TARGET_DIR}/.claude/instructions.md" <<INSTRUCTIONS
 Role: ${ROLE_TITLE} — FILL IN one-line summary of primary responsibility
 Team: ${TEAM}; operator: Martin (system-owner)
@@ -490,8 +618,6 @@ Memory: read memory/MEMORY.md; update memory/ when learning something durable
 Headless (PROJ-039/T-041): if the brief needs operator direction you cannot resolve, raise it to your team lead with progress so far via the session response and exit — never block, never AskUserQuestion-and-wait (no operator is on the line)
 INSTRUCTIONS
 
-# --- .claude/guardrails.md ---
-
 cat > "${TARGET_DIR}/.claude/guardrails.md" <<GUARDRAILS
 Never commit context/ — it is ephemeral and gitignored
 Never open task repos directly — always use ${REPO_NAME}.code-workspace
@@ -501,13 +627,38 @@ Secrets via getSecret.sh only — never hardcode or log secret values
 If a secret appears in context, stop and notify Martin immediately
 GUARDRAILS
 
-# --- .claude/output-format.md ---
-
 cp "${SCAFFOLD_DIR}/output-format.template" "${TARGET_DIR}/.claude/output-format.md"
+fi
+
+# --- memory/ (trainee: hooks-troubleshooting summary, R-8) ---
+if [[ "$ROLE" == "trainee" ]]; then
+  cp "${SCAFFOLD_DIR}/trainee/memory/hooks-troubleshooting.md" "${TARGET_DIR}/memory/hooks-troubleshooting.md"
+fi
 
 # --- Identity YAML stub ---
 
 TASK_FILTER="$(role_task_filter "$ROLE")"
+
+if [[ "$ROLE" == "trainee" ]]; then
+  # R-8: a trainee-named identity (placeholder "trainee" in the template — personalise-
+  # trainee.py rewrites it to the handle at setup), NOT a template-named martin-*-coder
+  # file and NO FILL-IN placeholders. Working defaults, not markers.
+  WORKSPACE_NAME="trainee"
+  cat > "${TARGET_DIR}/workspaces/identity/${WORKSPACE_NAME}.identity.yaml" <<IDENTITY
+operator: Trainee
+operator_mode: interactive
+agent: ${TRAINEE_NAME}
+scope: training
+home_repo: ${REPO_NAME}
+role_class: agenticflows/roles/${ROLE}/
+repos:
+  - name: agent-tooling
+    purpose: canonical sync source for sync-agent-tooling.sh — cloned to .workspace/ on demand; not required at runtime (self-contained)
+  # curriculum task repo(s) are added on clone (see docs/workstation-setup.md)
+task_filter: "${TASK_FILTER}"
+workspace: ${REPO_NAME}
+IDENTITY
+else
 WORKSPACE_NAME="martin-${AGENT}-${ROLE}"
 
 cat > "${TARGET_DIR}/workspaces/identity/${WORKSPACE_NAME}.identity.yaml" <<IDENTITY
@@ -524,9 +675,13 @@ repos:
 task_filter: "${TASK_FILTER}"
 workspace: ${REPO_NAME}
 IDENTITY
+fi
 
 # --- Workspace file ---
-
+# Trainee (R-8): NO template-named .code-workspace is emitted — a trainee "just clones
+# and runs claude" (see README launch ritual); the baseline leaked a
+# home-training-template.code-workspace. Other roles keep the committed workspace file.
+if [[ "$ROLE" != "trainee" ]]; then
 # Committed default: the self-contained home repo folder alone. agent-tooling and task
 # repos are added under .workspace/ (and here as folders) on demand per brief — agent-tooling
 # is the sync source, not a permanent fixture (PROJ-039/T-011 C2-v2.1b).
@@ -538,12 +693,21 @@ cat > "${TARGET_DIR}/${REPO_NAME}.code-workspace" <<WORKSPACE
   "settings": {}
 }
 WORKSPACE
+fi
 
 # --- memory/MEMORY.md ---
 
+if [[ "$ROLE" == "trainee" ]]; then
+cat > "${TARGET_DIR}/memory/MEMORY.md" <<MEMINDEX
+# Memory Index
+
+- [hooks-troubleshooting](hooks-troubleshooting.md) — what the substrate hooks do + how to recover
+MEMINDEX
+else
 cat > "${TARGET_DIR}/memory/MEMORY.md" <<MEMINDEX
 # Memory Index
 MEMINDEX
+fi
 
 # --- Telemetry backstop bootstrap (PROJ-039/T-032) ---
 # Best-effort: init the agent-telemetry repo the SessionEnd finalise pushes to
@@ -552,7 +716,12 @@ MEMINDEX
 # self-heals lazily). Skipped under --no-telemetry-bootstrap or when python can't
 # import the lib.
 
-if [[ "${NO_TELEMETRY_BOOTSTRAP:-0}" != "1" ]]; then
+if [[ "$ROLE" == "trainee" ]]; then
+  # R-14: trainee repos do NOT push to the fleet agent-telemetry remote (won't scale to
+  # every student workstation) — the finalise commits the session log into logs/ instead.
+  # So there is no telemetry backstop to bootstrap.
+  echo "==> Telemetry backstop: skipped (trainee role — session logs are committed to logs/, R-14)"
+elif [[ "${NO_TELEMETRY_BOOTSTRAP:-0}" != "1" ]]; then
   TELEMETRY_REMOTE="https://github.com/PodZonePlatformEngineering/agent-telemetry.git"
   echo "==> Bootstrapping telemetry backstop (best-effort)..."
   AGENT_TOOLING_DIR="$AGENT_TOOLING_DIR" TELEMETRY_REMOTE="$TELEMETRY_REMOTE" python3 - <<'PYBOOT' 2>/dev/null || echo "    (telemetry bootstrap skipped — hook will self-heal on first session-end)"
@@ -569,13 +738,24 @@ fi
 echo ""
 echo "Scaffold complete: ${TARGET_DIR}"
 echo ""
-echo "FILL IN checklist — complete before opening the workspace:"
-echo "  [ ] Edit workspaces/identity/${WORKSPACE_NAME}.identity.yaml"
-echo "        — set scope, add task repos"
-echo "  [ ] Edit .claude/instructions.md — fill in role behaviour rules"
-echo "  [ ] Edit .claude/guardrails.md   — fill in role-specific prohibitions"
-echo "  [ ] Create repo '${REPO_NAME}' in PodZonePlatformEngineering and push"
-echo "        (hooks + primitives/ + lib/ are resident under .claude/ — the repo"
-echo "         runs self-contained; no agent-tooling clone is required to fire hooks)"
-echo "  [ ] Set PODZONE_QDRANT_APIKEY in .claude/settings.local.json (workstation only)"
-echo "  [ ] Open ${REPO_NAME}.code-workspace and confirm session-start.sh fires"
+if [[ "$ROLE" == "trainee" ]]; then
+  # Trainee generation is artifact-clean by construction (R-8) — no FILL-IN checklist.
+  echo "Trainee template generated (curriculum-agnostic; placeholder name '${TRAINEE_NAME}')."
+  echo "Per-trainee provisioning (setup-time, see docs/workstation-setup.md):"
+  echo "  [ ] Use this template → create podzone-training-<handle> (trainee's own account, Private)"
+  echo "  [ ] python3 tools/personalise-trainee.py --handle <handle>  (renames ${TRAINEE_NAME}/ + identity)"
+  echo "  [ ] Set PODZONE_QDRANT_APIKEY in .claude/settings.local.json (workstation only)"
+  echo "  [ ] Invite the training lead as a collaborator; author + --approve the trainee brief"
+  echo "  [ ] python3 .claude/hooks/trainee-preflight.py  (expect all OK), then paste the Brief: first prompt"
+else
+  echo "FILL IN checklist — complete before opening the workspace:"
+  echo "  [ ] Edit workspaces/identity/${WORKSPACE_NAME}.identity.yaml"
+  echo "        — set scope, add task repos"
+  echo "  [ ] Edit .claude/instructions.md — fill in role behaviour rules"
+  echo "  [ ] Edit .claude/guardrails.md   — fill in role-specific prohibitions"
+  echo "  [ ] Create repo '${REPO_NAME}' in PodZonePlatformEngineering and push"
+  echo "        (hooks + primitives/ + lib/ are resident under .claude/ — the repo"
+  echo "         runs self-contained; no agent-tooling clone is required to fire hooks)"
+  echo "  [ ] Set PODZONE_QDRANT_APIKEY in .claude/settings.local.json (workstation only)"
+  echo "  [ ] Open ${REPO_NAME}.code-workspace and confirm session-start.sh fires"
+fi

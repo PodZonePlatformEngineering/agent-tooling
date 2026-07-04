@@ -176,6 +176,25 @@ def _is_trainee() -> bool:
     return os.environ.get("TRAINEE_RUNTIME", "").strip() == "1"
 
 
+def _copy_session_log_for_trainee(transcript_path: str, repo_dir: str,
+                                  session_id: str) -> bool:
+    """R-14: a trainee repo does not push to a fleet telemetry remote — instead the
+    session log is copied into the repo's ``logs/`` directory so it rides the R-3
+    session PR (consistent with R-6 / T-048 committed logs). Best-effort; never raises.
+    Returns True if a log file was written."""
+    import shutil
+    if not (transcript_path and repo_dir and os.path.isfile(transcript_path)):
+        return False
+    sid8 = (session_id or "session")[:8]
+    logs_dir = os.path.join(repo_dir, "logs")
+    try:
+        os.makedirs(logs_dir, exist_ok=True)
+        shutil.copyfile(transcript_path, os.path.join(logs_dir, f"session-{sid8}.jsonl"))
+        return True
+    except Exception:
+        return False
+
+
 def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> int:
     """Run the ordered finalise for one session. Idempotent + re-runnable.
 
@@ -264,8 +283,20 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
 
     # 4. Commit + push the telemetry JSONL FIRST (R-015) — the backstop that
     #    makes step 5 safe. Push failure blocks deletion (C-006).
+    #    Trainee (R-14): there is deliberately NO fleet telemetry remote (won't scale to
+    #    every student workstation). Instead copy the session log into the repo's logs/
+    #    so it rides the R-3 session PR. The telemetry_repo push + CST-prune dance is
+    #    skipped entirely (nothing to push to).
     pushed = False
-    try:
+    home_repo_early = cwd or os.environ.get("CLAUDE_PROJECT_DIR", "")
+    if _is_trainee():
+        wrote = _copy_session_log_for_trainee(transcript_path, home_repo_early, session_id)
+        _log(f"trainee session log {'copied to logs/' if wrote else 'copy skipped'} "
+             "(R-14 — no telemetry remote)", session_id=session_id)
+        _step("telemetry_push", "done" if wrote else "skipped")
+        _step("cst_prune", "skipped")
+    else:
+      try:
         from lib import telemetry_repo
         from datetime import datetime, timezone
 
@@ -290,12 +321,14 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
             session_id=session_id,
         )
         _step("telemetry_push", "done" if pushed else "failed")
-    except Exception as exc:
+      except Exception as exc:
         _log(f"telemetry push skipped: {exc}", session_id=session_id, level="WARN")
         _step("telemetry_push", "failed")
 
     # 5. Delete raw PreToolUse/PostToolUse from CST — ONLY if the push landed.
-    if pushed:
+    if _is_trainee():
+        pass  # R-14: no telemetry push/CST-prune for trainee — handled in step 4 above.
+    elif pushed:
         try:
             from lib import cst_cleanup
 

@@ -1,0 +1,7 @@
+Session summary: outputDocs/{YYYY-MM-DD}-{topic-slug}-summary.md
+Sections: What we covered / What you produced / What to practise / Questions for your trainer
+Session outputs (agent-produced documents) land in {Trainee}/outputDocs/; your own
+handwritten documents go in {Trainee}/inputDocs/; source/reference material in
+{Trainee}/sourceDocs/. Nothing lands at the repo root.
+Commit + PR: authored automatically by the session-end finalise (you run no git);
+the session log rides the PR in logs/.

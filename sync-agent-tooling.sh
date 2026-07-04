@@ -118,7 +118,7 @@ role_hooks() {
     curriculum-developer)  echo "${SUBSTRATE_BASE}" ;;
     historian)             echo "${SUBSTRATE_BASE}" ;;
     strategist)            echo "${SUBSTRATE_BASE}" ;;
-    trainee)               echo "${SUBSTRATE_BASE} session-materialise.py first-prompt-brief.py trainee-session-branch.py" ;;
+    trainee)               echo "${SUBSTRATE_BASE} session-materialise.py first-prompt-brief.py trainee-session-branch.py trainee-preflight.py trainee-read-guard.py" ;;
   esac
 }
 
