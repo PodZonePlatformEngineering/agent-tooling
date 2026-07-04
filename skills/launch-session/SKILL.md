@@ -88,7 +88,7 @@ Pass it either inline on the launch command (simplest, headless) or via the `set
 ```json
 { "env": { "BRIEF_ID": "{team}/{date}-{task-slug}" },
   "hooks": { "SessionStart": [ { "matcher": "startup|resume",
-    "hooks": [ { "type": "command", "command": "python3 .claude/hooks/session-materialise.py" } ] } ] } }
+    "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-materialise.py" } ] } ] } }
 ```
 
 `BRIEF_ID` unset → the legacy session-point-keyed path runs unchanged (backwards compatible).
@@ -626,7 +626,7 @@ else
   "_comment": "Migrated-launch wiring. SessionStart materialise alongside resident CST session-start.sh; SessionEnd finalise resident (C2-v2.1c). Gitignored. Auth (PODZONE_QDRANT_APIKEY) rides in from the apex env block.",
   "hooks": {
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "python3 .claude/hooks/session-materialise.py" } ] }
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-materialise.py" } ] }
     ]
   }
 }

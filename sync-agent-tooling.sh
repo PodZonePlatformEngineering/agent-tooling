@@ -22,7 +22,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-VALID_ROLES="team-lead coder archivist trainer cluster-operator curriculum-developer historian strategist"
+VALID_ROLES="team-lead coder archivist trainer cluster-operator curriculum-developer historian strategist trainee"
 
 usage() {
   echo "Usage: bash sync-agent-tooling.sh --role {role-class} [--home-repo /path] [--agent-tooling /path] [--yes]"
@@ -118,6 +118,7 @@ role_hooks() {
     curriculum-developer)  echo "${SUBSTRATE_BASE}" ;;
     historian)             echo "${SUBSTRATE_BASE}" ;;
     strategist)            echo "${SUBSTRATE_BASE}" ;;
+    trainee)               echo "${SUBSTRATE_BASE} session-materialise.py first-prompt-brief.py trainee-session-branch.py" ;;
   esac
 }
 

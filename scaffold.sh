@@ -23,7 +23,7 @@ SKILLS_SRC="${AGENT_TOOLING_DIR}/skills"
 # .claude/skills/ (PROJ-039/T-038). Build-agent home repos remain hooks-only.
 TEAM_LEAD_SKILLS_MANIFEST="${SCAFFOLD_DIR}/team-lead-skills.manifest"
 
-VALID_ROLES="team-lead coder archivist trainer cluster-operator curriculum-developer historian strategist"
+VALID_ROLES="team-lead coder archivist trainer cluster-operator curriculum-developer historian strategist trainee"
 
 usage() {
   echo "Usage: bash scaffold.sh {team} {agent} {role-class} [--target-dir /path] [--force]"
@@ -111,6 +111,7 @@ role_hooks() {
     curriculum-developer)  echo "${SUBSTRATE_BASE}" ;;
     historian)             echo "${SUBSTRATE_BASE}" ;;
     strategist)            echo "${SUBSTRATE_BASE}" ;;
+    trainee)               echo "${SUBSTRATE_BASE} session-materialise.py first-prompt-brief.py trainee-session-branch.py" ;;
   esac
 }
 
@@ -155,14 +156,31 @@ role_settings_json() {
   if [[ "$role" == "coder" || "$role" == "cluster-operator" ]]; then
     subagent_stop=',
     "SubagentStop": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/subagent-stop.sh" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-stop.sh" } ] }
     ]'
   fi
   # archivist: ingest the transcript to Qdrant prompt_logs on SessionEnd, alongside
   # the universal session-end-finalise.py. Resident hook (PROJ-039/T-011 C2b).
   local session_end_ingest=""
   if [[ "$role" == "archivist" ]]; then
-    session_end_ingest=', { "type": "command", "command": "bash .claude/hooks/ingest-transcript.sh" }'
+    session_end_ingest=', { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/ingest-transcript.sh" }'
+  fi
+
+  # trainee: the brief-first trainee runtime (PROJ-011/T-021). A trainee runs no git
+  # and pastes a `Brief:` line as the first message. So:
+  #   * env TRAINEE_RUNTIME=1 selects the SessionEnd trainee session-PR path (R-3).
+  #   * SessionStart also runs trainee-session-branch.py — branch off main (R-2).
+  #   * UserPromptSubmit also runs first-prompt-brief.py — parse the brief id from the
+  #     first prompt + materialise (R-1). Materialise is NOT wired on SessionStart here
+  #     (no pinned sid / BRIEF_ID env) — the first prompt owns it.
+  local trainee_env=""
+  local session_start_extra=""
+  local ups_extra=""
+  if [[ "$role" == "trainee" ]]; then
+    trainee_env='
+    "TRAINEE_RUNTIME": "1",'
+    session_start_extra=', { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-session-branch.py" }'
+    ups_extra=', { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/first-prompt-brief.py" }'
   fi
 
   # Telemetry + finalise env (PROJ-039/T-032). Non-secret config only — the
@@ -177,31 +195,31 @@ role_settings_json() {
   # must never touch the apex clone) but documents the non-migrated apex path.
   cat <<SETTINGS
 {
-  "env": {
+  "env": {${trainee_env}
     "PODZONE_TELEMETRY_REMOTE": "https://github.com/PodZonePlatformEngineering/agent-telemetry.git",
     "PODZONEAGENTTEAM_REPO": "${HOME}/workspace/podzoneAgentTeam"
   },
   "hooks": {
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash .claude/hooks/session-start.sh" } ] }
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }${session_start_extra} ] }
     ],
     "UserPromptSubmit": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/user-prompt-submit.sh" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" }${ups_extra} ] }
     ],
     "PreToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash .claude/hooks/pre-tool-use.sh" } ] }
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-tool-use.sh" } ] }
     ],
     "PostToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash .claude/hooks/post-tool-use.sh" } ] }
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-tool-use.sh" } ] }
     ],
     "PostCompact": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/post-compact.sh" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-compact.sh" } ] }
     ],
     "Stop": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "bash .claude/hooks/stop.sh" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop.sh" } ] }
     ],
     "SessionEnd": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 .claude/hooks/session-end-finalise.py", "timeout": 600 }${session_end_ingest} ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end-finalise.py", "timeout": 600 }${session_end_ingest} ] }
     ]${subagent_stop}
   }
 }
