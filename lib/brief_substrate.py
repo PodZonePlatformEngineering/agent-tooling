@@ -177,7 +177,26 @@ def append_session_id(
     (the many-sessions-per-brief property). Preserves the `brief` named vector.
 
     Returns ``{"point_id", "session_ids", "appended", "ok"}``.
+
+    T-047 (CC-348) — defence-in-depth against a placeholder sid polluting a live
+    point. The runtime session id is always a UUID; a conventional synthetic test
+    sid ("sid-1", "runtime-sid-9") is still several chars. A one-/two-char dummy
+    ("s") is never a real session id, so refuse it loudly rather than write it. The
+    original pollution vector was a non-hermetic hook test: `session-materialise`'s
+    `main()` reads `BRIEF_ID` from the ambient env, and a T-045 serial-mode session
+    ran the suite *inside* the primary clone where `BRIEF_ID` was set — sending a
+    `{"session_id": "s"}` failure-case fixture down the brief-first path and into
+    `append_session_id` against the LIVE point. That test is now hermetic
+    (pops `BRIEF_ID`); this guard makes the whole class structurally impossible.
     """
+    sid = (session_id or "").strip()
+    if len(sid) < 4:
+        raise ValueError(
+            f"append_session_id: refusing an implausibly short session_id "
+            f"{session_id!r} for {brief_id!r} — no runtime UUID or conventional "
+            f"synthetic sid is that short; this is a placeholder that must never "
+            f"reach a live brief point (T-047/CC-348)."
+        )
     pid = point_id_for(brief_id)
     existing = qdrant_http.get_point(pid, collection=COLLECTION, api_key=api_key)
     current: list = []

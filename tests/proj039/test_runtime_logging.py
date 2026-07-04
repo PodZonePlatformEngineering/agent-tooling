@@ -14,6 +14,7 @@ Covers:
     partial entry (re-run marks it complete).
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -173,6 +174,40 @@ def _load_hook_module():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+class TestLastAssistantText(unittest.TestCase):
+    """T-047: the response scrape must find the session's OWN final turn — never a
+    subagent's — in the headless `claude -p` transcript shape."""
+
+    def _write(self, entries):
+        import tempfile
+        fh = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        for e in entries:
+            fh.write(json.dumps(e) + "\n")
+        fh.close()
+        return fh.name
+
+    def _asst(self, text, sidechain=False):
+        return {"type": "assistant", "isSidechain": sidechain,
+                "message": {"content": [{"type": "text", "text": text}]}}
+
+    def test_skips_trailing_subagent_turn(self):
+        mod = _load_hook_module()
+        path = self._write([
+            self._asst("the session's real final summary"),
+            self._asst("a subagent's closing turn", sidechain=True),
+        ])
+        self.assertEqual(mod._last_assistant_text(path),
+                         "the session's real final summary")
+
+    def test_plain_transcript_unaffected(self):
+        mod = _load_hook_module()
+        path = self._write([
+            self._asst("earlier turn"),
+            self._asst("final main-thread turn"),
+        ])
+        self.assertEqual(mod._last_assistant_text(path), "final main-thread turn")
 
 
 class TestFinaliseSessionMocked(unittest.TestCase):
