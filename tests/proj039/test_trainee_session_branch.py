@@ -86,6 +86,19 @@ class TestEnsureSessionBranch(unittest.TestCase):
                 "session/2026-07-04-22ca589f",
             )
 
+    def test_crash_leftover_session_branch_halts(self) -> None:
+        # A leftover session branch from a prior crash, with no finalise-ledger
+        # record → preflight HALTs (unfinalised-session-branch); the hook must NOT
+        # branch again. (Ledger-backed auto-recovery is covered in test_session_guard.)
+        with tempfile.TemporaryDirectory() as td:
+            repo = _make_repo(Path(td))
+            _git(repo, "checkout", "-b", "session/2026-07-01-deadbeef")  # stale, unfinalised
+            res = HOOK.ensure_session_branch(str(repo), SID, date="2026-07-04")
+            self.assertEqual(res["action"], "halt", msg=res["message"])
+            self.assertEqual(
+                _git(repo, "branch", "--show-current").stdout.strip(),
+                "session/2026-07-01-deadbeef")  # left as found
+
     def test_dirty_tree_halts_without_branching(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             repo = _make_repo(Path(td))
