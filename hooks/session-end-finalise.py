@@ -156,6 +156,19 @@ def _is_migrated(cwd: str) -> bool:
     return base.startswith("home-")
 
 
+def _is_trainee() -> bool:
+    """A trainee-runtime session (PROJ-011/T-021 R-3). Selected by an explicit
+    ``TRAINEE_RUNTIME=1`` env flag set ONLY in the training-template ``settings.json``
+    (and its clones) — NOT by a repo-name pattern: a real trainee clone is
+    ``podzone-training-<handle>`` (not ``home-*``), while the training-team AGENTS'
+    own repos (``home-training-athena``/``hestia``) are ordinary migrated home repos
+    that must keep the migrated-result path. The flag is the unambiguous signal.
+
+    For a trainee, step 7 is the trainee session PR (commit the working tree to the
+    session branch + push + PR), and step 6 (apex tasklist/STATUS) is skipped."""
+    return os.environ.get("TRAINEE_RUNTIME", "").strip() == "1"
+
+
 def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> int:
     """Run the ordered finalise for one session. Idempotent + re-runnable.
 
@@ -298,6 +311,7 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
 
     agent_repo = os.environ.get("PODZONEAGENTTEAM_REPO", "")
     migrated = _is_migrated(cwd)
+    trainee = _is_trainee()
 
     # Steps 6-7 split by repo kind. On a MIGRATED home repo (hooks-only, no
     # `/session-end` skill):
@@ -315,7 +329,11 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
 
     # 6. session-finalise (§ 1.4): apply the 4 per-session consolidation steps
     #    from the session point (tasklist + STATUS). Idempotent. (Apex model only.)
-    if migrated:
+    if trainee:
+        _log("session-finalise skipped (trainee): no apex tasklist/STATUS — the "
+             "trainee session PR is the artefact (R-3)", session_id=session_id)
+        _step("session_finalise", "skipped")
+    elif migrated:
         _log("session-finalise deferred (migrated): tasklist/STATUS -> Hermes "
              "/consolidate-tasks (from session point); apex clone untouched",
              session_id=session_id)
@@ -362,6 +380,41 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
     if prior in ("done", "exists"):
         _log(f"session result skipped: already '{prior}' (ledger) — no duplicate",
              session_id=session_id)
+    elif trainee:
+        # R-3: the trainee session PR — commit the working tree to the session
+        # branch, push, and open the PR to main (body = substrate summary + review
+        # checklist). The trainee runs no git. Auth degrades gracefully (commit +
+        # push only if gh is unavailable). Idempotent (skips when a PR already
+        # carries the branch). The return-to-main main-guard below then ff's main +
+        # deletes the pushed branch, leaving the clone on a clean main with an open PR.
+        if not home_repo:
+            _log("trainee session PR skipped: no repo dir (cwd / CLAUDE_PROJECT_DIR unset)",
+                 session_id=session_id, level="WARN")
+            _step("brief_pr", "deferred-cancelled")
+        else:
+            try:
+                from lib import session_finalise as _sf, session_substrate as _ss
+                from datetime import datetime, timezone as _tz
+
+                point = _ss.get_session_point(session_id) or {}
+                brief_id = point.get("brief_id")
+                date = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+                res = _sf.author_trainee_session_pr(
+                    point, session_id=session_id, repo_dir=home_repo,
+                    brief_id=brief_id, date=date,
+                    summary_override=response_text, raise_pr=True,
+                )
+                _log(
+                    f"trainee session PR [{res['disposition']}]: ok={res['ok']} "
+                    f"branch={res['branch']} pr_url={res['pr_url'] or '(none)'} "
+                    f"committed={res['committed']} {res.get('reason') or ''}",
+                    session_id=session_id,
+                )
+                _step("brief_pr", res["disposition"])
+            except Exception as exc:
+                _log(f"trainee session PR deferred-cancelled: {exc}",
+                     session_id=session_id, level="WARN")
+                _step("brief_pr", "deferred-cancelled")
     elif migrated:
         # T-035: the hook owns the home-repo result. Author it + PR off home `main`,
         # decoupled from the work PR. Idempotent (re-checks base + open PRs).

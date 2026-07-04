@@ -666,6 +666,174 @@ def author_home_result(
 
 
 # ---------------------------------------------------------------------------
+# Trainee session PR (PROJ-011/T-021 R-3, CC-351)
+# ---------------------------------------------------------------------------
+#
+# A trainee's LLM never runs git ceremony. So — unlike the migrated-home path,
+# which authors an isolated *result file* off main and leaves the session's own
+# branch alone — the trainee finalise commits the LIVE working tree to the session
+# branch, pushes it, and opens the PR **for that branch** to main. The PR IS the
+# trainee-visible session artefact; the next session's review ritual reads it,
+# walks the checklist, and merges (training-replatform-plan §1.2/§2.1).
+
+# Fixed review checklist the NEXT session's PR-review ritual walks (brief R-3,
+# resolved 2026-07-04: PR body = substrate summary + this checklist).
+_TRAINEE_REVIEW_CHECKLIST = (
+    "## Review checklist (next session's ritual)\n\n"
+    "- [ ] Session summary above read\n"
+    "- [ ] Files changed reviewed\n"
+    "- [ ] Progress entries look right\n"
+    "- [ ] Merge this PR, then start the new session on a clean `main`\n"
+)
+
+
+def build_trainee_pr_body(
+    session_point: dict,
+    *,
+    brief_id: Optional[str],
+    date: str,
+    session_id: str,
+    summary_override: Optional[str] = None,
+) -> str:
+    """Compose the trainee session PR body: the **substrate session summary** plus the
+    fixed **review checklist** (brief R-3 — *both*).
+
+    Summary source with the T-047 raw-response fallback: prefer an explicit
+    ``summary_override`` (the hook passes the last-assistant turn it already scraped),
+    else the session point's ``response.text``, else a clear placeholder — never an
+    empty body.
+    """
+    response = session_point.get("response") or {}
+    summary = (summary_override or "").strip() or (response.get("text") or "").strip()
+    if not summary:
+        summary = ("_(No session summary was captured — see the session point "
+                   "`response` in the substrate, or the transcript.)_")
+    ref = brief_id or session_point.get("work_item") or "(unknown brief)"
+    return (
+        f"**Brief:** `{ref}` · **Session:** `{session_id[:12]}` · **Date:** {date}\n\n"
+        f"Auto-opened by the trainee SessionEnd finalise hook (PROJ-011/T-021 R-3) — "
+        f"the trainee runs no git.\n\n"
+        f"## Session summary\n\n"
+        f"{summary}\n\n"
+        f"---\n\n"
+        f"{_TRAINEE_REVIEW_CHECKLIST}"
+    )
+
+
+def _open_pr_for_branch(repo_dir: str, branch_name: str) -> bool:
+    """True if an open PR already carries ``branch_name`` (best-effort via gh)."""
+    r = subprocess.run(
+        ["gh", "pr", "list", "--head", branch_name, "--state", "open",
+         "--json", "number", "-q", ".[].number"],
+        capture_output=True, text=True, cwd=repo_dir, check=False,
+    )
+    return r.returncode == 0 and bool(r.stdout.strip())
+
+
+def author_trainee_session_pr(
+    session_point: dict,
+    *,
+    session_id: str,
+    repo_dir: str,
+    brief_id: Optional[str] = None,
+    branch: Optional[str] = None,
+    date: Optional[str] = None,
+    summary_override: Optional[str] = None,
+    raise_pr: bool = True,
+    base_branch: str = "main",
+) -> dict:
+    """Commit the trainee's working tree to the session branch, push it, and open a
+    PR to ``base_branch`` titled from the brief + date.
+
+    Returns ``{"branch", "pr_url", "ok", "reason", "disposition", "committed"}`` where
+    ``disposition`` ∈ {``done``, ``exists``, ``noop``, ``deferred-cancelled``}:
+
+      * ``noop`` — the clone is on ``base_branch`` / no session branch to PR.
+      * ``exists`` — an open PR already carries this branch (idempotent re-run).
+      * ``done`` — committed (if there were changes) + pushed + PR raised.
+      * ``deferred-cancelled`` — a step failed; best-effort, never raises.
+
+    Auth degrades gracefully (brief R-3): if ``gh`` is unavailable the commit + push
+    still land and the result flags ``pr_url=""`` with a reason — the caller reports
+    "committed + pushed only".
+    """
+    date = date or _now_date()
+    branch = branch or _git(repo_dir, "branch", "--show-current").stdout.strip()
+    result = {"branch": branch, "pr_url": "", "ok": False, "reason": "",
+              "disposition": "deferred-cancelled", "committed": False}
+
+    if not branch or branch == base_branch:
+        result.update(ok=True, disposition="noop",
+                      reason=f"clone on '{branch or 'detached'}' — no session branch to PR")
+        return result
+
+    try:
+        # 1. Commit the live working tree to the session branch (trainee ran no git).
+        #    .workspace/ etc. are gitignored, so `-A` picks up only real work.
+        _git(repo_dir, "add", "-A")
+        has_staged = _git(repo_dir, "diff", "--cached", "--quiet").returncode != 0
+        if has_staged:
+            commit = _git(
+                repo_dir, "commit", "-m",
+                f"session({date}): {brief_id or session_point.get('work_item', 'work')} "
+                f"[{session_id[:8]}]",
+            )
+            out = (commit.stdout + commit.stderr).lower()
+            if commit.returncode != 0 and "nothing to commit" not in out:
+                result["reason"] = f"commit failed: {commit.stderr.strip()}"
+                return result
+            result["committed"] = True
+
+        # Nothing to PR if the branch has no commits ahead of the base.
+        _git(repo_dir, "fetch", "origin", base_branch)
+        base_ref = _resolve_base_ref(repo_dir, base_branch) or base_branch
+        ahead = _git(repo_dir, "rev-list", "--count", f"{base_ref}..{branch}").stdout.strip()
+        if ahead in ("", "0"):
+            result.update(ok=True, disposition="noop",
+                          reason="session branch has no commits ahead of base — nothing to PR")
+            return result
+
+        # Idempotent: an open PR already carries this branch.
+        if raise_pr and _open_pr_for_branch(repo_dir, branch):
+            result.update(ok=True, disposition="exists",
+                          reason="open PR already carries this session branch")
+            return result
+
+        # 2. Push the session branch.
+        push = _git(repo_dir, "push", "-u", "origin", branch)
+        if push.returncode != 0:
+            result["reason"] = f"push failed: {push.stderr.strip()}"
+            return result
+
+        # 3. Open the PR (graceful degrade if gh is unavailable / unauthed).
+        if raise_pr:
+            title = f"Trainee session {date} — {brief_id or session_point.get('work_item', 'work')}"
+            body = build_trainee_pr_body(
+                session_point, brief_id=brief_id, date=date,
+                session_id=session_id, summary_override=summary_override,
+            )
+            pr = subprocess.run(
+                ["gh", "pr", "create", "--base", base_branch, "--head", branch,
+                 "--title", title, "--body", body],
+                capture_output=True, text=True, cwd=repo_dir, check=False,
+            )
+            result["pr_url"] = pr.stdout.strip()
+            if pr.returncode != 0:
+                # Committed + pushed landed; PR did not (gh missing/unauthed). The
+                # work is safe on the remote branch — degrade gracefully.
+                result.update(ok=True, disposition="done",
+                              reason=f"committed + pushed only (PR not raised: "
+                                     f"{pr.stderr.strip() or 'gh unavailable'})")
+                return result
+
+        result.update(ok=True, disposition="done",
+                      reason="committed + pushed + PR raised")
+    except Exception as exc:  # never break teardown
+        result["reason"] = str(exc)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Top-level entry point (§ 2.4 step 6)
 # ---------------------------------------------------------------------------
 
