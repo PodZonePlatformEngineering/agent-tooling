@@ -1,0 +1,63 @@
+# __REPO_NAME__ — your training repo
+
+This is **your** repo for working through your training curriculum. Each session is an
+interactive conversation with your trainer's assistance; the repo handles git, session
+branches, and PRs for you automatically. This README is your operating manual — how to
+run **this** repo. You never need to know how it was built.
+
+## Where everything goes
+
+All your work lives under **`__TRAINEE__/`**:
+
+| Folder | What goes here |
+|---|---|
+| `__TRAINEE__/sourceDocs/` | Source & reference material (add anything external here **before** using it) |
+| `__TRAINEE__/inputDocs/` | Documents **you** write during a session |
+| `__TRAINEE__/outputDocs/` | Summaries & documents the assistant produces for you |
+| `__TRAINEE__/sessions/` | Per-session working notes (`__TRAINEE___{date}_session-N/`) |
+| `__TRAINEE__/trainee-profile.md` | Who you are + what you want from the course (anchors every example) |
+| `__TRAINEE__/training-state.md` | Where you are in the curriculum |
+| `__TRAINEE__/feedback.md` · `improvement-recommendations.md` | Your trainer's running notes |
+
+Nothing you produce should land at the repo **root** — always inside `__TRAINEE__/`.
+
+## Starting a session
+
+1. Clone your repo and run `claude`.
+2. Paste a first message whose **first line** is your brief id:
+
+   ```text
+   Brief: training/{date}-{curriculum-slug}-{your-handle}
+   Hi! Continue with my brief. If it's FULLY complete, include a line
+   `Brief-Status: complete` in your final response; otherwise it stays in progress for
+   my next session. If I'm blocked, raise it to my trainer and exit.
+   ```
+
+That is the whole launch ritual — **no git, no environment variables.** The brief must
+already be **approved** by your trainer (they author it once per curriculum); if it
+isn't, the session will stop and tell you — that's not an error, just ask your trainer.
+
+## What happens automatically
+
+- **At session start** you are moved onto a fresh session branch off `main`.
+- **While you work**, if you try to read a document from **outside** this repo you'll
+  get a reminder to copy it into `__TRAINEE__/sourceDocs/` first (keeps your context
+  contained and reproducible).
+- **At session end** (a clean exit) the assistant writes your session summary, copies
+  the session log into `logs/`, commits your work, pushes the branch, and opens a
+  **pull request to `main`**.
+
+## The next-session ritual
+
+Your **next** session starts by reviewing the PR your last session opened: read the
+summary, check the work, and **merge** it. Then paste the same `Brief:` line to
+continue where you left off. Many sessions accumulate on one brief — that's your
+progress over time.
+
+## First time on this workstation?
+
+The repo needs a little one-time setup before a brief will load (a Qdrant key, `gh`
+auth). Work through **`docs/workstation-setup.md`** with your trainer, then run
+`python3 .claude/hooks/trainee-preflight.py` to confirm everything is ready. The full
+list is in `docs/dependency-analysis.md`. Until then the repo stays quiet — you can
+still read everything here.

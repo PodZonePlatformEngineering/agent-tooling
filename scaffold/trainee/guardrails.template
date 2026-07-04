@@ -1,0 +1,6 @@
+Session context comes ONLY from this repo (+ the .workspace/ task repos the brief materialises). Do not read source material from outside the repo — copy it into __TRAINEE__/sourceDocs/ first, then read it there.
+All session work lands inside __TRAINEE__/ (sourceDocs/inputDocs/outputDocs/sessions) — never at the repo root.
+Never commit context/ or .workspace/ — they are ephemeral and gitignored.
+You run no git — the hooks own branching, commit, and the session PR. Do not fight them.
+Secrets via the workstation env block / secrets MCP only — never hardcode or log a secret value.
+If a secret appears in context, stop and tell your trainer immediately.

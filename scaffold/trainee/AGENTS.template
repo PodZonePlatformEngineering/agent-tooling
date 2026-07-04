@@ -1,0 +1,62 @@
+# __TRAINEE__ — training repo
+
+The context needed to operate this repo. Sessions are **interactive** — you and your
+trainer work together; ask questions and iterate freely.
+
+## Startup + first prompt
+
+Per session:
+
+1. **Session start** — you are checked out onto a fresh `session/{date}-{sid8}` branch
+   off a clean `main`. You run no git.
+2. **First prompt** — paste a `Brief: training/{date}-{curriculum-slug}-{handle}` line
+   as the first message; the brief materialises into `.workspace/`. The brief must be
+   an **approved** briefs point or the session stops (ask your trainer).
+3. **Session end** — the finalise writes your session summary, copies the session log
+   into `logs/`, commits your working tree to the session branch, pushes, and opens a
+   **PR to `main`**. Your next session reviews + merges that PR, then continues.
+
+## Where work goes
+
+Everything lands under `__TRAINEE__/`: `sourceDocs/` (external material — add it here
+before use), `inputDocs/` (your documents), `outputDocs/` (assistant-produced
+documents), `sessions/` (per-session notes). Never write at the repo root. Session
+context comes **only** from this repo plus the `.workspace/` task repos the brief
+materialises (context containment) — copy anything external into `__TRAINEE__/sourceDocs/`
+first.
+
+## Agent
+
+- **Name:** __TRAINEE__
+- **Team:** training
+- **Role:** trainee (interactive sessions)
+- **Operator:** Trainee
+
+## First-run setup
+
+This repo needs one-time workstation setup before a brief will load — see
+`docs/workstation-setup.md` (trainer-assisted) and `docs/dependency-analysis.md` (the
+full dependency list). Run `python3 .claude/hooks/trainee-preflight.py` to check what is
+still missing. Until setup is complete the hooks fail **soft**: one "not configured yet
+— see the setup guide" pointer, never a wall of errors, and orientation is never
+blocked.
+
+## Hook set
+
+| Event | Script | Purpose |
+|---|---|---|
+| SessionStart | `session-start.sh` | Telemetry + unfinalised-session guard |
+| SessionStart | `trainee-session-branch.py` | Branch onto `session/{date}-{sid8}` off main |
+| UserPromptSubmit | `first-prompt-brief.py` | Parse the `Brief:` id + materialise `.workspace/` |
+| PreToolUse | `pre-tool-use.sh` | Telemetry + report out-of-repo reads (context containment) |
+| PostToolUse | `post-tool-use.sh` | Tool-result telemetry |
+| Stop | `stop.sh` | Session tasking checkpoint |
+| SessionEnd | `session-end-finalise.py` | Summary → copy session log into `logs/` → commit + push + PR to main |
+
+## Constraints
+
+- All work lands under `__TRAINEE__/` — never at the repo root.
+- You run no git — the hooks own branching, commit, and the session PR.
+- `context/` and `.workspace/` are ephemeral — never commit them.
+- Secrets via the workstation env block / secrets MCP only — never hardcode or log a
+  secret; if a secret appears in context, stop and tell your trainer.
