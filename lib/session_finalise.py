@@ -431,6 +431,41 @@ def extract_sections(text: str) -> dict[str, str]:
     return {k: "\n".join(v).strip() for k, v in sections.items()}
 
 
+# The finalise hook's placeholder when the transcript yielded no assistant turn.
+_NO_RESPONSE_SENTINELS = ("(no response)",)
+
+
+def _render_result_sections(extracted: dict[str, str], response_text: str) -> str:
+    """Render the top structured block of the result doc.
+
+    Normal path — the final turn used the canonical headers: one ``## {label}``
+    block per section, absent ones filled with ``_None recorded._``.
+
+    T-047 raw-response fallback (CC-348) — the final turn carried **none** of the
+    canonical headers but a real response exists (a free-form summary, or a headless
+    ``claude -p`` turn that used its own ``##``/``###`` headers such as
+    ``## PROJ-011/T-021`` — see home#20/#21/#24). Authoring five "None recorded"
+    stubs there buries a rich response under a false "nothing happened" summary, so
+    instead embed the response verbatim under one ``## Session response (raw)``
+    block. Only the genuinely empty case (no sections AND no real response) still
+    renders the stubs.
+    """
+    real = bool(response_text.strip()) and response_text.strip() not in _NO_RESPONSE_SENTINELS
+    if not extracted and real:
+        return (
+            "## Session response (raw)\n\n"
+            "_The final turn carried none of the canonical section headers "
+            "(Completed / Started / Blockers / Decisions / Questions for Martin), "
+            "so the full response is embedded verbatim below rather than stubbed._\n\n"
+            f"{response_text.strip()}\n\n"
+        )
+    section_md = ""
+    for label in RESULT_SECTIONS:
+        body = extracted.get(label) or "_None recorded._"
+        section_md += f"## {label}\n\n{body}\n\n"
+    return section_md
+
+
 def generate_session_result(
     session_point: dict,
     *,
@@ -458,10 +493,7 @@ def generate_session_result(
     end_ts = response.get("end_ts", "")
 
     extracted = extract_sections(response_text)
-    section_md = ""
-    for label in RESULT_SECTIONS:
-        body = extracted.get(label) or "_None recorded._"
-        section_md += f"## {label}\n\n{body}\n\n"
+    section_md = _render_result_sections(extracted, response_text)
 
     tool_usage = rollup.get("tool_usage", {})
     cost_tokens = rollup.get("cost_tokens", {})

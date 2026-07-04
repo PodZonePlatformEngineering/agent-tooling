@@ -104,14 +104,65 @@ class TestGenerateSessionResult(unittest.TestCase):
         self.assertIn("in_progress->complete", out)
         self.assertIn("claude-opus-4-8", out)
 
-    def test_missing_sections_render_placeholder(self) -> None:
+    def test_freeform_response_embedded_verbatim_not_stubbed(self) -> None:
+        # T-047 (CC-348): a real free-form response with none of the canonical
+        # headers must NOT be buried under five "None recorded" stubs (home#20/#21).
         point = {
-            "session_id": "s", "agent": "A", "work_item": "W",
+            "session_id": "sid-freeform", "agent": "A", "work_item": "W",
             "response": {"text": "Just a flat summary, no headers."},
         }
         out = session_finalise.generate_session_result(point, date=FIXED_DATE)
-        # Every canonical section still rendered; unfilled ones say so.
-        self.assertEqual(out.count("_None recorded._"), len(session_finalise.RESULT_SECTIONS))
+        self.assertNotIn("_None recorded._", out)
+        self.assertIn("## Session response (raw)", out)
+        self.assertIn("Just a flat summary, no headers.", out)
+
+    def test_headless_shaped_response_non_stub_result(self) -> None:
+        # T-047: the headless `claude -p` final turn used its OWN `##`/`###`
+        # headers (not the canonical set) — the 22ca589f home#24 shape. The result
+        # must surface it, not stub it.
+        point = {
+            "session_id": "sid-headless", "agent": "hephaestus",
+            "work_item": "PROJ-011/T-021",
+            "response": {"text": textwrap.dedent("""\
+                All work is landed and verified. Here's the summary.
+
+                ## PROJ-011/T-021 (CC-351) + rider T-050 — complete
+                ### Verification
+                - 207 tests green.
+
+                Brief-Status: complete
+                """)},
+        }
+        out = session_finalise.generate_session_result(point, date=FIXED_DATE)
+        self.assertNotIn("_None recorded._", out)
+        self.assertIn("## Session response (raw)", out)
+        self.assertIn("Brief-Status: complete", out)
+        self.assertIn("207 tests green", out)
+
+    def test_partial_canonical_sections_still_stub_the_rest(self) -> None:
+        # When the response DID use canonical headers, absent ones stub as before —
+        # the fallback only fires when NONE are found.
+        point = {
+            "session_id": "sid-partial", "agent": "A", "work_item": "W",
+            "response": {"text": "## Completed\n- did a thing\n"},
+        }
+        out = session_finalise.generate_session_result(point, date=FIXED_DATE)
+        self.assertNotIn("## Session response (raw)", out)
+        self.assertIn("did a thing", out)
+        # Started/Blockers/Decisions/Questions absent → stubbed.
+        self.assertEqual(out.count("_None recorded._"),
+                         len(session_finalise.RESULT_SECTIONS) - 1)
+
+    def test_no_real_response_still_stubs(self) -> None:
+        # Genuinely empty response → the stubs are the honest rendering.
+        point = {
+            "session_id": "sid-empty", "agent": "A", "work_item": "W",
+            "response": {"text": "(no response)"},
+        }
+        out = session_finalise.generate_session_result(point, date=FIXED_DATE)
+        self.assertNotIn("## Session response (raw)", out)
+        self.assertEqual(out.count("_None recorded._"),
+                         len(session_finalise.RESULT_SECTIONS))
 
     def test_empty_point_does_not_raise(self) -> None:
         out = session_finalise.generate_session_result({}, date=FIXED_DATE)

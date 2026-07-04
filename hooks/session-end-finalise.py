@@ -109,6 +109,13 @@ def _last_assistant_text(transcript_path: str) -> str:
                     continue
                 if entry.get("type") != "assistant":
                     continue
+                # T-047: skip subagent (sidechain) turns. A headless `claude -p`
+                # session that spawns Agent-tool subagents interleaves their
+                # assistant turns into the same transcript; the LAST assistant entry
+                # can be a subagent's closing turn, not the session's own final
+                # response. Only the main-thread turns are the session response.
+                if entry.get("isSidechain"):
+                    continue
                 message = entry.get("message")
                 if not isinstance(message, dict):
                     continue

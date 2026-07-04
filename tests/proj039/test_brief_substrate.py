@@ -133,6 +133,26 @@ class TestAppendSessionId(unittest.TestCase):
         self.assertEqual(r2["session_ids"], ["sid-1"])
         self.assertEqual(len(rec.set_payloads()), 1)  # only the first wrote
 
+    def test_placeholder_sid_refused_never_writes(self) -> None:
+        # T-047 (CC-348): the live T-045 point gained a literal 's' when a
+        # non-hermetic hook test's dummy `{"session_id": "s"}` reached the brief-
+        # first path (ambient BRIEF_ID). append_session_id must refuse it loudly and
+        # write nothing — belt-and-braces so the class is structurally impossible.
+        rec = RecordingQdrant({"brief_id": BRIEF_ID, "session_ids": []})
+        with patch.object(qdrant_http, "request_json", rec):
+            with self.assertRaises(ValueError):
+                brief_substrate.append_session_id(BRIEF_ID, "s")
+        self.assertEqual(len(rec.set_payloads()), 0)  # no live write
+
+    def test_conventional_synthetic_sid_still_accepted(self) -> None:
+        # The guard rejects only implausibly-short placeholders; conventional
+        # synthetic sids and real UUIDs pass unchanged.
+        rec = RecordingQdrant({"brief_id": BRIEF_ID, "session_ids": []})
+        with patch.object(qdrant_http, "request_json", rec):
+            r = brief_substrate.append_session_id(
+                BRIEF_ID, "0c7908ea-f18f-43be-bb58-88464ae698e0")
+        self.assertTrue(r["appended"])
+
 
 class TestStartBrief(unittest.TestCase):
     def test_approved_advances_to_in_progress(self) -> None:
