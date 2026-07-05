@@ -107,7 +107,13 @@ fi
 # curriculum-developer / historian / strategist are the C2c fissioned-team build
 # agents (hestia / clio / kronos, PROJ-039/T-037): producers, no subagent spawn,
 # no transcript-ingest — universal substrate base, same shape as team-lead/trainer.
-SUBSTRATE_BASE="session-start.sh user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py session-end-finalise.py"
+# session-materialise.py is in the universal base (PROJ-039/T-052): it is committed
+# resident like every other hook — NEVER hand-copied + settings.local.json-wired.
+# The hand-copy gotcha bit Thoth's first serial launch (T-022): the copy was omitted,
+# the SessionStart wiring pointed at a missing file and failed silently → no brief-first
+# session point, session_ids[] never appended, finalise ran "not brief-first". Resident
+# + committed-settings.json-wired kills that class.
+SUBSTRATE_BASE="session-start.sh session-materialise.py user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py session-end-finalise.py"
 role_hooks() {
   case "$1" in
     team-lead)             echo "${SUBSTRATE_BASE}" ;;
@@ -118,7 +124,7 @@ role_hooks() {
     curriculum-developer)  echo "${SUBSTRATE_BASE}" ;;
     historian)             echo "${SUBSTRATE_BASE}" ;;
     strategist)            echo "${SUBSTRATE_BASE}" ;;
-    trainee)               echo "${SUBSTRATE_BASE} session-materialise.py first-prompt-brief.py trainee-session-branch.py trainee-preflight.py trainee-read-guard.py" ;;
+    trainee)               echo "${SUBSTRATE_BASE} first-prompt-brief.py trainee-session-branch.py trainee-preflight.py trainee-read-guard.py" ;;
   esac
 }
 

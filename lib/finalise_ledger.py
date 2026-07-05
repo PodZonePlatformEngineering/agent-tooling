@@ -42,7 +42,7 @@ LEDGER_FILE = "finalise-state.log"
 # the only non-idempotent step — the guard relies on its ``done`` mark to avoid
 # raising a duplicate PR on re-run.
 STEPS = ("response", "rollup", "telemetry_push", "cst_prune",
-         "session_finalise", "brief_pr")
+         "session_finalise", "brief_pr", "transcript_ingest")
 
 # The SessionStart guard re-runs an unfinalised (truncated) session's finalise.
 # A finalise that truncates *every* attempt (e.g. it deterministically exceeds the

@@ -13,7 +13,10 @@ __pycache__/
 *.pyo
 
 # Local tool state
-*.log
+# NOTE: session logs under logs/ (libraries-{sid8}.log, primitives-{sid8}.log) ARE
+# committed — they ride the session-result PR as durable per-session diagnostics
+# (PROJ-039/T-048; trainee finalise copies its session log in per R-14). So `*.log`
+# is deliberately NOT ignored here.
 .env
 
 # Per-home-repo scoped env block (plaintext secrets until PROJ-003) — NEVER commit.

@@ -20,7 +20,7 @@ Ordered contract realised here — **order is load-bearing** (§ 2.4):
      the same date+slug authors its own result instead of skipping on the prior one.
 
 Step 6/7 ownership splits by repo kind (the load-bearing T-035 decision):
-  * **Migrated home repo** (cwd basename `home-*`) — hooks-only by design (there is
+  * **Migrated home repo** (resolved home-repo basename `home-*`, T-054) — hooks-only by design (there is
     NO `/session-end` skill). Step 6 (apex tasklist/STATUS) is DEFERRED to Hermes
     `/consolidate-tasks` (driven by the session point in Qdrant); the hook must
     never branch/commit in the apex clone. Step 7 is OWNED HERE: the hook authors
@@ -154,13 +154,13 @@ def _declares_brief_complete(text: str) -> bool:
     return bool(text) and bool(_BRIEF_COMPLETE_RE.search(text))
 
 
-def _is_migrated(cwd: str) -> bool:
+def _is_migrated(home_repo: str) -> bool:
     """A migrated home-repo session runs under a ``home-*`` repo (the same selector
     the session-end skill uses). For these, steps 6-7 (apex tasklist/STATUS apply +
     brief-result PR) are owned elsewhere — see the gate below — so the finalise hook
-    must NOT mutate the apex clone. Detect from the explicit cwd, else CLAUDE_PROJECT_DIR."""
-    base = os.path.basename((cwd or os.environ.get("CLAUDE_PROJECT_DIR", "")).rstrip("/"))
-    return base.startswith("home-")
+    must NOT mutate the apex clone. Takes the already-resolved home repo dir
+    (:func:`session_guard.resolve_home_repo`, T-054) — never a bare wandered cwd."""
+    return os.path.basename((home_repo or "").rstrip("/")).startswith("home-")
 
 
 def _is_trainee() -> bool:
@@ -195,12 +195,29 @@ def _copy_session_log_for_trainee(transcript_path: str, repo_dir: str,
         return False
 
 
-def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> int:
+def finalise_session(session_id: str, transcript_path: str, home_repo: str = "") -> int:
     """Run the ordered finalise for one session. Idempotent + re-runnable.
+
+    ``home_repo`` is the **already-resolved authoritative home repo** for this
+    session (:func:`session_guard.resolve_home_repo`, PROJ-039/T-054) — never a bare
+    wandered cwd and never a ``.workspace/*`` subrepo. Both callers pass a clean
+    value: :func:`main` resolves it from ``$CLAUDE_PROJECT_DIR``-first, and
+    :func:`run_guard` passes the ledger's persisted (already-resolved) cwd. Every
+    downstream repo op (migrated result PR, return-to-main, lock release, ledger cwd)
+    binds to this single value, so the finalise mutates ONLY the agent's own home repo
+    regardless of where the shell ended.
 
     Records each step in the finalise ledger and marks the session complete on
     reaching the end. Never raises — best-effort throughout.
     """
+    # Defensive re-strip: a legacy partial recovered by the guard may carry a
+    # pre-T-054 ledger cwd that still points inside a `.workspace/` subrepo.
+    try:
+        from lib import session_guard as _sg_resolve
+        home_repo = _sg_resolve.strip_workspace_subrepo(home_repo)
+    except Exception:
+        pass
+
     try:
         from lib import finalise_ledger
     except Exception as exc:
@@ -212,7 +229,10 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
             finalise_ledger.record_step(session_id, name, status)
 
     if finalise_ledger is not None:
-        finalise_ledger.begin(session_id, transcript_path, cwd)
+        # Persist the RESOLVED home repo as the ledger cwd (T-054): the SessionStart
+        # guard re-runs a partial against this repo, so it must be the home repo — not
+        # the wandered `.workspace/*` cwd the shell happened to end in.
+        finalise_ledger.begin(session_id, transcript_path, home_repo)
 
     try:
         from lib import session_substrate
@@ -242,6 +262,7 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
     #    `brief_id`), stamp the brief complete ONLY when the result declares it —
     #    else leave it `in_progress` for the next session (many-sessions-per-brief).
     #    Best-effort + idempotent (complete_brief is a set_payload no-op if re-run).
+    brief_id: str | None = None  # hoisted: the return-to-main lock release keys on it (T-054)
     try:
         point = session_substrate.get_session_point(session_id)
         brief_id = (point or {}).get("brief_id")
@@ -288,9 +309,8 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
     #    so it rides the R-3 session PR. The telemetry_repo push + CST-prune dance is
     #    skipped entirely (nothing to push to).
     pushed = False
-    home_repo_early = cwd or os.environ.get("CLAUDE_PROJECT_DIR", "")
     if _is_trainee():
-        wrote = _copy_session_log_for_trainee(transcript_path, home_repo_early, session_id)
+        wrote = _copy_session_log_for_trainee(transcript_path, home_repo, session_id)
         _log(f"trainee session log {'copied to logs/' if wrote else 'copy skipped'} "
              "(R-14 — no telemetry remote)", session_id=session_id)
         _step("telemetry_push", "done" if wrote else "skipped")
@@ -350,7 +370,7 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
         _step("cst_prune", "skipped")
 
     agent_repo = os.environ.get("PODZONEAGENTTEAM_REPO", "")
-    migrated = _is_migrated(cwd)
+    migrated = _is_migrated(home_repo)
     trainee = _is_trainee()
 
     # Steps 6-7 split by repo kind. On a MIGRATED home repo (hooks-only, no
@@ -364,8 +384,8 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
     #   * Step 7 is OWNED HERE: the hook authors the home-repo result + PR off home
     #     `main`, decoupled from any work PR (PROJ-039/T-035). This replaces the old
     #     deferral to a `/session-end` skill that does not exist in a migrated repo.
-    # The non-migrated apex path (env PODZONEAGENTTEAM_REPO) is unchanged.
-    home_repo = cwd or os.environ.get("CLAUDE_PROJECT_DIR", "")
+    # The non-migrated apex path (env PODZONEAGENTTEAM_REPO) is unchanged. ``home_repo``
+    # is the resolved authoritative home repo (T-054) — every step below binds to it.
 
     # 6. session-finalise (§ 1.4): apply the 4 per-session consolidation steps
     #    from the session point (tasklist + STATUS). Idempotent. (Apex model only.)
@@ -532,21 +552,71 @@ def finalise_session(session_id: str, transcript_path: str, cwd: str = "") -> in
     # Self-guarding + best-effort: a no-op on a legacy linked worktree (cwd under
     # ~/sessions/) and on a clone already on main, so it is safe during the migration
     # window while some sessions still run in worktrees.
-    guard_repo = cwd or os.environ.get("CLAUDE_PROJECT_DIR", "")
-    if guard_repo:
+    # Binds to the resolved home_repo (T-054): return-to-main + lock release always
+    # act on the agent's own home repo, never the wandered cwd's `.workspace/*` subrepo.
+    if home_repo:
         try:
             from lib import session_guard
-            res = session_guard.return_to_main(guard_repo)
+            res = session_guard.return_to_main(home_repo)
             _log(f"session-end main-guard: {res['disposition']} — {res['reason']}",
                  session_id=session_id,
                  level="INFO" if res["ok"] else "WARN")
             _step("return_to_main", res["disposition"] if res["ok"] else "failed")
-            released = session_guard.SessionLock(guard_repo, session_id).release()
+            # Lock release keys on both the runtime sid AND the brief_id (T-054): the
+            # launcher takes the lock keyed on brief_id in the brief-first flow, so a
+            # release with only the runtime sid used to always report False.
+            released = session_guard.SessionLock(home_repo, session_id).release(
+                owned_sids=[brief_id] if brief_id else None)
             _log(f"session lock released: {released}", session_id=session_id)
         except Exception as exc:  # never break teardown
             _log(f"session-end main-guard skipped: {exc}",
                  session_id=session_id, level="WARN")
             _step("return_to_main", "failed")
+
+    # 8. Archivist transcript ingest (PROJ-039/T-053). FOLDED INTO the finalise as the
+    #    LAST step so the archivist runs a SINGLE SessionEnd hook, not two. Two heavy
+    #    SessionEnd hooks (this finalise + ingest-transcript.py, which does N sequential
+    #    Ollama embeds + a Telegram notify) overran the CLI's teardown budget and the
+    #    finalise was "Hook cancelled" mid-run — BEFORE telemetry/result/return-to-main
+    #    (Thoth T-022 sid 9035370d, T-023 sid 38ae63e3; Hephaestus, single SessionEnd
+    #    hook, is 4/4 clean). Ordered LAST + ledger-tracked + time-bounded: every
+    #    load-bearing step completes first, and a cancel during the slow ingest leaves a
+    #    recoverable partial the SessionStart guard tops up (ingest upserts are uuid5-
+    #    keyed → idempotent). Gated by PODZONE_INGEST_TRANSCRIPT=1 (archivist settings),
+    #    so it is a pure no-op for every other role. Best-effort — never breaks teardown.
+    if os.environ.get("PODZONE_INGEST_TRANSCRIPT", "").strip() == "1":
+        try:
+            import subprocess
+            # Invoke the WRAPPER (`ingest-transcript.sh`), not `ingest-transcript.py`
+            # directly (T-054 review): the wrapper injects PODZONE_QDRANT_APIKEY via
+            # `secretctl run` when the key is not already in the env — the exact
+            # invocation the pre-fold SessionEnd hook used (`bash ingest-transcript.sh`).
+            # Calling the .py directly would drop that secret-injection path and the
+            # ingest would silently fail to reach Qdrant on any session where the key
+            # is not pre-exported. bash does not consume stdin, so the reconstructed
+            # SessionEnd JSON still flows through to the .py.
+            ingest_sh = Path(__file__).resolve().parent / "ingest-transcript.sh"
+            if ingest_sh.exists():
+                stdin_json = json.dumps({
+                    "session_id": session_id,
+                    "transcript_path": transcript_path,
+                    "cwd": home_repo,
+                })
+                r = subprocess.run(
+                    ["bash", str(ingest_sh)], input=stdin_json, text=True,
+                    capture_output=True, timeout=180,
+                )
+                _log(f"transcript ingest rc={r.returncode}: "
+                     f"{(r.stdout or r.stderr or '').strip()[:200]}",
+                     session_id=session_id)
+                _step("transcript_ingest", "done" if r.returncode == 0 else "failed")
+            else:
+                _log("transcript ingest skipped: ingest-transcript.sh not resident",
+                     session_id=session_id, level="WARN")
+                _step("transcript_ingest", "skipped")
+        except Exception as exc:  # never break teardown (incl. subprocess timeout)
+            _log(f"transcript ingest skipped: {exc}", session_id=session_id, level="WARN")
+            _step("transcript_ingest", "failed")
 
     # Reached the end of the sequence — mark complete. The `complete` flag means
     # "the finalise ran to the end" (no truncation), which is the failure mode the
@@ -607,6 +677,10 @@ def run_guard() -> int:
             session_id=sid, level="WARN",
         )
         try:
+            # Re-run against the ORIGINATING repo (the ledger's persisted, already-
+            # resolved home repo) — NOT this guard session's own CLAUDE_PROJECT_DIR,
+            # which would hijack the recovery to the wrong clone (T-054). finalise_session
+            # re-strips any legacy `.workspace/` tail defensively.
             finalise_session(
                 sid, entry.get("transcript_path", ""), entry.get("cwd", "")
             )
@@ -633,7 +707,21 @@ def main() -> int:
         _log("no session_id — nothing to finalise", level="WARN")
         return 0
 
-    return finalise_session(session_id, transcript_path, cwd)
+    # T-054: resolve the authoritative home repo BEFORE finalising — CLAUDE_PROJECT_DIR
+    # (the CLI's fixed launch anchor) first, else the wandered cwd with any `.workspace/`
+    # tail stripped. Never the bare `.workspace/*` subrepo the shell may have ended in.
+    home_repo = cwd
+    try:
+        from lib import session_guard
+        home_repo = session_guard.resolve_home_repo(cwd)
+    except Exception as exc:
+        _log(f"home-repo resolve failed, using raw cwd: {exc}",
+             session_id=session_id, level="WARN")
+    if home_repo != cwd:
+        _log(f"home repo resolved to {home_repo!r} (shell cwd was {cwd!r})",
+             session_id=session_id)
+
+    return finalise_session(session_id, transcript_path, home_repo)
 
 
 if __name__ == "__main__":

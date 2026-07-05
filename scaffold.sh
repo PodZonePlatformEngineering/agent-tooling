@@ -100,7 +100,13 @@ echo "==> Scaffolding ${REPO_NAME} (role: ${ROLE}) → ${TARGET_DIR}"
 # the universal substrate base — same shape as team-lead/trainer. (The historian's
 # log/memory ingestion is explicit, agent-invoked toolchain work in its task repo,
 # NOT a SessionEnd transcript-embed hook like the archivist's — so no ingest hook.)
-SUBSTRATE_BASE="session-start.sh user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py session-end-finalise.py"
+# session-materialise.py is in the universal base (PROJ-039/T-052): it is committed
+# resident like every other hook — NEVER hand-copied + settings.local.json-wired.
+# The hand-copy gotcha bit Thoth's first serial launch (T-022): the copy was omitted,
+# the SessionStart wiring pointed at a missing file and failed silently → no brief-first
+# session point, session_ids[] never appended, finalise ran "not brief-first". Resident
+# + committed-settings.json-wired kills that class.
+SUBSTRATE_BASE="session-start.sh session-materialise.py user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py session-end-finalise.py"
 role_hooks() {
   case "$1" in
     team-lead)             echo "${SUBSTRATE_BASE}" ;;
@@ -111,7 +117,7 @@ role_hooks() {
     curriculum-developer)  echo "${SUBSTRATE_BASE}" ;;
     historian)             echo "${SUBSTRATE_BASE}" ;;
     strategist)            echo "${SUBSTRATE_BASE}" ;;
-    trainee)               echo "${SUBSTRATE_BASE} session-materialise.py first-prompt-brief.py trainee-session-branch.py trainee-preflight.py trainee-read-guard.py" ;;
+    trainee)               echo "${SUBSTRATE_BASE} first-prompt-brief.py trainee-session-branch.py trainee-preflight.py trainee-read-guard.py" ;;
   esac
 }
 
@@ -204,9 +210,16 @@ TRAINEE_SETTINGS
   fi
   # archivist: ingest the transcript to Qdrant prompt_logs on SessionEnd, alongside
   # the universal session-end-finalise.py. Resident hook (PROJ-039/T-011 C2b).
-  local session_end_ingest=""
+  # archivist: transcript ingest is FOLDED INTO the SessionEnd finalise as its last
+  # step (PROJ-039/T-053), NOT a second SessionEnd hook. Two heavy SessionEnd hooks
+  # (finalise + ingest) overran the CLI teardown budget and cancelled the finalise
+  # mid-run on Thoth's headless exits (T-022/T-023). A single hook + PODZONE_INGEST_-
+  # TRANSCRIPT=1 env makes the finalise run ingest last (after the load-bearing steps),
+  # ledger-tracked so a cancel leaves a recoverable partial.
+  local archivist_env=""
   if [[ "$role" == "archivist" ]]; then
-    session_end_ingest=', { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/ingest-transcript.sh" }'
+    archivist_env='
+    "PODZONE_INGEST_TRANSCRIPT": "1",'
   fi
 
   # trainee: the brief-first trainee runtime (PROJ-011/T-021). A trainee runs no git
@@ -226,6 +239,19 @@ TRAINEE_SETTINGS
     ups_extra=', { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/first-prompt-brief.py" }'
   fi
 
+  # session-materialise on SessionStart is now COMMITTED-resident wiring (PROJ-039/T-052)
+  # — settings.local.json is no longer load-bearing for it. A brief-first launch sets
+  # BRIEF_ID (inline or via settings.local env); materialise reads it and stands up the
+  # session point. BRIEF_ID unset → materialise runs its legacy session-point-keyed path
+  # (a no-op when there is no matching point), so this is safe for every launch mode.
+  # NOT wired for the trainee role: there the first prompt owns materialise (first-prompt-
+  # brief.py on UserPromptSubmit), because the brief id arrives in the trainee's first
+  # message, not as a launch-time BRIEF_ID env.
+  local session_start_materialise=""
+  if [[ "$role" != "trainee" ]]; then
+    session_start_materialise=', { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-materialise.py" }'
+  fi
+
   # Telemetry + finalise env (PROJ-039/T-032). Non-secret config only — the
   # agent-telemetry remote the SessionEnd finalise pushes the session JSONL to
   # (R-015 keystone), and the apex repo for the non-migrated finalise path. Secrets
@@ -238,13 +264,13 @@ TRAINEE_SETTINGS
   # must never touch the apex clone) but documents the non-migrated apex path.
   cat <<SETTINGS
 {
-  "env": {${trainee_env}
+  "env": {${trainee_env}${archivist_env}
     "PODZONE_TELEMETRY_REMOTE": "https://github.com/PodZonePlatformEngineering/agent-telemetry.git",
     "PODZONEAGENTTEAM_REPO": "${HOME}/workspace/podzoneAgentTeam"
   },
   "hooks": {
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }${session_start_extra} ] }
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }${session_start_materialise}${session_start_extra} ] }
     ],
     "UserPromptSubmit": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" }${ups_extra} ] }
@@ -262,7 +288,7 @@ TRAINEE_SETTINGS
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop.sh" } ] }
     ],
     "SessionEnd": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end-finalise.py", "timeout": 600 }${session_end_ingest} ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end-finalise.py", "timeout": 600 } ] }
     ]${subagent_stop}
   }
 }
@@ -277,7 +303,7 @@ role_hook_rows() {
     echo "| SubagentStop | \`subagent-stop.sh\` | Record subagent outcomes to task_events |"
   fi
   if [[ "$1" == "archivist" ]]; then
-    echo "| SessionEnd | \`ingest-transcript.sh\` | Embed user turns → Qdrant \`prompt_logs\` (resident) |"
+    echo "| SessionEnd | \`session-end-finalise.py\` → \`ingest-transcript.sh\` | Transcript ingest is FOLDED INTO the finalise as its last step (single SessionEnd hook), gated by \`PODZONE_INGEST_TRANSCRIPT=1\` — PROJ-039/T-053 |"
   fi
 }
 
@@ -453,17 +479,12 @@ if [[ "$ROLE" == "team-lead" ]]; then
 fi
 
 # --- .gitignore ---
-# Trainee (R-6): session log files are COMMITTED (they ride the R-3 session PR — R-14),
-# consistent with the T-048 sid-keyed committed-logs decision, so the trainee .gitignore
-# must NOT ignore *.log. Other roles keep the standard template unchanged (T-048 lands
-# the fleet-wide *.log drop separately).
-if [[ "$ROLE" == "trainee" ]]; then
-  grep -v '^\*\.log$' "${SCAFFOLD_DIR}/gitignore.template" \
-    | sed 's|^# Local tool state$|# Local tool state (session logs under logs/ ARE committed — T-048/R-14)|' \
-    > "${TARGET_DIR}/.gitignore"
-else
-  cp "${SCAFFOLD_DIR}/gitignore.template" "${TARGET_DIR}/.gitignore"
-fi
+# Session log files are COMMITTED for EVERY role now (PROJ-039/T-048): the sid-keyed
+# logs/ files (libraries-{sid8}.log, primitives-{sid8}.log) ride the session-result
+# PR as durable per-session diagnostics — the trainee R-14 decision, generalised
+# fleet-wide. The template no longer ignores *.log, so a plain copy is correct for
+# all roles (the former trainee-only *.log grep is gone).
+cp "${SCAFFOLD_DIR}/gitignore.template" "${TARGET_DIR}/.gitignore"
 
 # --- .claude/settings.json ---
 

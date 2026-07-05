@@ -81,17 +81,17 @@ a session for a brief that has not cleared the gate. **Verify read-back** (`get_
 body + `status` in {approved, in_progress, complete}) before launching — an unapproved / missing
 brief HALTs the agent at SessionStart (SD-3-002, no stale fabrication).
 
-**Wiring (Step 6, brief-first):** the SessionStart materialise reads `BRIEF_ID` from the environment.
-Pass it either inline on the launch command (simplest, headless) or via the `settings.local.json`
-`env` block:
+**Wiring (Step 6, brief-first):** the SessionStart materialise hook is **resident + committed-wired**
+(PROJ-039/T-052) — you do NOT wire it. You only need to make `BRIEF_ID` visible to it. Pass it
+either inline on the launch command (simplest, headless) or via a `settings.local.json` `env` block
+(env only — no hook wiring):
 
 ```json
-{ "env": { "BRIEF_ID": "{team}/{date}-{task-slug}" },
-  "hooks": { "SessionStart": [ { "matcher": "startup|resume",
-    "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-materialise.py" } ] } ] } }
+{ "env": { "BRIEF_ID": "{team}/{date}-{task-slug}" } }
 ```
 
-`BRIEF_ID` unset → the legacy session-point-keyed path runs unchanged (backwards compatible).
+`BRIEF_ID` unset → the resident materialise runs its legacy session-point-keyed path unchanged
+(backwards compatible; a no-op when there is no matching point).
 
 **Launch (Step 8, brief-first) — headless:**
 
@@ -193,8 +193,10 @@ The shared Steps 1–2 run first, then the migrated-only steps:
    runs directly in `~/workspace/{home_repo}` (the launch cwd) on a session branch — **no
    worktree, no `~/sessions/{sid}/` dir**. The `session_guard` preflight asserts the clone
    is clean + on a ff'd `main` (or HALTs), takes a one-session lock, then branches.
-6. **Wire SessionStart materialise + SessionEnd finalise — conditionally** (Step 6,
-   migrated subsection): a no-op once the materialise hook is resident (C4).
+6. **SessionStart materialise + SessionEnd finalise are resident** (Step 6, migrated
+   subsection) — both committed-wired (materialise since PROJ-039/T-052). **No manual copy
+   / exclude / `settings.local.json` wiring step** — only make `BRIEF_ID` visible (inline
+   or a `settings.local.json` env-only block).
 7. **Register** the session in the apex `active.md` (Step 7).
 8. **Emit the launch command for the selected mode** (Step 8) — headless one-shot
    (`-p "<continue+escalate prompt>"`) for builds, interactive standalone-terminal for
@@ -586,63 +588,24 @@ session-local worktree path of the home repo:
 - Fissioned: `{home_repo}/workspaces/identity/{agent}.identity.yaml`
   → `~/sessions/{session-id}/{home_repo}/workspaces/identity/{agent}.identity.yaml`
 
-### Migrated home-repo mode — wire SessionStart materialise + SessionEnd finalise (conditional)
+### Migrated home-repo mode — SessionStart materialise + SessionEnd finalise (now fully resident)
 
 No `.code-workspace` is generated — the agent's `.workspace/` is materialised from Qdrant
-at SessionStart. Two hooks must be active in the home-repo worktree
-(`~/sessions/{session-id}/{home_repo}`):
+at SessionStart. Both lifecycle hooks are now **resident** in migrated home repos (committed
+`.claude/settings.json`) — **there is NO manual copy/exclude/`settings.local.json` step**:
 
-- **SessionEnd finalise** (`session-end-finalise.py`) — **resident** in migrated home
-  repos since C2-v2.1c (committed `.claude/settings.json`). Confirm it is wired; do not
-  re-add it.
-- **SessionStart materialise** (`session-materialise.py`) — **not yet resident** (lands at
-  C4). Until then the skill wires it via the gitignored `.claude/settings.local.json`.
+- **SessionStart materialise** (`session-materialise.py`) — **resident + committed-wired**
+  since PROJ-039/T-052. It is in the synced hook set (`scaffold.sh` / `sync-agent-tooling.sh`)
+  and its SessionStart wiring is in the committed `settings.json` (`$CLAUDE_PROJECT_DIR`-anchored,
+  cwd-independent). The old hand-copy + `settings.local.json` wiring is **deleted** — it was the
+  Thoth T-022 silent-failure class (copy omitted → wiring pointed at a missing file → skipped
+  silently → no session point). `session-start.sh` now HALTs loudly if `BRIEF_ID` is set but the
+  materialise hook file is missing, so an incomplete sync can never fail silently again.
+- **SessionEnd finalise** (`session-end-finalise.py`) — resident since C2-v2.1c.
 
-**Make the materialise wiring conditional — detect first, never double-wire:**
-
-```bash
-WT=~/sessions/{session-id}/{home_repo}
-
-# Already resident? (C4 committed it into settings.json) → no-op.
-if grep -q 'session-materialise.py' "$WT/.claude/settings.json" 2>/dev/null; then
-  echo "materialise hook is resident — no local wiring needed (C4 reached)"
-else
-  # 1) Copy the hook into the worktree's .claude/hooks/
-  cp ~/workspace/agent-tooling/hooks/session-materialise.py "$WT/.claude/hooks/"
-  chmod +x "$WT/.claude/hooks/session-materialise.py"
-
-  # 2) Exclude the copied hook from git (per-worktree exclude is shared via the main clone).
-  #    Use `--git-path info/exclude`, NOT `--git-dir`/info/exclude: in a worktree the latter
-  #    resolves to `.git/worktrees/<name>/info/exclude` (no `info/` subdir there) → "No such
-  #    file or directory", which aborts the launch under set -e. `--git-path info/exclude`
-  #    resolves to the shared common `…/.git/info/exclude` in every worktree (PROJ-039/T-031).
-  EXCLUDE=$(git -C "$WT" rev-parse --git-path info/exclude)
-  grep -qxF '.claude/hooks/session-materialise.py' "$EXCLUDE" 2>/dev/null \
-    || echo '.claude/hooks/session-materialise.py' >> "$EXCLUDE"
-
-  # 3) Emit the gitignored settings.local.json (SessionStart materialise alongside resident CST)
-  cat > "$WT/.claude/settings.local.json" <<'JSON'
-{
-  "_comment": "Migrated-launch wiring. SessionStart materialise alongside resident CST session-start.sh; SessionEnd finalise resident (C2-v2.1c). Gitignored. Auth (PODZONE_QDRANT_APIKEY) rides in from the apex env block.",
-  "hooks": {
-    "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-materialise.py" } ] }
-    ]
-  }
-}
-JSON
-  echo "materialise wired (local) — settings.local.json + hook copy + git exclude"
-fi
-```
-
-Notes:
-- `.claude/settings.local.json` is already gitignored by the committed `.gitignore` in
-  migrated home repos; the copied hook is excluded per-worktree (the exclude lives in the
-  main clone's `.git/.../info/exclude`, shared across worktrees).
-- `PODZONE_QDRANT_APIKEY` is **never** embedded here — it rides in from the apex env block
-  (PROJ-033/T-016). Never put the key in a project/local settings file.
-- Once C4 commits the materialise hook into the resident `settings.json`, the `grep` guard
-  makes this whole step a no-op — the skill keeps working unchanged.
+Confirm both are wired (they are, by scaffold/sync); do **not** re-add them and do **not** author
+a `settings.local.json` for materialise. The only per-launch env `settings.local.json` may still
+carry is `BRIEF_ID` (brief-first) — or pass it inline on the launch command (simplest, headless).
 
 ## Step 7 — Register the session
 

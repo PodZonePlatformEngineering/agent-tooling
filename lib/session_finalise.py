@@ -391,18 +391,44 @@ def _normalise_label(raw: str) -> str:
     return s.lower()
 
 
+# Alias keys, longest-first, for the prefix/fuzzy match below (PROJ-039/T-051):
+# a compound header like ``## Started / Remaining`` or ``## Questions for Hermes/Martin``
+# is not an exact alias but STARTS with one at a word boundary. Longest-first so
+# ``questions for martin`` is preferred over ``questions`` when both would match.
+_ALIAS_KEYS_BY_LEN = sorted(_SECTION_ALIASES, key=len, reverse=True)
+
+
+def _canonical_for_label(key: str) -> Optional[str]:
+    """Map a normalised header label to its canonical section (T-051).
+
+    Exact alias first; then a **prefix** match at a word boundary so a compound
+    header (``started / remaining``, ``questions for hermes/martin``) still lands on
+    its canonical section. A bare-word extension (``completedxyz``) never matches —
+    the char after the alias must be a non-alphanumeric boundary."""
+    if key in _SECTION_ALIASES:
+        return _SECTION_ALIASES[key]
+    for alias in _ALIAS_KEYS_BY_LEN:
+        if key.startswith(alias) and (
+            len(key) == len(alias) or not key[len(alias)].isalnum()
+        ):
+            return _SECTION_ALIASES[alias]
+    return None
+
+
 def _match_section_header(line: str) -> Optional[str]:
     """Return the canonical section label if ``line`` is a header for one, else None.
 
     Only header-shaped lines qualify (``## X``, ``**X**``, or a short ``X:`` line),
     so prose that merely contains the word "completed" is never mistaken for a header.
+    Header text is matched exactly OR by canonical prefix (``Started / Remaining`` →
+    Started; ``Questions for Hermes/Martin`` → Questions for Martin) — PROJ-039/T-051.
     """
     for rx in (_HEADER_RE, _BOLD_RE, _COLON_RE):
         m = rx.match(line)
         if m:
-            key = _normalise_label(m.group("t"))
-            if key in _SECTION_ALIASES:
-                return _SECTION_ALIASES[key]
+            label = _canonical_for_label(_normalise_label(m.group("t")))
+            if label is not None:
+                return label
     return None
 
 
@@ -411,8 +437,14 @@ def extract_sections(text: str) -> dict[str, str]:
 
     Returns ``{canonical_label: body_text}`` for every recognised section header
     found. Bodies are everything up to the next recognised header. Unrecognised
-    headers terminate the current section (so a section never bleeds into the next
-    heading) but are not themselves captured.
+    ``#``-markdown headings terminate the current section (so a section never bleeds
+    into the next heading) but are not themselves captured.
+
+    A full-line **bold** paragraph does NOT terminate the section (PROJ-039/T-051):
+    agents routinely lead a ``## Completed`` body with a ``**Part 1 — …**`` bold
+    sub-heading, and treating that as a section terminator dropped the whole body as
+    empty (the 0c7908ea/home#26 defect). Only a true ``#`` heading — or the next
+    canonical section header — closes a section; bold lines are captured as content.
     """
     sections: dict[str, list[str]] = {}
     current: Optional[str] = None
@@ -422,8 +454,9 @@ def extract_sections(text: str) -> dict[str, str]:
             current = label
             sections.setdefault(current, [])
             continue
-        # A non-canonical markdown header still ends the current section.
-        if current is not None and (_HEADER_RE.match(line) or _BOLD_RE.match(line)):
+        # A non-canonical `#`-markdown heading still ends the current section; a bold
+        # paragraph does not (it is body content — T-051).
+        if current is not None and _HEADER_RE.match(line):
             current = None
             continue
         if current is not None:
@@ -434,6 +467,23 @@ def extract_sections(text: str) -> dict[str, str]:
 # The finalise hook's placeholder when the transcript yielded no assistant turn.
 _NO_RESPONSE_SENTINELS = ("(no response)",)
 
+# Raw-embed-when-mostly-empty gate (PROJ-039/T-051). Fire the raw fallback not only on
+# a total header miss but also when the matched sections captured almost none of a
+# substantial response (extraction "mostly empty"). Guarded by an absolute size floor
+# so a small, legitimately-partial response (only ``## Completed`` present) still stubs
+# the rest rather than dumping a raw block.
+_MOSTLY_EMPTY_RATIO = 0.35
+_RAW_EMBED_MIN_RESPONSE_CHARS = 400
+
+
+def _capture_ratio(extracted: dict[str, str], response_text: str) -> float:
+    """Fraction of the response captured by the extracted section bodies (T-051)."""
+    total = len(response_text.strip())
+    if not total:
+        return 1.0
+    captured = sum(len(b.strip()) for b in extracted.values())
+    return captured / total
+
 
 def _render_result_sections(extracted: dict[str, str], response_text: str) -> str:
     """Render the top structured block of the result doc.
@@ -441,20 +491,35 @@ def _render_result_sections(extracted: dict[str, str], response_text: str) -> st
     Normal path — the final turn used the canonical headers: one ``## {label}``
     block per section, absent ones filled with ``_None recorded._``.
 
-    T-047 raw-response fallback (CC-348) — the final turn carried **none** of the
-    canonical headers but a real response exists (a free-form summary, or a headless
-    ``claude -p`` turn that used its own ``##``/``###`` headers such as
-    ``## PROJ-011/T-021`` — see home#20/#21/#24). Authoring five "None recorded"
-    stubs there buries a rich response under a false "nothing happened" summary, so
-    instead embed the response verbatim under one ``## Session response (raw)``
-    block. Only the genuinely empty case (no sections AND no real response) still
-    renders the stubs.
+    Raw-response fallback (T-047/CC-348, extended by T-051) — embed the response
+    verbatim under one ``## Session response (raw)`` block instead of stubbing, when
+    either:
+      * the final turn carried **none** of the canonical headers but a real response
+        exists (a free-form summary, or a headless ``claude -p`` turn that used its
+        own ``##``/``###`` headers — home#20/#21/#24); or
+      * extraction is **mostly empty** — the matched sections captured almost none of
+        a substantial response (T-051; the 0c7908ea/home#26 defect, where a single
+        header matched with an empty body so the old ``not extracted`` guard skipped
+        the fallback and stubbed a rich response).
+    Only the genuinely empty case (no real response) still renders the stubs. The
+    full response is *also* always embedded verbatim lower in the doc, so this only
+    governs the top summary block.
     """
     real = bool(response_text.strip()) and response_text.strip() not in _NO_RESPONSE_SENTINELS
-    if not extracted and real:
+    mostly_empty = (
+        real
+        and len(response_text.strip()) >= _RAW_EMBED_MIN_RESPONSE_CHARS
+        and _capture_ratio(extracted, response_text) < _MOSTLY_EMPTY_RATIO
+    )
+    if real and (not extracted or mostly_empty):
+        why = (
+            "carried none of the canonical section headers"
+            if not extracted
+            else "matched a canonical header but captured almost none of the response"
+        )
         return (
             "## Session response (raw)\n\n"
-            "_The final turn carried none of the canonical section headers "
+            f"_The final turn {why} "
             "(Completed / Started / Blockers / Decisions / Questions for Martin), "
             "so the full response is embedded verbatim below rather than stubbed._\n\n"
             f"{response_text.strip()}\n\n"
