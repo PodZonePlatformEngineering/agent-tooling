@@ -180,6 +180,99 @@ class TestReturnToMain(_GitFixture):
         self.assertEqual(session_guard.current_branch(wt), "session/x-2026-07-03-t")
 
 
+class TestCommitLogTail(_GitFixture):
+    """PROJ-039/T-063 — the finalise's own tail commit (the log-tail-dirt fix)."""
+
+    def _seed_tracked_log(self, rel="logs/finalise-state.log", body="{}\n") -> Path:
+        p = self.clone / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+        _git(self.clone, "add", rel)
+        _git(self.clone, "commit", "-m", "seed tracked log")
+        _git(self.clone, "push", "origin", "main")
+        return p
+
+    def test_pure_log_dirt_is_committed_and_pushed(self) -> None:
+        log = self._seed_tracked_log()
+        log.write_text('{"sid": {"complete": true}}\n')  # post-finalise tail write
+        res = session_guard.commit_log_tail(str(self.clone))
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["disposition"], "committed-and-pushed")
+        self.assertFalse(session_guard.working_tree_dirty(self.clone))
+        # Pushed — origin/main carries the tail commit too.
+        origin_log = _git(self.clone, "show", "origin/main:logs/finalise-state.log").stdout
+        self.assertIn("complete", origin_log)
+
+    def test_new_untracked_sid_log_is_committed(self) -> None:
+        # A brand-new sid-keyed log file (untracked "?? " porcelain line), the shape
+        # T-048/T-062 actually produce for a fresh session.
+        (self.clone / "logs").mkdir(exist_ok=True)
+        (self.clone / "logs" / "libraries-abcd1234.log").write_text("line one\n")
+        res = session_guard.commit_log_tail(str(self.clone))
+        self.assertEqual(res["disposition"], "committed-and-pushed")
+        self.assertFalse(session_guard.working_tree_dirty(self.clone))
+
+    def test_clean_tree_is_a_noop(self) -> None:
+        res = session_guard.commit_log_tail(str(self.clone))
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["disposition"], "clean")
+
+    def test_non_log_dirt_is_not_swept_into_the_commit(self) -> None:
+        self._seed_tracked_log()
+        (self.clone / "README.md").write_text("real uncommitted work\n")
+        res = session_guard.commit_log_tail(str(self.clone))
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["disposition"], "halt-non-log-dirt")
+        # Untouched — still dirty, nothing committed.
+        self.assertTrue(session_guard.working_tree_dirty(self.clone))
+
+    def test_mixed_log_and_non_log_dirt_is_not_swept(self) -> None:
+        log = self._seed_tracked_log()
+        log.write_text("tail line\n")
+        (self.clone / "app.py").write_text("real work\n")
+        res = session_guard.commit_log_tail(str(self.clone))
+        self.assertEqual(res["disposition"], "halt-non-log-dirt")
+        self.assertTrue(session_guard.working_tree_dirty(self.clone))
+
+    def test_not_on_main_is_a_noop(self) -> None:
+        self._branch("session/hephaestus-2026-07-03-t045")
+        p = self.clone / "logs" / "finalise-state.log"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text('{"dirty": true}\n')
+        res = session_guard.commit_log_tail(str(self.clone))
+        self.assertEqual(res["disposition"], "not-main")
+
+    def test_linked_worktree_skipped(self) -> None:
+        wt = Path(self._tmp.name) / "wt"
+        _git(self.clone, "worktree", "add", str(wt), "-b", "session/x-2026-07-03-t")
+        (wt / "logs").mkdir(exist_ok=True)
+        (wt / "logs" / "finalise-state.log").write_text("{}\n")
+        res = session_guard.commit_log_tail(str(wt))
+        self.assertEqual(res["disposition"], "skipped-worktree")
+
+    def test_back_to_back_sessions_launch_cleanly(self) -> None:
+        """The regression test named in the brief: two sessions in a row, with the
+        tail commit as the only thing between them — no manual log commit, no halt."""
+        # Session 1: does some work, its finalise tail writes to a tracked log.
+        log = self._seed_tracked_log()
+        log.write_text('{"sid-1": {"complete": true}}\n')
+        tail1 = session_guard.commit_log_tail(str(self.clone))
+        self.assertEqual(tail1["disposition"], "committed-and-pushed")
+
+        # Session 2 launches: preflight must see a clean, ff'd main — never a halt.
+        pre = session_guard.preflight(str(self.clone))
+        self.assertEqual(pre["decision"], "ready")
+
+        # Session 2 does its own work + finalise tail.
+        log.write_text('{"sid-1": {"complete": true}, "sid-2": {"complete": true}}\n')
+        tail2 = session_guard.commit_log_tail(str(self.clone))
+        self.assertEqual(tail2["disposition"], "committed-and-pushed")
+
+        # A third launch is clean too.
+        pre2 = session_guard.preflight(str(self.clone))
+        self.assertEqual(pre2["decision"], "ready")
+
+
 class TestSessionLock(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()

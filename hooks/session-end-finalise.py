@@ -652,6 +652,20 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
                  f"diagnostics; not a truncation)", session_id=session_id, level="WARN")
         finalise_ledger.complete(session_id)
     _log("finalise complete", session_id=session_id)
+
+    # 9. Post-finalise log-tail commit (PROJ-039/T-063) — the finalise's TRUE last
+    #    act. logs/*.log are tracked (T-062); the ledger complete() write above plus
+    #    every _log() line since the result/return-to-main steps land in already-
+    #    tracked files, leaving the clone dirty on main for the next preflight to
+    #    HALT on. Commit (and best-effort push) that pure-log dirt here so the next
+    #    session launches clean with no manual log commit in between. Nothing may
+    #    log after this call — it would re-dirty the tree it just cleaned.
+    if home_repo:
+        try:
+            from lib import session_guard as _sg_tail
+            _sg_tail.commit_log_tail(home_repo)
+        except Exception:
+            pass  # never break teardown — the next preflight will surface anything left
     return 0
 
 

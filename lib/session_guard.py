@@ -338,6 +338,86 @@ def return_to_main(repo_dir: str, session_branch: Optional[str] = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Post-finalise log-tail commit (PROJ-039/T-063)
+# ---------------------------------------------------------------------------
+
+def commit_log_tail(repo_dir: str) -> dict:
+    """Stage + commit any dirty *pure-log* tracked files as the finalise's true
+    **last act**, so :func:`working_tree_dirty` is false when the hook exits.
+
+    Since T-062 tracked ``logs/*.log`` (they ride the session-result PR as durable
+    diagnostics), the finalise ledger ``complete()`` write and the trailing
+    ``libraries-{sid8}.log`` lines land in already-tracked files *after*
+    :func:`return_to_main` has reset the clone to ``main`` — leaving 2-3 modified
+    tracked files behind. The next session's :func:`preflight` HALTs on that dirt
+    (``working_tree_dirty`` blocks regardless of branch). This closes the gap by
+    having the finalise commit its own tail rather than leaving it for a human
+    (Hermes previously did this by hand — sid ``d350e898``, commit ``730fda1``).
+
+    Call this ONLY after every other finalise step (including the last log line)
+    has been written — anything logged after this runs re-dirties the tree.
+
+    Refuses (``halt-non-log-dirt``, no commit made) if the dirty set contains
+    anything outside ``logs/`` — that is real uncommitted work, not tail noise,
+    and must surface to the operator via the normal ``preflight`` halt rather than
+    being silently swept into a log-only commit. Best-effort: never raises. A push
+    failure leaves the commit local (the working tree is still clean, which is all
+    the next ``preflight`` requires) — non-fatal, since origin catches up next
+    time this repo's main is pushed.
+    """
+    result = {"ok": False, "disposition": "noop", "reason": ""}
+    try:
+        if is_linked_worktree(repo_dir):
+            result.update(ok=True, disposition="skipped-worktree",
+                          reason="legacy linked worktree — primary clone untouched")
+            return result
+        if current_branch(repo_dir) != "main":
+            result.update(ok=True, disposition="not-main",
+                          reason="clone not on main — left for preflight to surface")
+            return result
+
+        # NOTE: use raw stdout, not `_out()` — `_out` strips the *whole* blob, which
+        # eats the leading space of a first porcelain line like " M path" (status
+        # codes that start with a space) and shifts every `line[3:]` slice by one.
+        porcelain = _git(repo_dir, "status", "--porcelain").stdout
+        paths = [line[3:].strip() for line in porcelain.splitlines() if line.strip()]
+        if not paths:
+            result.update(ok=True, disposition="clean", reason="nothing to commit")
+            return result
+
+        non_log = [p for p in paths
+                   if not p.startswith("logs/") and os.path.basename(p) != ".DS_Store"]
+        if non_log:
+            result.update(disposition="halt-non-log-dirt",
+                          reason=f"dirty tree includes non-log paths {non_log} — not "
+                                 f"auto-committed; a real preflight halt is correct here")
+            return result
+
+        add = _git(repo_dir, "add", "logs/")
+        if add.returncode != 0:
+            result["reason"] = f"git add logs/ failed: {add.stderr.strip()}"
+            return result
+        commit = _git(repo_dir, "commit", "-m", "chore(logs): post-finalise tail")
+        out = (commit.stdout + commit.stderr).lower()
+        if commit.returncode != 0 and "nothing to commit" not in out:
+            result["reason"] = f"commit failed: {commit.stderr.strip()}"
+            return result
+
+        push = _git(repo_dir, "push", "origin", "main")
+        if push.returncode != 0:
+            result.update(ok=True, disposition="committed-push-failed",
+                          reason=f"committed locally; push failed (non-fatal): "
+                                 f"{push.stderr.strip()}")
+            return result
+        result.update(ok=True, disposition="committed-and-pushed",
+                      reason="post-finalise log tail committed + pushed")
+        return result
+    except Exception as exc:  # never break teardown
+        result["reason"] = f"commit_log_tail error: {exc}"
+        return result
+
+
+# ---------------------------------------------------------------------------
 # One-session-at-a-time lock
 # ---------------------------------------------------------------------------
 
