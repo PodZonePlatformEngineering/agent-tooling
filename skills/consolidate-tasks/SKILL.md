@@ -476,6 +476,29 @@ file is written to `team/hermes/outgoing/usage-reports/{today}-usage-summary.md`
 If `usage-report.py` is not on disk or Qdrant is unreachable: skip silently
 and note in Step 8 that no usage summary was generated this pass.
 
+## Step 7c — Tooling-drift check (PROJ-039/T-057)
+
+Render the fleet tooling-version table so the consolidation report surfaces drift
+against canonical `VERSION`. Reads each home repo `main`'s shipped
+`.claude/tooling-manifest.json` via `gh api` raw-content — apex stays read-only to
+agents; this derived view is the only catalog write path (Hermes-side).
+
+```bash
+python3 ~/workspace/agent-tooling/tools/tooling-drift-report.py \
+  --migrated-agents-path planning/projects/PROJ-032-agent-home-repos/migrated-agents.md \
+  2>&1 | tee /tmp/tooling-drift-output.txt
+```
+
+Capture the counts (N current / N drifted / N flagged) for the Step 8 report, and
+refresh the `tooling_version` column in
+`planning/projects/PROJ-032-agent-home-repos/migrated-agents.md` from the table
+(a `--json` run gives machine-readable values). A drifted or flagged repo is not an
+error to fix here — it is a dispatch signal: the repo picks up canonical on its next
+brief via `TOOLING_UPDATE` (T-056) or a T-034 sweep task.
+
+If the tool is not on disk or `gh` is unavailable: skip silently and note in Step 8
+that no drift check ran this pass.
+
 ## Step 8 — Report
 
 ```
@@ -489,6 +512,10 @@ Sessions refreshed (Step 7):
 Usage summary — last 7 days (Step 7b):
   {paste the 6-line digest from /tmp/usage-report-output.txt verbatim}
   Report: team/hermes/outgoing/usage-reports/{today}-usage-summary.md
+
+Tooling drift (Step 7c):
+  Canonical vX.Y.Z — {N} current, {N} drifted, {N} flagged (see /tmp/tooling-drift-output.txt)
+  Registry column refreshed: planning/projects/PROJ-032-agent-home-repos/migrated-agents.md
 
 Consolidated: N files ({agent} {date}, ...)
 
