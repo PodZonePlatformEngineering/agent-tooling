@@ -145,6 +145,18 @@ TOOLS_FILES="update-tooling.py"
 TOOLS_SRC="${AGENT_TOOLING_DIR}/tools"
 TOOLS_DST="${HOME_REPO}/.claude/tools"
 
+# .gitignore (PROJ-039/T-062, CC-372): a synced, manifest-tracked, ROOT-level file
+# (not under .claude/, unlike everything else above) — the operator-raised T-048
+# gap. The template dropped `*.log` so session logs (logs/libraries-{sid8}.log,
+# logs/primitives-{sid8}.log, logs/finalise-state.log) commit and ride the
+# session-result PR, but sync never touched .gitignore, so every existing fleet
+# repo kept re-ignoring them. One template for every role — audited at T-062,
+# no role (including trainee) carries a functionally distinct .gitignore; only
+# .env + .claude/settings.local.json need to stay ignored everywhere, and both
+# do in the template.
+GITIGNORE_SRC="${AGENT_TOOLING_DIR}/scaffold/gitignore.template"
+GITIGNORE_DST="${HOME_REPO}/.gitignore"
+
 LIB_MANIFEST="${HOOKS_SRC}/home-runtime-lib.manifest"
 SKILLS_SRC="${AGENT_TOOLING_DIR}/skills"
 # Team-lead variant only: the coordination skill subset delivered under
@@ -292,6 +304,44 @@ for tool in $TOOLS_FILES; do
   echo "  Updated: tools/${tool}"
   ((UPDATED++))
 done
+
+# --- Root-level .gitignore (PROJ-039/T-062) ---
+
+echo ""
+echo "==> Syncing .gitignore → ${GITIGNORE_DST}"
+
+if [[ ! -f "$GITIGNORE_SRC" ]]; then
+  echo "  SKIP  .gitignore — not found in agent-tooling (${GITIGNORE_SRC})"
+  ((SKIPPED++))
+elif [[ -f "$GITIGNORE_DST" ]] && diff -q "$GITIGNORE_SRC" "$GITIGNORE_DST" > /dev/null 2>&1; then
+  echo "  OK    .gitignore — unchanged"
+  ((UNCHANGED++))
+else
+  if [[ -f "$GITIGNORE_DST" ]]; then
+    echo "  DIFF  .gitignore:"
+    diff -u "$GITIGNORE_DST" "$GITIGNORE_SRC" || true
+    echo ""
+  else
+    echo "  NEW   .gitignore — not present in home repo"
+  fi
+
+  if [[ $YES -eq 0 ]]; then
+    printf "  Overwrite %s? [y/N] " ".gitignore"
+    read -r answer </dev/tty
+    if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+      echo "  Skipped."
+      ((SKIPPED++))
+    else
+      cp "$GITIGNORE_SRC" "$GITIGNORE_DST"
+      echo "  Updated: .gitignore"
+      ((UPDATED++))
+    fi
+  else
+    cp "$GITIGNORE_SRC" "$GITIGNORE_DST"
+    echo "  Updated: .gitignore"
+    ((UPDATED++))
+  fi
+fi
 
 # --- Runtime lib closure (home-runtime-lib.manifest) ---
 # lib/ is synced module-by-module from the manifest (the runtime closure), NOT as
@@ -483,6 +533,10 @@ for tool in $TOOLS_FILES; do
   diff -q "${TOOLS_SRC}/${tool}" "${TOOLS_DST}/${tool}" > /dev/null 2>&1 \
     || { echo "  DRIFT: tools/${tool}"; DRIFT=1; }
 done
+if [[ -f "$GITIGNORE_SRC" ]]; then
+  diff -q "$GITIGNORE_SRC" "$GITIGNORE_DST" > /dev/null 2>&1 \
+    || { echo "  DRIFT: .gitignore"; DRIFT=1; }
+fi
 # lib/ invariant is manifest-scoped: every manifest module byte-identical to source,
 # AND no out-of-closure module present (the slim-closure guarantee). PROJ-039 C2-v2.1b.
 if [[ -f "$LIB_MANIFEST" ]]; then
@@ -525,7 +579,7 @@ elif [[ "$ROLE" != "team-lead" && -d "$SKILLS_DST" ]]; then
 fi
 
 if [[ $DRIFT -eq 0 ]]; then
-  echo "Byte-identity invariant: PASS — hooks + ${DEP_DIRS} + tools + lib closure + skills match agent-tooling."
+  echo "Byte-identity invariant: PASS — hooks + ${DEP_DIRS} + tools + .gitignore + lib closure + skills match agent-tooling."
 else
   echo "Byte-identity invariant: FAIL — drift listed above (re-run without --skip, or investigate)."
   exit 1
@@ -549,7 +603,7 @@ SOURCE_COMMIT="$(git -C "$AGENT_TOOLING_DIR" rev-parse HEAD 2>/dev/null || echo 
 echo ""
 echo "==> Writing shipped manifest (.claude/tooling-manifest.json)"
 ROLE="$ROLE" TOOLING_VERSION="$TOOLING_VERSION" SOURCE_COMMIT="$SOURCE_COMMIT" \
-python3 - "${HOME_REPO}/.claude" <<'PYEOF'
+python3 - "${HOME_REPO}/.claude" "${HOME_REPO}" <<'PYEOF'
 import hashlib
 import json
 import os
@@ -558,6 +612,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 claude_dir = Path(sys.argv[1])
+home_repo_dir = Path(sys.argv[2])
 files = {}
 for sub in ("hooks", "primitives", "lib", "skills", "tools"):
     d = claude_dir / sub
@@ -571,12 +626,21 @@ for sub in ("hooks", "primitives", "lib", "skills", "tools"):
         rel = f.relative_to(claude_dir).as_posix()
         files[rel] = hashlib.sha256(f.read_bytes()).hexdigest()
 
+# Root-level files (PROJ-039/T-062): tracked separately from `files` (which is
+# .claude/-relative) since these live at the home-repo root — .gitignore is the
+# first and, for now, only entry.
+root_files = {}
+gitignore = home_repo_dir / ".gitignore"
+if gitignore.is_file():
+    root_files[".gitignore"] = hashlib.sha256(gitignore.read_bytes()).hexdigest()
+
 manifest = {
     "version": os.environ["TOOLING_VERSION"],
     "source_commit": os.environ["SOURCE_COMMIT"],
     "role": os.environ["ROLE"],
     "synced_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "files": files,
+    "root_files": root_files,
 }
 claude_dir.mkdir(parents=True, exist_ok=True)
 (claude_dir / "tooling-manifest.json").write_text(

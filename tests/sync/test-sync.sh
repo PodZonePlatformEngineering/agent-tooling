@@ -39,6 +39,12 @@ echo "# DRIFTED LIB" >> "$LIBMOD"
 assert "hook drift introduced" "$(grep -q 'DRIFTED CONTENT' "$HOOK" && echo ok || echo fail)"
 assert "lib drift introduced"  "$(grep -q 'DRIFTED LIB' "$LIBMOD" && echo ok || echo fail)"
 
+# 2b. Simulate a pre-T-062 stale .gitignore (still ignoring *.log)
+GITIGNORE="${TARGET}/.gitignore"
+printf '*.log\n' >> "$GITIGNORE"
+assert "stale .gitignore ignores *.log before sync" \
+  "$(grep -q '^\*\.log$' "$GITIGNORE" && echo ok || echo fail)"
+
 # 3. Sync with --yes (non-interactive)
 SYNC_RC=0
 bash "${AGENT_TOOLING_DIR}/sync-agent-tooling.sh" \
@@ -58,6 +64,16 @@ assert "lib/qdrant_http.py restored to source" \
   "$(diff -q "${AGENT_TOOLING_DIR}/lib/qdrant_http.py" "$LIBMOD" > /dev/null 2>&1 && echo ok || echo fail)"
 assert "drifted lib content removed" \
   "$(! grep -q 'DRIFTED LIB' "$LIBMOD" && echo ok || echo fail)"
+
+# 4b-ii. .gitignore synced back to canonical (PROJ-039/T-062): *.log dropped
+assert ".gitignore restored to source (no longer ignores *.log)" \
+  "$(diff -q "${AGENT_TOOLING_DIR}/scaffold/gitignore.template" "$GITIGNORE" > /dev/null 2>&1 && echo ok || echo fail)"
+assert "stale *.log entry removed from .gitignore" \
+  "$(! grep -q '^\*\.log$' "$GITIGNORE" && echo ok || echo fail)"
+assert ".gitignore still ignores .env" \
+  "$(grep -q '^\.env$' "$GITIGNORE" && echo ok || echo fail)"
+assert ".gitignore still ignores .claude/settings.local.json" \
+  "$(grep -q '^\.claude/settings\.local\.json$' "$GITIGNORE" && echo ok || echo fail)"
 
 # 4c. Byte-identity invariant asserted + clean exit
 assert "sync exit 0 (invariant PASS)" "$([ "$SYNC_RC" -eq 0 ] && echo ok || echo fail)"
@@ -81,6 +97,13 @@ import hashlib, json
 d = json.load(open('${MANIFEST}'))
 want = hashlib.sha256(open('${AGENT_TOOLING_DIR}/hooks/session-start.sh', 'rb').read()).hexdigest()
 exit(0 if d['files'].get('hooks/session-start.sh') == want else 1)
+" && echo ok || echo fail)"
+assert "manifest root_files carries .gitignore sha256 matching source (T-062)" \
+  "$(python3 -c "
+import hashlib, json
+d = json.load(open('${MANIFEST}'))
+want = hashlib.sha256(open('${AGENT_TOOLING_DIR}/scaffold/gitignore.template', 'rb').read()).hexdigest()
+exit(0 if d.get('root_files', {}).get('.gitignore') == want else 1)
 " && echo ok || echo fail)"
 
 # 5. Unchanged hooks not touched (stop.sh should still match)
