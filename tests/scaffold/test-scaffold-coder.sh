@@ -46,6 +46,17 @@ assert "no stub task-event.sh"     "$([ ! -f "${HOOKS_DIR}/task-event.sh" ] && e
 assert ".claude/primitives/ resident" "$([ -d "${TARGET}/.claude/primitives" ] && echo ok || echo fail)"
 assert ".claude/lib/ resident"        "$([ -d "${TARGET}/.claude/lib" ] && echo ok || echo fail)"
 
+# 3c. Role-neutral resident tools (PROJ-039/T-056): update-tooling.py, wired FIRST
+# in SessionStart, byte-identical to source.
+assert ".claude/tools/update-tooling.py resident" "$([ -f "${TARGET}/.claude/tools/update-tooling.py" ] && echo ok || echo fail)"
+assert "update-tooling.py byte-identical to source" "$(diff -q "${AGENT_TOOLING_DIR}/tools/update-tooling.py" "${TARGET}/.claude/tools/update-tooling.py" >/dev/null 2>&1 && echo ok || echo fail)"
+assert "settings.json wires update-tooling.py first in SessionStart" "$(python3 -c "
+import json
+s = json.load(open('${SETTINGS}'))
+cmds = [h['command'] for h in s['hooks']['SessionStart'][0]['hooks']]
+print('ok' if cmds and 'update-tooling.py' in cmds[0] else 'fail')
+")"
+
 # Resident lib is the slim runtime closure (home-runtime-lib.manifest), NOT the
 # whole agent-tooling lib/ (PROJ-039/T-011 C2-v2.1b). Assert each manifest module
 # is byte-identical to source, that the home repo carries no out-of-closure module,

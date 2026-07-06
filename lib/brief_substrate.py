@@ -92,6 +92,7 @@ def create_brief(
     work_items: Optional[list[str]] = None,
     summary: Optional[str] = None,
     origin_path: Optional[str] = None,
+    tooling_update: Optional[str] = None,
     created_at: Optional[str] = None,
     api_key: Optional[str] = None,
     ollama_host: Optional[str] = None,
@@ -104,6 +105,15 @@ def create_brief(
     and are only ever written later via the partial-write helpers, so a re-author
     of an in-flight brief does NOT clobber accumulated session links unless the
     caller passes them — this function deliberately does not accept them.
+
+    ``tooling_update`` (PROJ-039/T-056) is the audit-record twin of the
+    launch-time ``TOOLING_UPDATE`` env var that actually triggers the resident
+    ``.claude/tools/update-tooling.py`` self-update: ``"<tag>"`` (e.g.
+    ``"v1.1.0"``) or ``"latest"``. It is NOT read by the update tool itself —
+    that reads the env var directly so it can run before/independent of
+    materialise (no Qdrant round trip, no hook-ordering coupling). Storing it
+    on the brief is the durable record of what a dispatch asked for; None/absent
+    means the brief carries no self-update instruction.
 
     Returns ``{"point_id", "ok"}``.
     """
@@ -137,6 +147,7 @@ def create_brief(
         "summary": summary or "",
         "body": body,
         "origin_path": origin_path or "",
+        "tooling_update": tooling_update,
     }
     qdrant_http.upsert_points(
         [{"id": pid, "vector": {"brief": brief_vector}, "payload": payload}],
