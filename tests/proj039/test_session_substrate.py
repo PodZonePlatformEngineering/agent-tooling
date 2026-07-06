@@ -151,6 +151,18 @@ class TestRollup(unittest.TestCase):
             )
         self.assertEqual(rec.full_upserts(), [])
         self.assertEqual(rec.payload["rollup"]["tool_usage"]["Bash"], 2)
+        self.assertNotIn("tooling", rec.payload)
+
+    def test_attach_rollup_stamps_tooling_version_when_given(self) -> None:
+        # PROJ-039/T-055 — the telemetry-payload half of "log entries and git PRs
+        # record the tooling version".
+        rec = RecordingQdrant()
+        with patch.object(qdrant_http, "request_json", rec):
+            session_substrate.attach_rollup(
+                SESSION_ID, {"tool_usage": {}, "cost_tokens": {}},
+                tooling_version="v1.0.0",
+            )
+        self.assertEqual(rec.payload["tooling"], "v1.0.0")
 
     def test_compute_rollup_reconciles_with_jsonl_scrape(self) -> None:
         import json

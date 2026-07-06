@@ -205,6 +205,15 @@ def _git(repo: str, *args: str) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, check=False)
 
 
+class TestResultPrBodyToolingStamp(unittest.TestCase):
+    def test_carries_tooling_version(self) -> None:
+        # PROJ-039/T-055 — every result PR body records the shipped tooling version
+        # ("unknown" absent a manifest, exercised here with no CLAUDE_PROJECT_DIR set).
+        body = session_finalise._result_pr_body("sid-1234567890", "PROJ-039/T-055",
+                                                 "2026-07-06")
+        self.assertIn("tooling: unknown", body)
+
+
 class TestCommitHomeResult(unittest.TestCase):
     """Real-git authoring: authors off main without disturbing the work branch,
     and no-ops once the result is on main (idempotent)."""
@@ -284,6 +293,112 @@ class TestCommitHomeResult(unittest.TestCase):
             )
             self.assertTrue(second["ok"], second)
             self.assertEqual(second["disposition"], "exists", second)
+
+
+class TestSessionBranchSurvivesFinalise(unittest.TestCase):
+    """PROJ-039/T-060 — a commit made on the session's own branch (e.g. a resident
+    ``.claude/`` self-sync) must be reachable from the result PR after finalise, not
+    stranded when the end-guard reaps the session branch.
+
+    Regression for the run-4/T-059 defect: the result PR forked from ``main`` carried
+    only ``results/``, so a self-sync commit on the session branch became unreachable
+    once the branch was deleted. ``commit_home_result``/``author_home_result`` now
+    accept ``session_branch`` and fork the result branch from there when it carries
+    commits ``base_branch`` does not (see :func:`session_finalise._resolve_fork_ref`).
+    """
+
+    def _setup_repo(self, d: Path) -> str:
+        origin = d / "origin.git"
+        work = d / "work"
+        subprocess.run(["git", "init", "--bare", "-b", "main", str(origin)],
+                       capture_output=True, check=True)
+        subprocess.run(["git", "clone", str(origin), str(work)],
+                       capture_output=True, check=True)
+        for k, v in (("user.email", "t@t"), ("user.name", "T"),
+                     ("commit.gpgsign", "false")):
+            _git(str(work), "config", k, v)
+        (work / "README.md").write_text("seed\n", encoding="utf-8")
+        _git(str(work), "add", "README.md")
+        _git(str(work), "commit", "-m", "seed")
+        _git(str(work), "push", "origin", "main")
+        _git(str(work), "checkout", "-b", "session/self-sync-branch")
+        return str(work)
+
+    def test_session_branch_commit_rides_result_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            work = self._setup_repo(d)
+
+            # Simulate a mid-session resident self-sync commit on the session branch.
+            claude_dir = Path(work) / ".claude"
+            claude_dir.mkdir(exist_ok=True)
+            (claude_dir / "hooks-marker.txt").write_text("synced\n", encoding="utf-8")
+            _git(work, "add", ".claude/hooks-marker.txt")
+            _git(work, "commit", "-m", "chore: self-sync .claude/")
+
+            text = session_finalise.generate_session_result(SESSION_POINT, date=FIXED_DATE)
+            res = session_finalise.commit_home_result(
+                text, session_id=SESSION_POINT["session_id"],
+                work_item=SESSION_POINT["work_item"], date=FIXED_DATE,
+                repo_dir=work, raise_pr=False, base_branch="main",
+                session_branch="session/self-sync-branch",
+            )
+            self.assertTrue(res["ok"], res)
+            self.assertEqual(res["disposition"], "done", res)
+
+            # The self-sync commit is reachable from the pushed result branch.
+            branch = res["branch"]
+            show = _git(work, "show", f"origin/{branch}:.claude/hooks-marker.txt")
+            self.assertEqual(show.returncode, 0, show.stderr)
+            self.assertEqual(show.stdout, "synced\n")
+            # And the result file is still there alongside it.
+            result_show = _git(work, "show", f"origin/{branch}:{res['file_path']}")
+            self.assertEqual(result_show.returncode, 0, result_show.stderr)
+
+    def test_result_only_session_forks_off_base_unchanged(self) -> None:
+        # No commits on the session branch beyond base — passing session_branch
+        # must not change today's behaviour (fork off base_branch).
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            work = self._setup_repo(d)  # session branch == main tip, no extra commits
+
+            text = session_finalise.generate_session_result(SESSION_POINT, date=FIXED_DATE)
+            res = session_finalise.commit_home_result(
+                text, session_id=SESSION_POINT["session_id"],
+                work_item=SESSION_POINT["work_item"], date=FIXED_DATE,
+                repo_dir=work, raise_pr=False, base_branch="main",
+                session_branch="session/self-sync-branch",
+            )
+            self.assertTrue(res["ok"], res)
+            self.assertEqual(res["disposition"], "done", res)
+            branch = res["branch"]
+            # Exactly one commit ahead of main (the result commit) — no session-branch
+            # commits pulled in, since there were none beyond base.
+            count = _git(work, "rev-list", "--count",
+                         f"origin/main..origin/{branch}").stdout.strip()
+            self.assertEqual(count, "1", count)
+
+    def test_resolve_fork_ref_prefers_session_branch_when_ahead(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            work = self._setup_repo(d)
+            (Path(work) / "extra.txt").write_text("x\n", encoding="utf-8")
+            _git(work, "add", "extra.txt")
+            _git(work, "commit", "-m", "extra")
+
+            fork = session_finalise._resolve_fork_ref(
+                work, "main", "session/self-sync-branch")
+            self.assertEqual(fork, "session/self-sync-branch")
+
+    def test_resolve_fork_ref_falls_back_when_no_session_branch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            work = self._setup_repo(d)
+            fork = session_finalise._resolve_fork_ref(work, "main", None)
+            self.assertEqual(fork, "main")
+            fork_missing = session_finalise._resolve_fork_ref(
+                work, "main", "no/such/branch")
+            self.assertEqual(fork_missing, "main")
 
 
 class TestSessionIdIdempotencyKey(unittest.TestCase):

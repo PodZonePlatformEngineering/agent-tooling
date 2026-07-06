@@ -470,3 +470,57 @@ else
   echo "Byte-identity invariant: FAIL — drift listed above (re-run without --skip, or investigate)."
   exit 1
 fi
+
+# --- Shipped tooling manifest v2 (PROJ-039/T-055) ---
+# Written only after a byte-identity PASS: {version, source_commit, role, synced_at,
+# files: {path: sha256}} at .claude/tooling-manifest.json. ``path`` is relative to
+# .claude/ and the hash is of the shipped (post-sync) file — since sync just proved
+# byte-identity, this is equivalently a hash of the agent-tooling source. Turns the
+# existing direct-diff byte-identity check from "identical to whatever canonical
+# main is today" into "identical to a NAMED release": `version` + `source_commit`
+# make drift a report, not hand-tracked lore.
+VERSION_FILE="${AGENT_TOOLING_DIR}/VERSION"
+TOOLING_VERSION="unknown"
+if [[ -f "$VERSION_FILE" ]]; then
+  TOOLING_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
+fi
+SOURCE_COMMIT="$(git -C "$AGENT_TOOLING_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+
+echo ""
+echo "==> Writing shipped manifest (.claude/tooling-manifest.json)"
+ROLE="$ROLE" TOOLING_VERSION="$TOOLING_VERSION" SOURCE_COMMIT="$SOURCE_COMMIT" \
+python3 - "${HOME_REPO}/.claude" <<'PYEOF'
+import hashlib
+import json
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+claude_dir = Path(sys.argv[1])
+files = {}
+for sub in ("hooks", "primitives", "lib", "skills"):
+    d = claude_dir / sub
+    if not d.is_dir():
+        continue
+    for f in sorted(d.rglob("*")):
+        if not f.is_file():
+            continue
+        if "__pycache__" in f.parts or f.suffix == ".pyc":
+            continue
+        rel = f.relative_to(claude_dir).as_posix()
+        files[rel] = hashlib.sha256(f.read_bytes()).hexdigest()
+
+manifest = {
+    "version": os.environ["TOOLING_VERSION"],
+    "source_commit": os.environ["SOURCE_COMMIT"],
+    "role": os.environ["ROLE"],
+    "synced_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "files": files,
+}
+claude_dir.mkdir(parents=True, exist_ok=True)
+(claude_dir / "tooling-manifest.json").write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+print(f"  Wrote {claude_dir / 'tooling-manifest.json'} ({len(files)} files, "
+      f"version={manifest['version']}, source_commit={manifest['source_commit'][:8]})")
+PYEOF
