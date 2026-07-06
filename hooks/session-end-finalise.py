@@ -492,14 +492,21 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
         else:
             try:
                 from lib import session_finalise as _sf, session_substrate as _ss
+                from lib import session_guard as _sg
                 from datetime import datetime, timezone as _tz
 
                 point = _ss.get_session_point(session_id)
                 if point:
                     date = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+                    # T-060: capture the live session branch BEFORE the return-to-main
+                    # guard runs (below) resets the clone to main — so a mid-session
+                    # commit on this branch (e.g. a resident self-sync) can be forked
+                    # into the result PR instead of being stranded when the branch is
+                    # later reaped.
+                    session_branch = _sg.current_branch(home_repo)
                     res = _sf.author_home_result(
                         point, session_id=session_id, repo_dir=home_repo,
-                        date=date, raise_pr=True,
+                        date=date, raise_pr=True, session_branch=session_branch,
                     )
                     _log(
                         f"home result [{res['disposition']}]: ok={res['ok']} "

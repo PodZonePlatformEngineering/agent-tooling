@@ -631,6 +631,28 @@ def _result_pr_body(session_id: str, work_item: str, date: str) -> str:
     )
 
 
+def _resolve_fork_ref(repo_dir: str, base_ref: str,
+                       session_branch: Optional[str]) -> str:
+    """Return the ref the session-result branch should fork from (PROJ-039/T-060).
+
+    Prefers ``session_branch`` over ``base_ref`` when it carries commits the base
+    does not — e.g. a resident self-sync commit made on the session's own branch
+    mid-session. Forking the result there means those commits ride the result PR
+    instead of being stranded when the session branch is later reaped by the
+    end-guard (the run-4/T-059 self-sync-loss class). A result-only session (no
+    commits beyond base) falls through to ``base_ref``, unchanged from prior
+    behaviour."""
+    if not session_branch:
+        return base_ref
+    if _git(repo_dir, "rev-parse", "--verify", session_branch).returncode != 0:
+        return base_ref
+    ahead = _git(repo_dir, "rev-list", "--count",
+                 f"{base_ref}..{session_branch}").stdout.strip()
+    if ahead in ("", "0"):
+        return base_ref
+    return session_branch
+
+
 def commit_home_result(
     result_text: str,
     *,
@@ -640,6 +662,7 @@ def commit_home_result(
     repo_dir: str,
     raise_pr: bool = True,
     base_branch: str = "main",
+    session_branch: Optional[str] = None,
 ) -> dict:
     """Author the home-repo session result on a decoupled branch off ``base_branch``
     and (optionally) raise a PR landing it on ``base_branch``.
@@ -651,6 +674,12 @@ def commit_home_result(
       * if the result file already exists on ``base_branch`` → ``exists`` (no-op);
       * if an open PR already carries the result branch → ``exists`` (no-op);
       * otherwise it authors + pushes + PRs → ``done``.
+
+    ``session_branch`` (PROJ-039/T-060), when given and it carries commits ``base_branch``
+    does not, is used as the fork point instead of ``base_branch`` — see
+    :func:`_resolve_fork_ref`. This is how a mid-session resident self-sync commit (or
+    any other commit made on the session's own branch) survives finalise: it rides the
+    result PR rather than being stranded when the session branch is reaped.
 
     Returns ``{"file_path", "branch", "pr_url", "ok", "reason", "disposition"}``
     where ``disposition`` ∈ {``done``, ``exists``, ``deferred-cancelled``}.
@@ -692,10 +721,12 @@ def commit_home_result(
                           reason="open result PR already exists")
             return result
 
-        # Author in an isolated worktree off base — the live tree/branch is untouched.
+        # Author in an isolated worktree off base (or the session branch — T-060) —
+        # the live tree/branch is untouched.
+        fork_ref = _resolve_fork_ref(repo_dir, base_ref, session_branch)
         _git(repo_dir, "branch", "-D", branch_name)  # drop any stale local branch
         worktree = tempfile.mkdtemp(prefix="session-result-")
-        add = _git(repo_dir, "worktree", "add", "-b", branch_name, worktree, base_ref)
+        add = _git(repo_dir, "worktree", "add", "-b", branch_name, worktree, fork_ref)
         if add.returncode != 0:
             result["reason"] = f"worktree add failed: {add.stderr.strip()}"
             return result
@@ -746,19 +777,21 @@ def author_home_result(
     repo_dir: str,
     date: Optional[str] = None,
     raise_pr: bool = True,
+    session_branch: Optional[str] = None,
 ) -> dict:
     """Render + commit the home-repo result for ``session_point`` (T-035 step 7).
 
     Thin composition of :func:`generate_session_result` + :func:`commit_home_result`
-    so the hook's migrated branch is a one-line call. Returns the
-    :func:`commit_home_result` dict.
+    so the hook's migrated branch is a one-line call. ``session_branch`` (T-060) is
+    forwarded so a mid-session commit on the session's own branch rides the result PR
+    — see :func:`commit_home_result`. Returns the :func:`commit_home_result` dict.
     """
     date = date or _now_date()
     work_item = session_point.get("work_item", "unknown")
     text = generate_session_result(session_point, date=date)
     return commit_home_result(
         text, session_id=session_id, work_item=work_item, date=date,
-        repo_dir=repo_dir, raise_pr=raise_pr,
+        repo_dir=repo_dir, raise_pr=raise_pr, session_branch=session_branch,
     )
 
 
