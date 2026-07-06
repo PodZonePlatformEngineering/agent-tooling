@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import sys
 import unittest
 from contextlib import redirect_stderr
@@ -57,6 +58,18 @@ class TestCstCleanupPrimitive(unittest.TestCase):
 
 class TestDeletionGate(unittest.TestCase):
     """The gate: delete only when telemetry push landed (DT-007 negative case)."""
+
+    def setUp(self) -> None:
+        # sef.main() -> finalise_session sets PODZONE_SESSION_ID in-process (T-048,
+        # sid-keys the runtime log filename) and never unsets it — isolate so that
+        # leak doesn't bleed into other test modules sharing this pytest process.
+        self._saved_sid = os.environ.get("PODZONE_SESSION_ID")
+
+    def tearDown(self) -> None:
+        if self._saved_sid is None:
+            os.environ.pop("PODZONE_SESSION_ID", None)
+        else:
+            os.environ["PODZONE_SESSION_ID"] = self._saved_sid
 
     def _run_finalise(self, *, pushed: bool):
         deleted = {"called": False}

@@ -48,7 +48,8 @@ class TestRuntimeLog(unittest.TestCase):
     def test_writes_caller_identified_line(self):
         from lib import runtime_log
         runtime_log.log_library("session_finalise", "rollup attached", session_id="sid-1")
-        text = (self.logdir / "libraries.log").read_text()
+        # T-048: an explicit session_id sid-keys the filename (libraries-{sid8}.log).
+        text = (self.logdir / "libraries-sid-1.log").read_text()
         self.assertIn("session_finalise", text)
         self.assertIn("session=sid-1", text)
         self.assertIn("rollup attached", text)
@@ -222,7 +223,7 @@ class TestFinaliseSessionMocked(unittest.TestCase):
         from unittest import mock
         self._td = tempfile.TemporaryDirectory()
         self._saved = {k: os.environ.get(k) for k in
-                       ("PODZONE_LOG_DIR", "PODZONEAGENTTEAM_REPO")}
+                       ("PODZONE_LOG_DIR", "PODZONEAGENTTEAM_REPO", "PODZONE_SESSION_ID")}
         os.environ["PODZONE_LOG_DIR"] = str(Path(self._td.name) / "logs")
         os.environ.pop("PODZONEAGENTTEAM_REPO", None)  # skip steps 6/7 (agent repo)
         self.mock = mock
