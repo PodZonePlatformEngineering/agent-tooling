@@ -35,7 +35,7 @@ Run this before authoring any headless brief:
    launch prompt repeats it ("if budget tightens, deliver X alone with a clear
    per-task account"). A limit-stop should yield a mergeable partial delivery.
 4. **Consider in-session fan-out** (PROJ-035/T-011): parallelisable mechanical
-   subtasks *inside* a reasoning brief may be delegated by the agent to
+   subtasks *inside* a reasoning brief should be delegated by the agent to
    sonnet/haiku subagents instead of a separate dispatch — the expensive model
    keeps the core reasoning. Say so in the brief if you want it.
 5. **Self-banking furniture is mandatory.** Every headless prompt carries

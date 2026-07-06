@@ -68,7 +68,7 @@ in a single window. Full guidance: `agent-tooling/docs/brief-authoring.md`.
    with a per-task account") so a limit-stop yields a mergeable partial, not a
    stranded bundle.
 4. **In-session subagent fan-out** (PROJ-035/T-011): for parallelisable mechanical
-   subtasks *inside* a reasoning brief, the brief MAY direct the agent to fan out
+   subtasks *inside* a reasoning brief, the brief SHOULD direct the agent to fan out
    to sonnet/haiku subagents rather than splitting a separate dispatch — the
    expensive model keeps the core reasoning.
 5. **Self-banking is mandatory prompt furniture** — every headless prompt carries
