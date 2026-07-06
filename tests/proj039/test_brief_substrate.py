@@ -94,6 +94,27 @@ class TestCreateBrief(unittest.TestCase):
         self.assertIsNone(rec.payload["completed_at"])
         self.assertEqual(rec.payload["body"], "Learn prompt basics.")
 
+    def test_tooling_update_field_default_none_and_settable(self) -> None:
+        rec = RecordingQdrant()
+        with patch.object(qdrant_http, "request_json", rec), \
+             patch.object(session_substrate, "embed_text", lambda *a, **k: [0.1] * 768):
+            brief_substrate.create_brief(
+                brief_id=BRIEF_ID, team="training", author="athena",
+                assignee="alex", assignee_type="trainee", body="Learn prompt basics.",
+                status="approved",
+            )
+        self.assertIsNone(rec.payload["tooling_update"])
+
+        rec2 = RecordingQdrant()
+        with patch.object(qdrant_http, "request_json", rec2), \
+             patch.object(session_substrate, "embed_text", lambda *a, **k: [0.1] * 768):
+            brief_substrate.create_brief(
+                brief_id=BRIEF_ID, team="proj039", author="hermes",
+                assignee="hephaestus", body="Self-update to v1.1.0.",
+                status="approved", tooling_update="v1.1.0",
+            )
+        self.assertEqual(rec2.payload["tooling_update"], "v1.1.0")
+
     def test_rejects_bad_status_and_type_and_empty_body(self) -> None:
         with patch.object(session_substrate, "embed_text", lambda *a, **k: [0.1] * 768):
             with self.assertRaises(ValueError):

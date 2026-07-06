@@ -61,6 +61,11 @@ def main(argv: list[str] | None = None) -> int:
                     choices=brief_substrate.BRIEF_STATUSES)
     ap.add_argument("--approve", action="store_true",
                     help="shorthand for --status approved (operator/lead sign-off, D5 gate)")
+    ap.add_argument("--tooling-update", default=None, dest="tooling_update",
+                    help="'<tag>' (e.g. v1.1.0) or 'latest' — audit record of a self-update "
+                         "instruction (PROJ-039/T-056); the resident update-tooling.py is "
+                         "actually triggered by the launch-time TOOLING_UPDATE env var, not "
+                         "this field")
     args = ap.parse_args(argv)
 
     if args.body_file:
@@ -86,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
         work_items=args.work_items,
         summary=args.summary,
         origin_path=origin_path,
+        tooling_update=args.tooling_update,
     )
     print(f"created brief point {result['point_id']} for {args.brief_id} "
           f"(assignee={args.assignee}, status={status})")

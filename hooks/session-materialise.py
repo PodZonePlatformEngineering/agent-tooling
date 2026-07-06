@@ -63,11 +63,18 @@ def _write_status(workspace: Path, status: dict) -> None:
 
 def _materialise_files(workspace: Path, *, brief_text: str, tasks: list,
                        agent: str, work_item: str | None, session_id: str,
-                       brief_id: str | None = None) -> None:
+                       brief_id: str | None = None,
+                       tooling_update: str | None = None) -> None:
     """Write the three `.workspace` files from resolved substrate content.
 
     Shared by the legacy (session-point-keyed) and brief-first paths so the
     on-disk shape the agent orients against is byte-identical between them.
+
+    ``tooling_update`` (PROJ-039/T-056) is surfaced into ``identity.json``
+    purely for visibility/audit — the resident ``update-tooling.py`` is
+    triggered by the launch-time ``TOOLING_UPDATE`` env var, not this file, so
+    a materialise ordered after (or never run, e.g. legacy path) never blocks
+    the self-update.
     """
     workspace.mkdir(parents=True, exist_ok=True)
     (workspace / "brief.md").write_text(brief_text, encoding="utf-8")
@@ -75,6 +82,8 @@ def _materialise_files(workspace: Path, *, brief_text: str, tasks: list,
     identity = {"agent": agent, "work_item": work_item, "session_id": session_id}
     if brief_id is not None:
         identity["brief_id"] = brief_id
+    if tooling_update:
+        identity["tooling_update"] = tooling_update
     (workspace / "identity.json").write_text(json.dumps(identity, indent=2), encoding="utf-8")
 
 
@@ -164,7 +173,8 @@ def materialise_brief_first(session_id: str, cwd: str, brief_id: str) -> dict:
 
     # 6. Materialise files + success sentinel.
     _materialise_files(workspace, brief_text=body, tasks=tasks, agent=agent,
-                       work_item=work_item, session_id=session_id, brief_id=brief_id)
+                       work_item=work_item, session_id=session_id, brief_id=brief_id,
+                       tooling_update=brief.get("tooling_update"))
     status = {
         "ok": True,
         "ts": _now(),
