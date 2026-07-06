@@ -210,6 +210,13 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
     Records each step in the finalise ledger and marks the session complete on
     reaching the end. Never raises — best-effort throughout.
     """
+    # Sid-key the runtime logs for everything this finalise touches (PROJ-039/T-048):
+    # lib call-sites that don't thread a session_id fall back to this env, so their
+    # lines land in this session's logs/libraries-{sid8}.log. Process-local; the guard
+    # path re-sets it per recovered sid.
+    if session_id:
+        os.environ["PODZONE_SESSION_ID"] = session_id
+
     # Defensive re-strip: a legacy partial recovered by the guard may carry a
     # pre-T-054 ledger cwd that still points inside a `.workspace/` subrepo.
     try:

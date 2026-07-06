@@ -36,6 +36,8 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import runtime_log
+
 LEDGER_FILE = "finalise-state.log"
 
 # The steps the finalise sequence records, in execution order. ``brief_pr`` is
@@ -62,7 +64,14 @@ def ledger_path() -> Path:
         base = Path(override)
     else:
         project = os.environ.get("CLAUDE_PROJECT_DIR")
-        base = (Path(project) / "logs") if project else (Path.cwd() / "logs")
+        if project:
+            base = Path(project) / "logs"
+        else:
+            # Last resort only (both envs unset). The ledger is load-bearing for
+            # SessionStart recovery, so never let it land inside a `.workspace/`
+            # subrepo the shell happened to end in (T-054) — recovery would then
+            # look in the wrong clone's logs/.
+            base = runtime_log.resolve_log_dir()
     return base / LEDGER_FILE
 
 

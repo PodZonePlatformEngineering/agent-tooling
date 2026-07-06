@@ -8,6 +8,9 @@ COLLECTION="claude_session_telemetry"
 
 STDIN="$(cat)"
 SESSION_ID="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['session_id'])" "${STDIN}")"
+# Sid-keyed committed logs (PROJ-039/T-048): primitives invoked by this hook log
+# to logs/primitives-{sid8}.log via this export.
+export PODZONE_SESSION_ID="${SESSION_ID}"
 SUMMARY="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('summary',''))" "${STDIN}")"
 TIMESTAMP="$(python3 -c "from datetime import datetime,timezone; print(datetime.now(timezone.utc).isoformat())")"
 CWD="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('cwd', '.'))" "${STDIN}")"

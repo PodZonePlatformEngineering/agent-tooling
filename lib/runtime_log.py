@@ -40,14 +40,25 @@ def resolve_log_dir() -> Path:
     project = os.environ.get("CLAUDE_PROJECT_DIR")
     if project:
         return Path(project) / "logs"
-    return Path.cwd() / "logs"
+    # Last resort only (both envs unset). Strip any `.workspace/` tail so a shell
+    # that ended inside a stood-up subrepo still logs to the OWNING home repo's
+    # logs/ (T-054 — inlined here because this module stays a lib-free leaf).
+    cwd = str(Path.cwd())
+    marker = os.sep + ".workspace"
+    i = cwd.find(marker + os.sep)
+    if i != -1:
+        cwd = cwd[:i]
+    elif cwd.endswith(marker):
+        cwd = cwd[: -len(marker)]
+    return Path(cwd) / "logs"
 
 
 def _sid8(session_id: str | None) -> str:
     """The 8-char sid tag for a sid-keyed log filename, or '' if none resolvable.
 
-    Priority: the explicit ``session_id`` arg, else ``$PODZONE_SESSION_ID`` (the
-    per-session env the substrate hooks export, T-048). Non-hex/short values are
+    Priority: the explicit ``session_id`` arg, else ``$PODZONE_SESSION_ID`` — the
+    per-session env every substrate shell hook exports after parsing its stdin json
+    (and the SessionEnd finalise sets in-process), T-048. Non-hex/short values are
     used verbatim-truncated so synthetic test sids still key a distinct file."""
     sid = (session_id or os.environ.get("PODZONE_SESSION_ID") or "").strip()
     return sid[:8]
