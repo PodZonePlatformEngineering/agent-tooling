@@ -46,16 +46,20 @@ DEFAULT_MIGRATED_AGENTS_PATH = (
 # Ships tooling (update-tooling.py etc.) but is not a migrated *agent* row.
 EXTRA_REPOS = ["home-training-template"]
 
+# Matches a well-formed `| a | b | c | d | e | f | ... |` data row with 6 or
+# more pipe-delimited cells (PROJ-039/T-057 added a 7th `tooling_version`
+# column); only the first 6 cells are captured, extras are ignored.
 _ROW_RE = re.compile(
-    r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*$"
+    r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|(?:[^|]*\|)*$"
 )
 
 
 def parse_migrated_agents(text: str) -> list[dict]:
     """Rows with ``status: migrated`` from the migrated-agents.md table.
     Returns ``[{"agent", "team", "home_repo"}, ...]``. Tolerant of the header/
-    separator rows and any surrounding prose (only well-formed `| a | b | ... |`
-    data rows with a known column count match)."""
+    separator rows, extra trailing columns (e.g. `tooling_version`), and any
+    surrounding prose (only well-formed `| a | b | ... |` data rows with at
+    least 6 columns match)."""
     fleet = []
     for line in text.splitlines():
         m = _ROW_RE.match(line.strip())

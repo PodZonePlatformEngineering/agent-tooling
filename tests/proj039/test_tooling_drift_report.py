@@ -39,6 +39,22 @@ FIXTURE_MIGRATED_AGENTS = """\
 Some trailing prose that must not be mistaken for a table row.
 """
 
+# Current live shape (PROJ-039/T-057): a 7th `tooling_version` column, derived
+# Hermes-side and never agent-written. _ROW_RE must tolerate this without
+# dropping to the hardcoded template row (the T-062 bug — see brief CC-372).
+FIXTURE_MIGRATED_AGENTS_7COL = """\
+# Migrated agents registry
+
+| agent | team | home_repo | status | migrated_on | task | tooling_version |
+|---|---|---|---|---|---|---|
+| hephaestus | podzone | home-podzone-hephaestus | migrated | 2026-06-16 | PROJ-039/T-011 C2a | 1.1.1 ✓ |
+| atlas | podzone | home-podzone-atlas | migrated | 2026-06-26 | PROJ-039/T-011 C2b | 1.1.1 ✓ |
+| hermes | podzone | (apex / team-lead) | legacy | — | — | n/a (apex) |
+| kronos | roadmap | home-roadmap-kronos | migrated | 2026-06-29 | PROJ-039/T-037 C2c | 1.1.1 ✓ |
+
+Some trailing prose that must not be mistaken for a table row.
+"""
+
 
 class TestParseMigratedAgents(unittest.TestCase):
     def test_only_migrated_home_rows(self) -> None:
@@ -52,6 +68,19 @@ class TestParseMigratedAgents(unittest.TestCase):
 
     def test_home_repo_and_team_carried(self) -> None:
         fleet = drift_report.parse_migrated_agents(FIXTURE_MIGRATED_AGENTS)
+        atlas = next(f for f in fleet if f["agent"] == "atlas")
+        self.assertEqual(atlas["home_repo"], "home-podzone-atlas")
+        self.assertEqual(atlas["team"], "podzone")
+
+    def test_seven_column_tooling_version_shape(self) -> None:
+        """T-062/CC-372: post-T-057 registries add a 7th column; the parser
+        must still return the full fleet, not just the hardcoded template row."""
+        fleet = drift_report.parse_migrated_agents(FIXTURE_MIGRATED_AGENTS_7COL)
+        agents = [f["agent"] for f in fleet]
+        self.assertEqual(agents, ["hephaestus", "atlas", "kronos"])
+
+    def test_seven_column_home_repo_and_team_carried(self) -> None:
+        fleet = drift_report.parse_migrated_agents(FIXTURE_MIGRATED_AGENTS_7COL)
         atlas = next(f for f in fleet if f["agent"] == "atlas")
         self.assertEqual(atlas["home_repo"], "home-podzone-atlas")
         self.assertEqual(atlas["team"], "podzone")
