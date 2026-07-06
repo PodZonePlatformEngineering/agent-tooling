@@ -128,6 +128,14 @@ role_hooks() {
 # -only code into every home repo). Kept byte-identical with sync-agent-tooling.sh.
 DEP_DIRS="primitives"
 
+# Role-neutral resident tools (PROJ-039/T-056): single files under tools/ that
+# ship to .claude/tools/ for EVERY role (unlike DEP_DIRS this is not a whole-dir
+# copy — tools/ upstream also carries workstation/Hermes-only scripts, e.g.
+# create-brief.py, that must never land in a home repo). update-tooling.py is
+# the brief-gated self-update entry point, wired as the FIRST SessionStart hook
+# command. Kept byte-identical with sync-agent-tooling.sh.
+TOOLS_FILES="update-tooling.py"
+
 role_title() {
   case "$1" in
     team-lead)             echo "Team Lead" ;;
@@ -175,7 +183,7 @@ role_settings_json() {
   },
   "hooks": {
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-preflight.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-session-branch.py" } ] }
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-preflight.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-session-branch.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py" } ] }
     ],
     "UserPromptSubmit": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/first-prompt-brief.py" } ] }
@@ -252,6 +260,18 @@ TRAINEE_SETTINGS
     session_start_materialise=', { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-materialise.py" }'
   fi
 
+  # update-tooling.py (PROJ-039/T-056) is the FIRST SessionStart hook command for
+  # every non-trainee role — ahead of session-start.sh / session-materialise.py —
+  # so a self-update can refresh the very hook set that runs after it. It reads
+  # TOOLING_UPDATE from the env directly (no Qdrant/materialise dependency), so
+  # there is no ordering hazard; unset it is a pure no-op. In serial simple-repo
+  # mode the launcher has already switched to the session branch before `claude`
+  # starts, so a commit this hook makes lands on the session branch (rides the
+  # session/result PR, T-060). Trainee wiring differs: it runs AFTER
+  # trainee-session-branch.py (TRAINEE_SETTINGS above) because the trainee's own
+  # branch switch happens inside a SessionStart hook, not pre-launch — running
+  # update-tooling before it would commit onto main instead of the session branch.
+
   # Telemetry + finalise env (PROJ-039/T-032). Non-secret config only — the
   # agent-telemetry remote the SessionEnd finalise pushes the session JSONL to
   # (R-015 keystone), and the apex repo for the non-migrated finalise path. Secrets
@@ -270,7 +290,7 @@ TRAINEE_SETTINGS
   },
   "hooks": {
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }${session_start_materialise}${session_start_extra} ] }
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "python3 \"\$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py" }, { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }${session_start_materialise}${session_start_extra} ] }
     ],
     "UserPromptSubmit": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" }${ups_extra} ] }
@@ -416,6 +436,23 @@ for dep in $DEP_DIRS; do
   cp -R "$src" "${TARGET_DIR}/.claude/${dep}"
   find "${TARGET_DIR}/.claude/${dep}" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
   echo "    copied: ${dep}/"
+done
+
+# --- Copy role-neutral resident tools (TOOLS_FILES) ---
+# Single files, not a whole-dir copy (tools/ upstream also carries workstation
+# -only scripts). Ships for EVERY role. PROJ-039/T-056.
+
+echo "==> Copying resident tools (${TOOLS_FILES}) into .claude/tools/..."
+mkdir -p "${TARGET_DIR}/.claude/tools"
+for tool in $TOOLS_FILES; do
+  src="${AGENT_TOOLING_DIR}/tools/${tool}"
+  if [[ ! -f "$src" ]]; then
+    echo "Warning: source tool not found: ${src} — skipping"
+    continue
+  fi
+  cp "$src" "${TARGET_DIR}/.claude/tools/${tool}"
+  chmod +x "${TARGET_DIR}/.claude/tools/${tool}"
+  echo "    copied: tools/${tool}"
 done
 
 # --- Copy runtime lib closure (home-runtime-lib.manifest) ---

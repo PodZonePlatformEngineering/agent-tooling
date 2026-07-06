@@ -136,6 +136,15 @@ role_hooks() {
 # left over from a pre-C2-v2.1b full-lib copy is pruned. PROJ-039/T-011 C2-v2.1b.
 # Kept byte-identical with scaffold.sh.
 DEP_DIRS="primitives"
+
+# Role-neutral resident tools (PROJ-039/T-056): single files under tools/ that
+# ship to .claude/tools/ for EVERY role. Not a whole-dir DEP_DIRS copy — tools/
+# upstream also carries workstation/Hermes-only scripts (create-brief.py etc.)
+# that must never land in a home repo. Kept byte-identical with scaffold.sh.
+TOOLS_FILES="update-tooling.py"
+TOOLS_SRC="${AGENT_TOOLING_DIR}/tools"
+TOOLS_DST="${HOME_REPO}/.claude/tools"
+
 LIB_MANIFEST="${HOOKS_SRC}/home-runtime-lib.manifest"
 SKILLS_SRC="${AGENT_TOOLING_DIR}/skills"
 # Team-lead variant only: the coordination skill subset delivered under
@@ -235,6 +244,52 @@ for dep in $DEP_DIRS; do
   cp -R "$src" "$dst"
   find "$dst" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
   echo "  Updated: ${dep}/"
+  ((UPDATED++))
+done
+
+# --- Role-neutral resident tools (TOOLS_FILES) ---
+
+echo ""
+echo "==> Syncing resident tools (${TOOLS_FILES}) → ${TOOLS_DST}"
+mkdir -p "$TOOLS_DST"
+
+for tool in $TOOLS_FILES; do
+  src="${TOOLS_SRC}/${tool}"
+  dst="${TOOLS_DST}/${tool}"
+
+  if [[ ! -f "$src" ]]; then
+    echo "  SKIP  tools/${tool} — not found in agent-tooling (${src})"
+    ((SKIPPED++))
+    continue
+  fi
+
+  if [[ -f "$dst" ]] && diff -q "$src" "$dst" > /dev/null 2>&1; then
+    echo "  OK    tools/${tool} — unchanged"
+    ((UNCHANGED++))
+    continue
+  fi
+
+  if [[ -f "$dst" ]]; then
+    echo "  DIFF  tools/${tool}:"
+    diff -u "$dst" "$src" || true
+    echo ""
+  else
+    echo "  NEW   tools/${tool} — not present in home repo"
+  fi
+
+  if [[ $YES -eq 0 ]]; then
+    printf "  Overwrite %s? [y/N] " "tools/${tool}"
+    read -r answer </dev/tty
+    if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+      echo "  Skipped."
+      ((SKIPPED++))
+      continue
+    fi
+  fi
+
+  cp "$src" "$dst"
+  chmod +x "$dst"
+  echo "  Updated: tools/${tool}"
   ((UPDATED++))
 done
 
@@ -423,6 +478,11 @@ for dep in $DEP_DIRS; do
   diff -rq -x '__pycache__' -x '*.pyc' "${AGENT_TOOLING_DIR}/${dep}" "${HOME_REPO}/.claude/${dep}" > /dev/null 2>&1 \
     || { echo "  DRIFT: ${dep}/"; DRIFT=1; }
 done
+for tool in $TOOLS_FILES; do
+  [[ -f "${TOOLS_SRC}/${tool}" ]] || continue
+  diff -q "${TOOLS_SRC}/${tool}" "${TOOLS_DST}/${tool}" > /dev/null 2>&1 \
+    || { echo "  DRIFT: tools/${tool}"; DRIFT=1; }
+done
 # lib/ invariant is manifest-scoped: every manifest module byte-identical to source,
 # AND no out-of-closure module present (the slim-closure guarantee). PROJ-039 C2-v2.1b.
 if [[ -f "$LIB_MANIFEST" ]]; then
@@ -465,7 +525,7 @@ elif [[ "$ROLE" != "team-lead" && -d "$SKILLS_DST" ]]; then
 fi
 
 if [[ $DRIFT -eq 0 ]]; then
-  echo "Byte-identity invariant: PASS — hooks + ${DEP_DIRS} + lib closure + skills match agent-tooling."
+  echo "Byte-identity invariant: PASS — hooks + ${DEP_DIRS} + tools + lib closure + skills match agent-tooling."
 else
   echo "Byte-identity invariant: FAIL — drift listed above (re-run without --skip, or investigate)."
   exit 1
@@ -499,7 +559,7 @@ from pathlib import Path
 
 claude_dir = Path(sys.argv[1])
 files = {}
-for sub in ("hooks", "primitives", "lib", "skills"):
+for sub in ("hooks", "primitives", "lib", "skills", "tools"):
     d = claude_dir / sub
     if not d.is_dir():
         continue
