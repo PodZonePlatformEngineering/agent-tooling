@@ -61,8 +61,31 @@ class TestRuntimeLog(unittest.TestCase):
         from lib import runtime_log
         runtime_log.log_library("telemetry_repo", "push failed", level="WARN")
         text = (self.logdir / "libraries.log").read_text()
-        self.assertIn("[WARN] telemetry_repo: push failed", text)
+        self.assertIn("[WARN] tooling=unknown telemetry_repo: push failed", text)
         self.assertNotIn("session=", text)
+
+    def test_tooling_stamp_reads_manifest_version(self):
+        # T-055: logs/'s parent .claude/tooling-manifest.json version stamps every line.
+        from lib import runtime_log
+        project = self.logdir.parent
+        (project / ".claude").mkdir(parents=True, exist_ok=True)
+        (project / ".claude" / "tooling-manifest.json").write_text(
+            json.dumps({"version": "1.2.3"}), encoding="utf-8")
+        runtime_log.log_library("session_finalise", "hello")
+        text = (self.logdir / "libraries.log").read_text()
+        self.assertIn("[INFO] tooling=v1.2.3 session_finalise: hello", text)
+
+    def test_tooling_stamp_unknown_when_manifest_missing(self):
+        from lib import runtime_log
+        self.assertEqual(runtime_log.tooling_version(), "unknown")
+
+    def test_tooling_stamp_unknown_when_manifest_corrupt(self):
+        from lib import runtime_log
+        project = self.logdir.parent
+        (project / ".claude").mkdir(parents=True, exist_ok=True)
+        (project / ".claude" / "tooling-manifest.json").write_text(
+            "{not valid json", encoding="utf-8")
+        self.assertEqual(runtime_log.tooling_version(), "unknown")
 
     def test_unwritable_dir_never_raises(self):
         from lib import runtime_log

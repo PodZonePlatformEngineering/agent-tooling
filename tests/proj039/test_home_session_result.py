@@ -205,6 +205,15 @@ def _git(repo: str, *args: str) -> subprocess.CompletedProcess:
                           capture_output=True, text=True, check=False)
 
 
+class TestResultPrBodyToolingStamp(unittest.TestCase):
+    def test_carries_tooling_version(self) -> None:
+        # PROJ-039/T-055 — every result PR body records the shipped tooling version
+        # ("unknown" absent a manifest, exercised here with no CLAUDE_PROJECT_DIR set).
+        body = session_finalise._result_pr_body("sid-1234567890", "PROJ-039/T-055",
+                                                 "2026-07-06")
+        self.assertIn("tooling: unknown", body)
+
+
 class TestCommitHomeResult(unittest.TestCase):
     """Real-git authoring: authors off main without disturbing the work branch,
     and no-ops once the result is on main (idempotent)."""

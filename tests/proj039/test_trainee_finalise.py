@@ -70,6 +70,13 @@ class TestBuildTraineePrBody(unittest.TestCase):
         self.assertIn("No session summary was captured", body)
         self.assertIn("Review checklist", body)
 
+    def test_body_carries_tooling_version(self) -> None:
+        # PROJ-039/T-055 — every result PR body records the shipped tooling version.
+        body = SF.build_trainee_pr_body(
+            self.POINT, brief_id=self.POINT["brief_id"], date="2026-07-04",
+            session_id=SID)
+        self.assertIn("tooling: unknown", body)
+
 
 class TestAuthorTraineeSessionPr(unittest.TestCase):
     POINT = {"brief_id": "training/2026-07-02-python-basics-sam",

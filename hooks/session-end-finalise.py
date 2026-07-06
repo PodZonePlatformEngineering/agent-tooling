@@ -294,8 +294,11 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
     # 3. Rollups (tool_usage + cost_tokens) from the JSONL — reconciles (DT-006).
     if transcript_path:
         try:
+            from lib import runtime_log as _rl
+
             rollup = session_substrate.compute_rollup(transcript_path)
-            session_substrate.attach_rollup(session_id, rollup)
+            session_substrate.attach_rollup(
+                session_id, rollup, tooling_version=_rl.tooling_version())
             _log(
                 f"rollup attached (tools={len(rollup['tool_usage'])}, "
                 f"models={len(rollup['cost_tokens'])})",

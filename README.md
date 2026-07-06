@@ -241,6 +241,23 @@ into the primitives point at podzone-internal hosts and won't be reachable.
 
 ---
 
+## Versioning (PROJ-039/T-055)
+
+`VERSION` at the repo root is the current semver — bump it in **every** delivery
+PR (review-checked; the reviewer should reject a delivery PR that changes shipped
+code without a bump). `sync-agent-tooling.sh` writes the shipped
+`.claude/tooling-manifest.json` in every home repo it syncs: `{version,
+source_commit, role, synced_at, files: {path: sha256}}`. `runtime_log` stamps
+every line with the shipped `tooling=v{X.Y.Z}` (lazy manifest read, `unknown` if
+absent/corrupt — never breaks a log call), and the SessionEnd finalise carries the
+version in result-PR bodies and the session's telemetry (rollup) payload.
+
+**Close-out checklist (Hermes, at PR-merge):** once a delivery PR with a `VERSION`
+bump merges, tag the merge commit: `git tag -a v$(cat VERSION) -m "..." <merge-sha>
+&& git push origin v$(cat VERSION)`. The tag is the release — `main` between tags
+is not a deployable. A `VERSION` with no matching tag is refused by the (T-056)
+self-update flow.
+
 ## Contributing
 
 This repo is maintained as the in-use tooling for the podzone agent fleet,

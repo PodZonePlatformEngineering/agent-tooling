@@ -348,10 +348,19 @@ def attach_rollup(
     rollup: dict,
     *,
     api_key: Optional[str] = None,
+    tooling_version: Optional[str] = None,
 ) -> dict:
-    """Attach ``rollup = {tool_usage, cost_tokens}`` via set_payload (unvectorised)."""
+    """Attach ``rollup = {tool_usage, cost_tokens}`` via set_payload (unvectorised).
+
+    ``tooling_version`` (PROJ-039/T-055), when given, is stamped onto the point as a
+    top-level ``tooling`` field alongside the rollup — the telemetry-payload half of
+    "log entries and git PRs record the tooling version" (absent when not given, so
+    callers that don't pass it see no behaviour change)."""
     pid = point_id_for(session_id)
+    payload = {"rollup": rollup}
+    if tooling_version:
+        payload["tooling"] = tooling_version
     qdrant_http.set_payload(
-        {"rollup": rollup}, [pid], collection=COLLECTION, api_key=api_key
+        payload, [pid], collection=COLLECTION, api_key=api_key
     )
     return {"point_id": pid, "ok": True}

@@ -322,12 +322,15 @@ def commit_brief_result(
             if push.returncode != 0:
                 result["reason"] = f"push failed: {push.stderr.strip()}"
                 return result
+            from lib import runtime_log as _rl
+
             pr = subprocess.run(
                 ["gh", "pr", "create", "--title",
                  f"Session result: {work_item} ({date})",
                  "--body",
                  f"Auto-generated brief-result for session `{session_id}` "
-                 f"(work_item: {work_item}, date: {date}).",
+                 f"(work_item: {work_item}, date: {date}).\n\n"
+                 f"---\n\ntooling: {_rl.tooling_version()}",
                  "--head", branch_name],
                 capture_output=True, text=True, cwd=repo_dir, check=False,
             )
@@ -620,6 +623,8 @@ def _open_result_pr_exists(repo_dir: str, branch_name: str) -> bool:
 
 
 def _result_pr_body(session_id: str, work_item: str, date: str) -> str:
+    from lib import runtime_log as _rl
+
     return (
         f"Auto-authored session result for `{work_item}` "
         f"(session `{session_id[:12]}`, {date}).\n\n"
@@ -627,7 +632,9 @@ def _result_pr_body(session_id: str, work_item: str, date: str) -> str:
         f"hooks-only migrated home repo — there is no `/session-end` skill; the "
         f"hook owns the result. Decoupled from any work PR so it cannot be "
         f"orphaned.\n\n"
-        f"Please review the **Questions for Martin** section in the result file."
+        f"Please review the **Questions for Martin** section in the result file.\n\n"
+        f"---\n\n"
+        f"tooling: {_rl.tooling_version()}"
     )
 
 
@@ -833,6 +840,8 @@ def build_trainee_pr_body(
     else the session point's ``response.text``, else a clear placeholder — never an
     empty body.
     """
+    from lib import runtime_log as _rl
+
     response = session_point.get("response") or {}
     summary = (summary_override or "").strip() or (response.get("text") or "").strip()
     if not summary:
@@ -846,7 +855,9 @@ def build_trainee_pr_body(
         f"## Session summary\n\n"
         f"{summary}\n\n"
         f"---\n\n"
-        f"{_TRAINEE_REVIEW_CHECKLIST}"
+        f"{_TRAINEE_REVIEW_CHECKLIST}\n"
+        f"---\n\n"
+        f"tooling: {_rl.tooling_version()}"
     )
 
 

@@ -64,6 +64,25 @@ assert "sync exit 0 (invariant PASS)" "$([ "$SYNC_RC" -eq 0 ] && echo ok || echo
 assert "sync printed invariant PASS"  "$(grep -q 'Byte-identity invariant: PASS' /tmp/test-sync-out-$$ && echo ok || echo fail)"
 rm -f /tmp/test-sync-out-$$
 
+# 4d. Shipped manifest v2 (PROJ-039/T-055): version, source_commit, role, synced_at,
+# files{path: sha256} — written only after a byte-identity PASS.
+MANIFEST="${TARGET}/.claude/tooling-manifest.json"
+assert "manifest written" "$([ -f "$MANIFEST" ] && echo ok || echo fail)"
+EXPECT_VERSION="$(tr -d '[:space:]' < "${AGENT_TOOLING_DIR}/VERSION")"
+assert "manifest version matches VERSION file" \
+  "$(python3 -c "import json; d=json.load(open('${MANIFEST}')); exit(0 if d.get('version')=='${EXPECT_VERSION}' else 1)" && echo ok || echo fail)"
+assert "manifest role matches" \
+  "$(python3 -c "import json; d=json.load(open('${MANIFEST}')); exit(0 if d.get('role')=='trainer' else 1)" && echo ok || echo fail)"
+assert "manifest carries source_commit + synced_at + files" \
+  "$(python3 -c "import json; d=json.load(open('${MANIFEST}')); exit(0 if d.get('source_commit') and d.get('synced_at') and d.get('files') else 1)" && echo ok || echo fail)"
+assert "manifest hooks/session-start.sh sha256 matches source" \
+  "$(python3 -c "
+import hashlib, json
+d = json.load(open('${MANIFEST}'))
+want = hashlib.sha256(open('${AGENT_TOOLING_DIR}/hooks/session-start.sh', 'rb').read()).hexdigest()
+exit(0 if d['files'].get('hooks/session-start.sh') == want else 1)
+" && echo ok || echo fail)"
+
 # 5. Unchanged hooks not touched (stop.sh should still match)
 assert "stop.sh still matches source" \
   "$(diff -q "${AGENT_TOOLING_DIR}/hooks/stop.sh" "${TARGET}/.claude/hooks/stop.sh" > /dev/null 2>&1 && echo ok || echo fail)"
