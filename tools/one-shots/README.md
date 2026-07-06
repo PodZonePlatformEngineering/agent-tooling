@@ -45,5 +45,5 @@ thinking_text: |
 - Log any repeated friction — no need for Hermes approval first
 - The YAML file lives in `frictions/` alongside this README or in the agent's outgoing directory
 - Re-running with the same `one_shot_id` is safe (upserts idempotently)
-- Cross-reference: `podzoneAgentTeam/agenticflows/operations/workflow-frictions.md`
+- Cross-reference: `podzoneTeam/agenticflows/operations/workflow-frictions.md`
   for the human-readable friction log

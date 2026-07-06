@@ -117,7 +117,7 @@ class TestUsageReport(unittest.TestCase):
         pts = [
             _point("a", workspace="agent-tooling", model="claude-sonnet-4-6",
                    bucket=_bucket(input_=100, output=50, cache_creation=10, cache_read=400)),
-            _point("b", workspace="podzoneAgentTeam", model="claude-opus-4-7",
+            _point("b", workspace="podzoneTeam", model="claude-opus-4-7",
                    bucket=_bucket(input_=200, output=100, cache_creation=20, cache_read=800)),
         ]
         r = usage_report.run(days=7, points=pts, stdout_only=True)

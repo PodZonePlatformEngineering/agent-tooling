@@ -94,7 +94,7 @@ fetches.
 |---|---|---|---|
 | `brief_path` | string | no | Relative path to the incoming brief, when one exists. |
 | `outbox_ref` | string | no | Session outbox path that produced this item. |
-| `pr_refs` | list[keyword] | no | E.g. `["agent-tooling#15", "podzoneAgentTeam#76"]`. |
+| `pr_refs` | list[keyword] | no | E.g. `["agent-tooling#15", "podzoneTeam#76"]`. |
 
 ### Source tracking
 
@@ -191,6 +191,6 @@ Created at collection-creation time (via `create_payload_index`):
   §Unified Task Object Model (lines 242–310).
 - Programme map: `agenticflows/operations/task-naming.md`.
 - Sibling schema (sessions): `agent-tooling/docs/sessions-schema.md`.
-- Ingest tool: `podzoneAgentTeam/team/thoth/tools/ingest-work-items.py`.
+- Ingest tool: `podzoneTeam/team/thoth/tools/ingest-work-items.py`.
 - Canonical ingest path: `team/thoth/vector-catalog.md` — workstation Ollama
   embed → cloud Qdrant.

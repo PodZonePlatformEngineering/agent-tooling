@@ -41,7 +41,7 @@ def _make_fixture(tmp: Path, *, with_spec: bool = True,
                   spec_slugs: list[str] | None = None,
                   readme_slugs: list[str] | None = None) -> tuple[Path, Path]:
     """Return (project_dir, team_root)."""
-    team_root = tmp / "podzoneAgentTeam"
+    team_root = tmp / "podzoneTeam"
     project_dir = team_root / "planning" / "projects" / "PROJ-003-gitopsapi-product"
     project_dir.mkdir(parents=True)
 

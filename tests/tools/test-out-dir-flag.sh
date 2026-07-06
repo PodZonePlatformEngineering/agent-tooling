@@ -32,7 +32,7 @@ mode = sys.argv[2]            # "default" or "out-dir"
 target = Path(sys.argv[3])    # tmp dir to assert against / pass
 
 # Override the real default dir to a sandbox so the test doesn't touch
-# the real podzoneAgentTeam/team/hermes/outgoing/usage-reports/.
+# the real podzoneTeam/team/hermes/outgoing/usage-reports/.
 default_sandbox = target / "_default_sandbox"
 mod.DEFAULT_OUTPUT_DIR = default_sandbox
 

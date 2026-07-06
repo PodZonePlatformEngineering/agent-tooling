@@ -47,7 +47,7 @@ class TestResolve(unittest.TestCase):
                 session_metadata,
                 "IDENTITY_DIRS",
                 (
-                    self.home / "workspace/podzoneAgentTeam/workspaces/identity",
+                    self.home / "workspace/podzoneTeam/workspaces/identity",
                     self.home / "workspace/trainingTeam/workspaces/identity",
                     self.home / "workspace/roadmapTeam/workspaces/identity",
                 ),
@@ -70,7 +70,7 @@ class TestResolve(unittest.TestCase):
 
     # T2: identity file lookup by home_repo
     def test_identity_file_lookup(self) -> None:
-        ident = self.home / "workspace/podzoneAgentTeam/workspaces/identity"
+        ident = self.home / "workspace/podzoneTeam/workspaces/identity"
         _write_identity(ident, "martin-hephaestus-agent-tooling", "Hephaestus",
                         home_repo="agent-tooling",
                         workspace="martin-hephaestus-agent-tooling")
@@ -88,10 +88,10 @@ class TestResolve(unittest.TestCase):
 
     # T4: jsonl_path only — cwd decoded from parent dir name
     def test_jsonl_path_decoding(self) -> None:
-        jsonl = Path("/tmp/-Users-martincolley-workspace-podzoneAgentTeam/abc.jsonl")
+        jsonl = Path("/tmp/-Users-martincolley-workspace-podzoneTeam/abc.jsonl")
         out = session_metadata.resolve(jsonl_path=jsonl)
-        self.assertEqual(out["cwd"], "/Users/martincolley/workspace/podzoneAgentTeam")
-        self.assertEqual(out["workspace"], "podzoneAgentTeam")
+        self.assertEqual(out["cwd"], "/Users/martincolley/workspace/podzoneTeam")
+        self.assertEqual(out["workspace"], "podzoneTeam")
 
     # T5: trailing slash on cwd → normalised
     def test_trailing_slash_normalised(self) -> None:
@@ -102,7 +102,7 @@ class TestResolve(unittest.TestCase):
 
     # T6: multiple identity files match → deterministic pick
     def test_multiple_matches_deterministic(self) -> None:
-        ident = self.home / "workspace/podzoneAgentTeam/workspaces/identity"
+        ident = self.home / "workspace/podzoneTeam/workspaces/identity"
         _write_identity(ident, "alpha-claim-tooling", "Alpha",
                         home_repo="agent-tooling",
                         workspace="alpha-claim-tooling")

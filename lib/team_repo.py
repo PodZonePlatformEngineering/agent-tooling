@@ -12,7 +12,7 @@ This resolver makes the team repo explicit from identity rather than from CWD, s
 the coordination skills resolve + consolidate the **right** repo when home≠team.
 
 Resolution by ``home_repo``:
-  * ``podzoneAgentTeam``                 → apex / full mode (Hermes); team repo = apex.
+  * ``podzoneTeam``                 → apex / full mode (Hermes); team repo = apex.
   * ``trainingTeam`` / ``roadmapTeam``   → legacy fissioned; CWD *is* the team repo.
   * ``home-<team>-<agent>``              → migrated team-lead; team is decoded from the
                                            home-repo name (``home-training-athena`` →
@@ -41,13 +41,13 @@ GITHUB_ORG = "PodZonePlatformEngineering"
 # Canonical team → team-repo mapping. The key is the short team token that appears
 # in a ``home-<team>-<agent>`` repo name; the value is the team repo dir name.
 TEAM_REPO_NAMES: dict[str, str] = {
-    "podzone": "podzoneAgentTeam",
+    "podzone": "podzoneTeam",
     "training": "trainingTeam",
     "roadmap": "roadmapTeam",
 }
 
 # The apex repo — full ("apex") consolidate mode runs here.
-APEX_REPO = "podzoneAgentTeam"
+APEX_REPO = "podzoneTeam"
 
 _HOME_REPO_RE = re.compile(r"^home-(?P<team>[a-z0-9]+)-(?P<agent>[a-z0-9]+)$")
 

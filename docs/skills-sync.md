@@ -19,7 +19,7 @@ teammate, with no signal until something breaks.
 ```
   SOURCE  ── agent-tooling/skills/                 (the ONE editable copy)
      │
-     ├─push─▶ podzoneAgentTeam/.claude/skills/      (apex mirror)
+     ├─push─▶ podzoneTeam/.claude/skills/      (apex mirror)
      ├─push─▶ trainingTeam/.claude/skills/          (fissioned-team mirror)
      └─push─▶ roadmapTeam/.claude/skills/           (fissioned-team mirror)
 ```
@@ -93,7 +93,7 @@ carry *additional* skills that are not in the source, and those are never touche
 
 | Location | Extra (out-of-scope) skills |
 |---|---|
-| apex (`podzoneAgentTeam`) | `add-embedded-agent`, `check-workstation-tools`, `create-task`, `onboard-agent`, `promote-embedded-agent`, `push-images`, `scaffold-embedded-agent`, `scaffold-scop`, `session-scope-check`, `stand-up-team`, `usage-report` |
+| apex (`podzoneTeam`) | `add-embedded-agent`, `check-workstation-tools`, `create-task`, `onboard-agent`, `promote-embedded-agent`, `push-images`, `scaffold-embedded-agent`, `scaffold-scop`, `session-scope-check`, `stand-up-team`, `usage-report` |
 | `trainingTeam`, `roadmapTeam` | `usage-report` |
 
 These are apex-management / team-local skills with no source counterpart. Parity is

@@ -27,9 +27,9 @@ except ImportError:
 HOME = Path.home()
 
 # Directories scanned for identity YAML files. Order matters for tie-breaking:
-# primary podzoneAgentTeam wins, then fissioned teams.
+# primary podzoneTeam wins, then fissioned teams.
 IDENTITY_DIRS = (
-    HOME / "workspace" / "podzoneAgentTeam" / "workspaces" / "identity",
+    HOME / "workspace" / "podzoneTeam" / "workspaces" / "identity",
     HOME / "workspace" / "trainingTeam" / "workspaces" / "identity",
     HOME / "workspace" / "roadmapTeam" / "workspaces" / "identity",
 )

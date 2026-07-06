@@ -181,7 +181,7 @@ Operator-facing CLIs under `tools/` and exposed via `install.sh` as wrappers in
 
 `usage-report.py`, `efficiency-report.py`, and `rollup-report.py` write their
 markdown into a podzone-internal default directory
-(`~/workspace/podzoneAgentTeam/team/hermes/outgoing/usage-reports/`). External
+(`~/workspace/podzoneTeam/team/hermes/outgoing/usage-reports/`). External
 adopters can redirect output with `--out-dir <path>` — filename derivation is
 unchanged.
 

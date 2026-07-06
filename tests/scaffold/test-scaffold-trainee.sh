@@ -62,7 +62,7 @@ assert "R-9 guardrails containment"       "$(grep_q 'sourceDocs' "${TARGET}/.cla
 # R-10: profile template canonical home in docs/ + seeded into the trainee dir
 assert "R-10 docs/trainee-profile-template" "$(has "${TARGET}/docs/trainee-profile-template.md")"
 
-# R-12: training output format (not podzoneAgentTeam), operator = Trainee
+# R-12: training output format (not podzoneTeam), operator = Trainee
 assert "R-12 output-format training"      "$(grep_q 'outputDocs' "${TARGET}/.claude/output-format.md")"
 assert "R-12 instructions operator Trainee" "$(grep_q 'Trainee' "${TARGET}/.claude/instructions.md")"
 

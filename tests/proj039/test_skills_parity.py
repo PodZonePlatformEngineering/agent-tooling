@@ -17,7 +17,7 @@ Two layers, mirroring the closure test:
      the brief requires, runnable in any CI.
 
   2. Real-repo layer (skipped if siblings absent): assert the live mirrors
-     (podzoneAgentTeam / trainingTeam / roadmapTeam) are byte-identical to the
+     (podzoneTeam / trainingTeam / roadmapTeam) are byte-identical to the
      agent-tooling source for every source skill. This is the pre-`consolidate-tasks`
      drift guard; it skips cleanly where the sibling repos are not checked out.
 
@@ -39,7 +39,7 @@ TEAM_LEAD_SKILLS_MANIFEST = REPO_ROOT / "scaffold" / "team-lead-skills.manifest"
 # Mirror skills dirs, relative to agent-tooling's parent. Kept in sync with the
 # default MIRRORS in sync-skills.sh.
 MIRROR_RELPATHS = (
-    "podzoneAgentTeam/.claude/skills",
+    "podzoneTeam/.claude/skills",
     "trainingTeam/.claude/skills",
     "roadmapTeam/.claude/skills",
 )

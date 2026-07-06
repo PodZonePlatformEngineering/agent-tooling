@@ -13,7 +13,7 @@ Resolve identity in this priority order:
 
 1. **Identity file** — check `claude.projectInstructions` in the workspace settings for a
    line matching `identity_file: <path>`. If found, read that YAML file from the
-   podzoneAgentTeam repo root. Use `operator`, `agent`, `scope`, `task_filter` from it.
+   podzoneTeam repo root. Use `operator`, `agent`, `scope`, `task_filter` from it.
 
 2. **READMEFIRST fallback** — if Step 1 did not resolve identity, scan
    `team/*/READMEFIRST.md` for an `## Identity` section containing a fenced YAML block.

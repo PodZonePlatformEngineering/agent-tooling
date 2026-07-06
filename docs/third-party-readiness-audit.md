@@ -19,7 +19,7 @@ podzone use and need operator counter-sign.
 Counts are matches found by:
 
 ```
-grep -rIn -E "(PROJ-[0-9]+|T-[0-9]+|CC-[0-9]+|podzoneAgentTeam|agenticflows\.co\.uk|agentsonly|qdrant\.agenticflows|ollama\.agenticflows|freyr|/Users/martincolley|hephaestus|hermes|thoth|atlas)" \
+grep -rIn -E "(PROJ-[0-9]+|T-[0-9]+|CC-[0-9]+|podzoneTeam|agenticflows\.co\.uk|agentsonly|qdrant\.agenticflows|ollama\.agenticflows|freyr|/Users/martincolley|hephaestus|hermes|thoth|atlas)" \
   --include="*.sh" --include="*.py" --include="*.md" --include="*.yaml" \
   --include="*.json" --include="*.template"
 ```
@@ -90,16 +90,16 @@ are unactionable for them.
 
 ## 3. PodZone-internal repo / path references
 
-### 3a. `podzoneAgentTeam/` hardcoded as a path
+### 3a. `podzoneTeam/` hardcoded as a path
 
 **Where:**
-- `tools/efficiency-report.py:41` — `Path.home() / "workspace" / "podzoneAgentTeam"` (output destination resolution)
+- `tools/efficiency-report.py:41` — `Path.home() / "workspace" / "podzoneTeam"` (output destination resolution)
 - `tools/rollup-report.py:40,50` — same pattern
-- `tools/usage-report.py:39` — same pattern, writes report to `~/workspace/podzoneAgentTeam/team/hermes/outgoing/...`
+- `tools/usage-report.py:39` — same pattern, writes report to `~/workspace/podzoneTeam/team/hermes/outgoing/...`
 - `tools/usage-report.py:10` — docstring example pointing at the same path
 
 **Disposition: abstract — defer to Hermes.** These three tools currently
-write into the PodZone-internal `podzoneAgentTeam` repo by hardcoded path.
+write into the PodZone-internal `podzoneTeam` repo by hardcoded path.
 For external use they should accept an `--out-dir` argument (or fall back
 to a configurable env var). Changing the default would break the existing
 `/usage-report` and rollup workflows that depend on the path; this is a
@@ -117,12 +117,12 @@ repo layout created by `scaffold.sh`."
 
 ### 3c. Cross-repo strings in `scaffold.sh:271`
 
-> "Cross-team work: raise draft in podzoneAgentTeam/briefs/{recipient}/ —
+> "Cross-team work: raise draft in podzoneTeam/briefs/{recipient}/ —
 > do not write to other agents' home repos"
 
 **Disposition: abstract — defer.** This string is written into the
 generated home repo's READMEFIRST. For external use it should reference
-the user's team-coordination repo, not `podzoneAgentTeam`. Needs a
+the user's team-coordination repo, not `podzoneTeam`. Needs a
 templating decision (env var? scaffold arg?) — surface to Hermes.
 
 ---
@@ -169,7 +169,7 @@ path as fixture input.
    would break current PodZone use until env vars are set.
 2. **Env-var rename** `PODZONE_QDRANT_APIKEY` → `QDRANT_API_KEY` (§2b) —
    needs dual-name support window + downstream callers updated.
-3. **Tools that write into `~/workspace/podzoneAgentTeam/...`** (§3a) —
+3. **Tools that write into `~/workspace/podzoneTeam/...`** (§3a) —
    add `--out-dir` arg; pick a sensible fallback.
 4. **`scaffold.sh:271` cross-team brief string** (§3c) — needs a
    templating story for "where does this team's cross-team coordination
