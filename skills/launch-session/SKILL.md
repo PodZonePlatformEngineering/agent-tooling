@@ -46,6 +46,35 @@ bursts, the idle gaps expiring the ~5-min cache and driving **83.8 M** cache-cre
 command** (Step 8) and, for headless, the **continue+escalate prompt** — pin/author/materialise/
 register are identical.
 
+### Brief sizing & model tiering (PROJ-039/T-058 — operator-approved 2026-07-06)
+
+Size and tier every headless dispatch BEFORE authoring the brief. Evidence: the
+finalise-hardening bundle (5 tasks + a 7-repo sweep in one brief) consumed two
+subscription windows across four runs, each recovery run paying a review-the-bank
+re-orientation pass; re-scoped per these rules, the follow-on bundles each closed
+in a single window. Full guidance: `agent-tooling/docs/brief-authoring.md`.
+
+1. **Cap a headless build brief at ~2–3 related tasks**, sized to plausibly finish
+   inside ONE subscription window. A mid-bundle limit-stop is not free: every
+   recovery run re-derives context before resuming. If a bundle needs a "phase 2",
+   it is two briefs.
+2. **Split mechanical work out of build briefs** — anything "apply a proven pattern
+   N times" (fleet byte-identity sync PRs, per-repo rollouts, batch renames) gets
+   its own brief dispatched with **`--model sonnet`** (or `haiku`). Proven: the
+   T-059 and T-061 fleet sweeps each ran clean on sonnet. Build/reasoning briefs
+   keep the default model. Record the tier choice in the launch registration.
+3. **Order by risk, make the tail deferrable.** Hardest/blocking task first; the
+   last step should be explicitly droppable ("if budget tightens, deliver X alone
+   with a per-task account") so a limit-stop yields a mergeable partial, not a
+   stranded bundle.
+4. **In-session subagent fan-out** (PROJ-035/T-011): for parallelisable mechanical
+   subtasks *inside* a reasoning brief, the brief SHOULD direct the agent to fan out
+   to sonnet/haiku subagents rather than splitting a separate dispatch — the
+   expensive model keeps the core reasoning.
+5. **Self-banking is mandatory prompt furniture** — every headless prompt carries
+   "commit early and often … so a limit-stop self-banks" (template below). The
+   Team Lead should never need an emergency WIP bank on a crashed session again.
+
 ### Brief-first launch variant (PROJ-039/T-043) — no pinned sid
 
 A **brief is a first-class point, not linked to a specific session** (`briefs` collection). The
@@ -97,7 +126,7 @@ either inline on the launch command (simplest, headless) or via a `settings.loca
 
 ```bash
 cd ~/workspace/{home_repo} && BRIEF_ID="{team}/{date}-{task-slug}" \
-  claude -p "Hi {Agent}. Continue with the brief. Commit and push all PRs when done. If the brief is now FULLY complete, include a line \`Brief-Status: complete\` in your final response; otherwise it stays in_progress for the next session. If anything needs operator direction you cannot resolve, raise it to {team_lead} with progress so far via your session response, and exit — do not wait."
+  claude -p "Hi {Agent}. Continue with the brief. Work {hardest/blocking task} first{; the last step (X) is deferrable — if budget tightens, deliver the rest alone with a clear per-task account}. Commit early and often so a limit-stop self-banks. Commit and push all PRs when done. If the brief is now FULLY complete, include a line \`Brief-Status: complete\` in your final response; otherwise it stays in_progress for the next session. If anything needs operator direction you cannot resolve, raise it to {team_lead} with progress so far via your session response, and exit — do not wait."
 ```
 (Serial simple-repo default — launch cwd is the primary clone on its session branch, T-045.
 A `--legacy-worktree` launch uses `~/sessions/{session-id}/{home_repo}` instead.)
@@ -674,7 +703,7 @@ commits + pushes its PRs, and exits without an operator on the line:
 
 ```bash
 cd ~/workspace/{home_repo} && claude --session-id {pinned-uuid} \
-  -p "Hi {Agent}. Continue with the brief. Commit and push all PRs when done. If anything needs operator direction you cannot resolve, raise it to {team_lead} with progress so far via your session response, and exit — do not wait."
+  -p "Hi {Agent}. Continue with the brief. Work {hardest/blocking task} first{; the last step (X) is deferrable — if budget tightens, deliver the rest alone with a clear per-task account}. Commit early and often so a limit-stop self-banks. Commit and push all PRs when done. If anything needs operator direction you cannot resolve, raise it to {team_lead} with progress so far via your session response, and exit — do not wait."
 ```
 
 **Standard continue+escalate prompt (template — the launcher fills the fields):**
@@ -692,6 +721,11 @@ cd ~/workspace/{home_repo} && claude --session-id {pinned-uuid} \
   but the raise-to-lead-**and-exit** clause is mandatory and must not be dropped.
 - **Headless ⇒ no `AskUserQuestion`-and-wait** (no operator on the line — T-041 role
   convention). The prompt instructs raise-to-lead-and-exit precisely so the agent never blocks.
+- **T-058 budget-discipline furniture is mandatory** for every headless build prompt:
+  the ordering clause (hardest first), the **deferrable-tail clause** (drop it only for a
+  genuinely single-task brief), and **"commit early and often so a limit-stop self-banks"**.
+  The `{…}` clauses are filled per brief; see "Brief sizing & model tiering" above +
+  `docs/brief-authoring.md`. Mechanical sweep briefs launch with `--model sonnet`.
 
 > ⚠️ **Finish with a clean `/exit`.** SessionEnd finalise (response + rollup + telemetry
 > push + push-then-delete + brief-result PR) hangs off the SessionEnd hook; a clean `/exit`
