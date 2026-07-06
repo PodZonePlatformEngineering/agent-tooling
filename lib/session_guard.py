@@ -48,6 +48,63 @@ LOCK_DIR = Path.home() / ".claude" / "session-locks"
 
 
 # ---------------------------------------------------------------------------
+# Home-repo resolution (PROJ-039/T-054 — the operator-clone hijack class)
+# ---------------------------------------------------------------------------
+#
+# The finalise must operate on the AGENT'S OWN HOME REPO regardless of where the
+# shell happened to end. In serial simple-repo mode an agent `cd`s freely inside
+# the primary clone — notably into a `.workspace/<subrepo>` clone it stood up for
+# the task. The SessionEnd hook receives that wandered path as stdin `cwd`. Deriving
+# the finalise target from bare `cwd` then made it mutate the WRONG clone: Athena
+# T-026 (sid 2b5156d0) ended in `.workspace/academy-admin`, `return_to_main` ran
+# against that clone, the result PR was raised from the operator's live apex clone,
+# and the real home repo stayed on its session branch with the lock held.
+#
+# `CLAUDE_PROJECT_DIR` is the load-bearing anchor: the CLI sets it to the launch /
+# project dir (the home repo) at startup and it does NOT move when the shell cd's
+# into a subdirectory (that is exactly the T-050 wiring the hook command relies on).
+# We prefer it, then fall back to stripping any `.workspace/` tail off `cwd`, and
+# only use bare `cwd` as a last resort — but NEVER a bare `.workspace/*` subrepo.
+
+_WORKSPACE_MARKER = os.sep + ".workspace"
+
+
+def strip_workspace_subrepo(path: str) -> str:
+    """Return ``path`` with any ``/.workspace``(``/…``) tail removed.
+
+    A finalise that resolves to ``…/home-x/.workspace/academy-admin`` (the shell
+    ended inside a stood-up subrepo) must operate on ``…/home-x`` — the clone that
+    OWNS the ``.workspace/``. Idempotent for a path that carries no ``.workspace``
+    segment (returns it unchanged, sans trailing slash)."""
+    path = (path or "").rstrip("/")
+    i = path.find(_WORKSPACE_MARKER + os.sep)
+    if i != -1:
+        return path[:i]
+    if path.endswith(_WORKSPACE_MARKER):
+        return path[: -len(_WORKSPACE_MARKER)]
+    return path
+
+
+def resolve_home_repo(cwd: str = "", *, env: Optional[dict] = None) -> str:
+    """Resolve the authoritative home-repo dir for a finalise (PROJ-039/T-054).
+
+    Priority:
+      1. ``$CLAUDE_PROJECT_DIR`` — the CLI's fixed launch/project anchor; survives
+         the shell cd'ing into a ``.workspace/`` subrepo.
+      2. ``cwd`` with any ``.workspace/`` tail stripped — defence-in-depth for a
+         finalise where ``CLAUDE_PROJECT_DIR`` is somehow unset.
+
+    NEVER returns a bare ``.workspace/*`` subrepo path (the hijack class). The
+    result is also ``.workspace``-stripped in case the anchor itself points inside
+    one. Pure — no I/O — so the resolution is fully unit-testable."""
+    env = env if env is not None else os.environ
+    proj = (env.get("CLAUDE_PROJECT_DIR") or "").strip()
+    if proj:
+        return strip_workspace_subrepo(proj)
+    return strip_workspace_subrepo(cwd or "")
+
+
+# ---------------------------------------------------------------------------
 # git helpers
 # ---------------------------------------------------------------------------
 
@@ -377,12 +434,24 @@ class SessionLock:
         self.acquired = True
         return {"ok": True, "reason": "acquired", "holder": self._read()}
 
-    def release(self) -> bool:
-        """Remove the lock iff we own it (matching session_id, or no sid recorded)."""
+    def release(self, *, owned_sids: Optional[list] = None) -> bool:
+        """Remove the lock iff we own it, else leave it and return ``False``.
+
+        Ownership matches when the recorded holder sid is empty, equals
+        ``self.session_id``, or is any of ``owned_sids``. The extra ids close the
+        **PROJ-039/T-054 lock-release-always-False** defect: in the brief-first flow
+        the launcher takes the lock keyed on the **brief_id** (the runtime sid does
+        not exist yet), but the finalise released with the runtime **session_id** — a
+        permanent mismatch that always reported ``False`` and left every clone locked.
+        The finalise now passes ``owned_sids=[brief_id]`` so its own brief-keyed lock
+        matches, while a genuinely foreign lock is still left untouched."""
         holder = self._read()
         if holder is None:
             return True
-        if self.session_id and holder.get("session_id") not in ("", self.session_id):
+        hsid = holder.get("session_id", "")
+        owned = {self.session_id, *(owned_sids or [])}
+        owned.discard("")
+        if hsid and owned and hsid not in owned:
             return False  # someone else's lock — leave it
         try:
             self.path.unlink()

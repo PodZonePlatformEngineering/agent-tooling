@@ -26,6 +26,9 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Unkeyed fallback name — used only when no session id can be resolved (T-048: the
+# committed session logs are sid-keyed, ``libraries-{sid8}.log``, so they ride the
+# session-result PR as per-session diagnostics rather than one ever-growing file).
 LIBRARIES_LOG = "libraries.log"
 
 
@@ -37,7 +40,35 @@ def resolve_log_dir() -> Path:
     project = os.environ.get("CLAUDE_PROJECT_DIR")
     if project:
         return Path(project) / "logs"
-    return Path.cwd() / "logs"
+    # Last resort only (both envs unset). Strip any `.workspace/` tail so a shell
+    # that ended inside a stood-up subrepo still logs to the OWNING home repo's
+    # logs/ (T-054 — inlined here because this module stays a lib-free leaf).
+    cwd = str(Path.cwd())
+    marker = os.sep + ".workspace"
+    i = cwd.find(marker + os.sep)
+    if i != -1:
+        cwd = cwd[:i]
+    elif cwd.endswith(marker):
+        cwd = cwd[: -len(marker)]
+    return Path(cwd) / "logs"
+
+
+def _sid8(session_id: str | None) -> str:
+    """The 8-char sid tag for a sid-keyed log filename, or '' if none resolvable.
+
+    Priority: the explicit ``session_id`` arg, else ``$PODZONE_SESSION_ID`` — the
+    per-session env every substrate shell hook exports after parsing its stdin json
+    (and the SessionEnd finalise sets in-process), T-048. Non-hex/short values are
+    used verbatim-truncated so synthetic test sids still key a distinct file."""
+    sid = (session_id or os.environ.get("PODZONE_SESSION_ID") or "").strip()
+    return sid[:8]
+
+
+def libraries_log_name(session_id: str | None = None) -> str:
+    """The libraries log filename for a session: ``libraries-{sid8}.log`` when a sid
+    is resolvable, else the unkeyed ``libraries.log`` (T-048)."""
+    tag = _sid8(session_id)
+    return f"libraries-{tag}.log" if tag else LIBRARIES_LOG
 
 
 def _utc_stamp() -> str:
@@ -46,18 +77,19 @@ def _utc_stamp() -> str:
 
 def log_library(component: str, message: str, *, session_id: str | None = None,
                 level: str = "INFO") -> None:
-    """Append one best-effort line to ``logs/libraries.log``.
+    """Append one best-effort line to ``logs/libraries-{sid8}.log`` (T-048).
 
     Never raises: any failure (unresolvable dir, unwritable file, encoding) is
-    swallowed so the calling lib/hook is unaffected. ``component`` identifies the
-    caller (e.g. ``"session_finalise"``); ``session_id`` is optional context.
+    swallowed so the calling lib/hook is unaffected — the never-raise contract every
+    runtime-lib call-site relies on. ``component`` identifies the caller (e.g.
+    ``"session_finalise"``); ``session_id`` keys both the filename and the line.
     """
     try:
         log_dir = resolve_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
         sid = f" session={session_id}" if session_id else ""
         line = f"{_utc_stamp()} [{level}] {component}{sid}: {message}\n"
-        with open(log_dir / LIBRARIES_LOG, "a", encoding="utf-8") as fh:
+        with open(log_dir / libraries_log_name(session_id), "a", encoding="utf-8") as fh:
             fh.write(line)
     except Exception:
         # Best-effort: observability must never break the caller (T-029 acceptance).

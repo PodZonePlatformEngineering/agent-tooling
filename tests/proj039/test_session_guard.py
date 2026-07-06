@@ -243,6 +243,73 @@ class TestSessionLock(unittest.TestCase):
             with session_guard.SessionLock("repo", "sid-b"):
                 pass
 
+    # -- T-054: lock-release-always-False regression -------------------------
+
+    def test_release_matches_brief_keyed_lock_via_owned_sids(self) -> None:
+        """The launcher takes the lock keyed on the **brief_id** (brief-first flow —
+        the runtime sid does not exist yet). The finalise, holding only the runtime
+        sid, used to release with that sid and ALWAYS report False (permanent
+        mismatch → every clone left locked). Passing ``owned_sids=[brief_id]`` now
+        matches the brief-keyed holder and releases."""
+        brief_id = "podzone/2026-07-05-finalise-hardening"
+        launcher = session_guard.SessionLock("repo", brief_id)
+        self.assertTrue(launcher.acquire()["ok"])
+        # Old behaviour: release with only the runtime sid refuses (the regression).
+        runtime = session_guard.SessionLock("repo", "runtime-uuid")
+        self.assertFalse(runtime.release())
+        self.assertTrue(runtime.path.exists(), "lock wrongly removed on a mismatch")
+        # T-054 fix: name the brief_id as an owned sid → releases True.
+        self.assertTrue(runtime.release(owned_sids=[brief_id]))
+        self.assertFalse(runtime.path.exists())
+
+    def test_release_still_refuses_a_genuinely_foreign_lock(self) -> None:
+        """owned_sids must not become a skeleton key — a lock held by an unrelated
+        sid (not in owned) is still left in place."""
+        other = session_guard.SessionLock("repo", "someone-else")
+        self.assertTrue(other.acquire()["ok"])
+        mine = session_guard.SessionLock("repo", "runtime-uuid")
+        self.assertFalse(mine.release(owned_sids=["my-brief"]))
+        self.assertTrue(other.path.exists())
+
+
+class TestResolveHomeRepo(unittest.TestCase):
+    """T-054 — the finalise must bind to the agent's own home repo, never the bare
+    wandered cwd (the operator-clone hijack: shell ended in `.workspace/academy-admin`)."""
+
+    def test_prefers_claude_project_dir(self) -> None:
+        env = {"CLAUDE_PROJECT_DIR": "/w/home-podzone-athena"}
+        # cwd wandered into a stood-up subrepo — must be ignored in favour of the anchor.
+        got = session_guard.resolve_home_repo(
+            "/w/home-podzone-athena/.workspace/academy-admin", env=env)
+        self.assertEqual(got, "/w/home-podzone-athena")
+
+    def test_strips_workspace_tail_from_cwd_when_anchor_unset(self) -> None:
+        got = session_guard.resolve_home_repo(
+            "/w/home-podzone-athena/.workspace/academy-admin", env={})
+        self.assertEqual(got, "/w/home-podzone-athena")
+
+    def test_strips_workspace_tail_from_anchor_too(self) -> None:
+        env = {"CLAUDE_PROJECT_DIR": "/w/home-podzone-athena/.workspace/sub"}
+        self.assertEqual(session_guard.resolve_home_repo("", env=env),
+                         "/w/home-podzone-athena")
+
+    def test_bare_cwd_when_no_workspace_and_no_anchor(self) -> None:
+        self.assertEqual(
+            session_guard.resolve_home_repo("/w/home-podzone-athena/", env={}),
+            "/w/home-podzone-athena")
+
+    def test_never_returns_a_workspace_subrepo(self) -> None:
+        for cwd in ("/w/home-x/.workspace/academy-admin",
+                    "/w/home-x/.workspace",
+                    "/w/home-x/.workspace/a/b/c"):
+            self.assertNotIn("/.workspace",
+                             session_guard.resolve_home_repo(cwd, env={}))
+
+    def test_strip_is_idempotent_for_a_clean_path(self) -> None:
+        self.assertEqual(
+            session_guard.strip_workspace_subrepo("/w/home-podzone-athena"),
+            "/w/home-podzone-athena")
+
 
 if __name__ == "__main__":
     unittest.main()

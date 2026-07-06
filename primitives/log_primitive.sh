@@ -35,7 +35,15 @@ log_primitive() {
     mkdir -p "${base}" 2>/dev/null
     local ts
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf '%s [INFO] %s: %s\n' "${ts}" "${component}" "${message}" >> "${base}/primitives.log"
+    # Sid-keyed committed log (PROJ-039/T-048): the session's primitive lines land in
+    # logs/primitives-{sid8}.log (which rides the session-result PR as a per-session
+    # diagnostic) when the substrate hook exported PODZONE_SESSION_ID; else the
+    # unkeyed primitives.log.
+    local logfile="primitives.log"
+    if [[ -n "${PODZONE_SESSION_ID:-}" ]]; then
+      logfile="primitives-${PODZONE_SESSION_ID:0:8}.log"
+    fi
+    printf '%s [INFO] %s: %s\n' "${ts}" "${component}" "${message}" >> "${base}/${logfile}"
   } 2>/dev/null || true
   return 0
 }

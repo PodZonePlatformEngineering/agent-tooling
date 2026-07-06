@@ -24,6 +24,31 @@ python3 "${SCRIPT_DIR}/session-end-finalise.py" --guard </dev/null || true
 
 SESSION_ID="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['session_id'])" "${STDIN}")"
 CWD="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('cwd','.'))" "${STDIN}")"
+# Sid-keyed committed logs (PROJ-039/T-048): every primitive this hook (and its
+# children) invokes logs to logs/primitives-{sid8}.log via this export.
+export PODZONE_SESSION_ID="${SESSION_ID}"
+
+# Silent-failure hardening (PROJ-039/T-052): a brief-first launch REQUIRES the resident
+# session-materialise.py to stand up the session point. If BRIEF_ID is set but that hook
+# file is missing (a botched sync — the exact Thoth T-022 failure, where the SessionStart
+# wiring pointed at a missing file and skipped silently: no session point, session_ids[]
+# never appended, finalise ran "not brief-first"), do NOT let work start against an
+# unlinked brief. session-start.sh is always resident, so it is the guard: write an
+# ok:false materialise sentinel (the orientation ritual refuses on it) and HALT loudly.
+if [[ -n "${BRIEF_ID:-}" && ! -f "${SCRIPT_DIR}/session-materialise.py" ]]; then
+  WS="${CWD}/.workspace"
+  mkdir -p "${WS}" 2>/dev/null || true
+  printf '{"ok": false, "reason": "materialise-hook-missing", "brief_id": "%s"}\n' \
+    "${BRIEF_ID}" > "${WS}/.materialise-status.json" 2>/dev/null || true
+  HALT_MSG="⛔ session-materialise.py MISSING but BRIEF_ID=${BRIEF_ID} is set — the brief-first \
+session cannot materialise. HALT: this hook set is incompletely synced \
+(session-materialise.py must be resident). Do NOT begin tasking; re-sync and re-launch."
+  echo "${HALT_MSG}" >&2
+  # stdout is what a SessionStart hook injects into the AGENT'S context (stderr only
+  # reaches the operator) — the halt must land in front of the agent, not just the log.
+  echo "${HALT_MSG}"
+  log_primitive "session-start.sh" "HALT: session-materialise.py missing for brief-first launch (BRIEF_ID=${BRIEF_ID})"
+fi
 TRANSCRIPT_PATH="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('transcript_path',''))" "${STDIN}")"
 TIMESTAMP="$(python3 -c "from datetime import datetime,timezone; print(datetime.now(timezone.utc).isoformat())")"
 REPO_NAME="$(basename "${CWD}")"
