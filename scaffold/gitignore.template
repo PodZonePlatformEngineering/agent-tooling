@@ -13,10 +13,21 @@ __pycache__/
 *.pyo
 
 # Local tool state
-# NOTE: session logs under logs/ (libraries-{sid8}.log, primitives-{sid8}.log) ARE
-# committed — they ride the session-result PR as durable per-session diagnostics
-# (PROJ-039/T-048; trainee finalise copies its session log in per R-14). So `*.log`
-# is deliberately NOT ignored here.
+# logs/*.log is WORKING STATE (PROJ-039/T-068, reverting T-062's blanket un-ignore):
+# the finalise ledger (finalise-state.log) and the unkeyed libraries.log/
+# primitives.log are written to by every session in turn, so any tracked copy
+# inevitably diverges between a session branch's fork point and origin/main by
+# the time that session's return_to_main runs -- a real git checkout/merge
+# conflict, not a hypothetical one (see sid ca95a57b, home 3ad6e62). Recovery
+# guards (T-030) read the ledger straight off the working tree, so an ignored
+# file changes nothing for them.
+#
+# The T-062 operator intent (completed session logs ride the result PR as
+# durable diagnostics) is kept by different means: the finalise force-adds
+# (`git add -f`) THIS session's own sid-keyed logs (libraries-{sid8}.log,
+# primitives-{sid8}.log) into its result commit explicitly, before
+# return_to_main runs (lib/session_guard.py stage_session_logs).
+logs/*.log
 .env
 
 # Per-home-repo scoped env block (plaintext secrets until PROJ-003) — NEVER commit.
