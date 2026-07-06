@@ -180,6 +180,106 @@ class TestReturnToMain(_GitFixture):
         self.assertEqual(session_guard.current_branch(wt), "session/x-2026-07-03-t")
 
 
+class TestReturnToMainLedgerLifecycle(_GitFixture):
+    """PROJ-039/T-068 — the REAL lifecycle regression the T-062/T-063 attempts missed.
+
+    T-063 (v1.2.1)'s own suite (``TestCommitLogTail`` below) only ever seeded a
+    tracked log file, wrote ONE tail line to it, and called ``commit_log_tail``
+    directly — it never called :func:`return_to_main` at all, so it never
+    exercised the actual failure: a *globally-shared* tracked log file (the
+    finalise ledger, or the unkeyed ``libraries.log``/``primitives.log``) is
+    written to by EVERY session, so by the time session N's ``return_to_main``
+    runs, ``origin/main`` usually already carries a *different* commit of that
+    same file (from session N-1's own tail commit, or a concurrent clone) than
+    the one session N's branch forked from. Session N's own mid-finalise writes
+    (ledger step-records, per-step log lines) are then uncommitted local
+    modifications *on top of* that already-diverged file — exactly the shape
+    ``git merge --ff-only`` refuses on with "local changes would be overwritten"
+    (reproduced by hand against real git in the T-068 investigation; this is
+    what actually happened to sid ``ca95a57b``, see home ``3ad6e62``).
+
+    This fixture reproduces that shape directly against real git repos:
+      1. clone forks a session branch off main (holding a tracked ledger file);
+      2. a SEPARATE clone (a "prior/concurrent session") commits + pushes a
+         DIFFERENT version of that same tracked path to origin/main;
+      3. back on the session branch, the ledger is written to again
+         (uncommitted) — simulating live ``finalise_ledger.record_step`` calls;
+      4. :func:`return_to_main` is asked to return the clone to a ff'd main.
+
+    Against v1.2.1 (tracked ``logs/*.log``, no return_to_main tolerance) this
+    HALTS: ``ok=False``, disposition ``noop`` (branch still the session branch,
+    ``ff_main`` failed on the diverged+dirty file) — the live ``ca95a57b``
+    failure, reproduced. The T-068 fix (ledger + live logs gitignored again,
+    plus a belt-and-braces stash-carry for any residual tracked log dirt) must
+    make this ``ok=True`` and land the clone on a clean, ff'd main — the
+    ledger's own content (this session's step records) preserved on disk for
+    the T-030 recovery guard to still read from the working tree.
+    """
+
+    def _diverge_tracked_path_on_origin(self, rel: str, body: str) -> None:
+        """A separate clone commits+pushes a DIFFERENT version of ``rel`` to
+        origin/main — standing in for a prior session's own tail commit (or a
+        concurrent clone), so this clone's ``origin/main`` fetch will disagree
+        with both this clone's branch-point AND its current dirty content."""
+        other = Path(tempfile.mkdtemp()) / "other-clone"
+        _run("git", "clone", str(self.origin), str(other))
+        for k, v in (("user.email", "t@t"), ("user.name", "T"),
+                     ("commit.gpgsign", "false")):
+            _git(other, "config", k, v)
+        p = other / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+        _git(other, "add", rel)
+        _git(other, "commit", "-m", f"other session writes {rel}")
+        _git(other, "push", "origin", "main")
+
+    def test_diverged_tracked_ledger_halts_return_to_main_pre_fix_shape(self) -> None:
+        """The bug, reproduced: a tracked, globally-shared log file that has
+        diverged on origin/main (a prior session's tail commit) PLUS this
+        session's own live mid-finalise writes on top of a stale local branch
+        deterministically breaks the ``git merge --ff-only`` in ``ff_main`` —
+        regardless of whether ``logs/*.log`` is committed at all in THIS repo;
+        this fixture always seeds it tracked (the v1.2.1 shape) to prove the
+        failure mode exists at the git level. The T-068 fix must special-case
+        this in :func:`return_to_main` (residual PURE-log dirt tolerance) since
+        the underlying git conflict is unavoidable for any tracked file that
+        several sequential/concurrent sessions all append to."""
+        rel = "logs/finalise-state.log"
+        self._seed_tracked(rel, '{"base": 1}\n')
+
+        branch = "session/hephaestus-2026-07-06-t068"
+        self._branch(branch)
+        self._commit()  # the session's own real work, unrelated to the ledger
+
+        # A prior/concurrent session's tail commit diverges origin/main's copy.
+        self._diverge_tracked_path_on_origin(
+            rel, '{"base": 1, "other-session": "complete"}\n')
+
+        # This session's own live finalise: ledger step-writes, uncommitted.
+        (self.clone / rel).write_text(
+            '{"base": 1, "sid-this-session": {"step1": "done"}}\n')
+
+        res = session_guard.return_to_main(str(self.clone))
+
+        self.assertTrue(
+            res["ok"],
+            f"return_to_main must tolerate a diverged tracked log file, not halt: {res}")
+        self.assertEqual(session_guard.current_branch(self.clone), "main")
+        self.assertFalse(session_guard.working_tree_dirty(self.clone))
+        # The ledger's own in-progress content (this session's step records) must
+        # survive on disk — T-030's recovery guard reads it from the working tree.
+        self.assertIn("sid-this-session", (self.clone / rel).read_text())
+
+    def _seed_tracked(self, rel: str, body: str) -> Path:
+        p = self.clone / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+        _git(self.clone, "add", rel)
+        _git(self.clone, "commit", "-m", "seed tracked log")
+        _git(self.clone, "push", "origin", "main")
+        return p
+
+
 class TestCommitLogTail(_GitFixture):
     """PROJ-039/T-063 — the finalise's own tail commit (the log-tail-dirt fix)."""
 
