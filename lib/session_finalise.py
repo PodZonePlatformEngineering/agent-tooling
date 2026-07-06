@@ -741,6 +741,14 @@ def commit_home_result(
         (Path(worktree) / "results").mkdir(parents=True, exist_ok=True)
         (Path(worktree) / rel_path).write_text(result_text, encoding="utf-8")
         _git(worktree, "add", rel_path)
+
+        # T-068: force-stage THIS session's own sid-keyed logs (gitignored again,
+        # see scaffold/gitignore.template) into the SAME commit, copying them from
+        # the live repo_dir into this isolated worktree — before return_to_main
+        # runs, per the brief's "completed logs still ride the result PR" acceptance.
+        from lib import session_guard as _sgd
+        _sgd.stage_session_logs(repo_dir, session_id, dest_dir=worktree)
+
         commit = _git(worktree, "commit", "-m",
                       f"chore(session-result): {work_item} ({date}) [{session_id[:8]}]")
         out = (commit.stdout + commit.stderr).lower()
@@ -910,7 +918,13 @@ def author_trainee_session_pr(
 
     try:
         # 1. Commit the live working tree to the session branch (trainee ran no git).
-        #    .workspace/ etc. are gitignored, so `-A` picks up only real work.
+        #    .workspace/ etc. are gitignored, so `-A` picks up only real work. The
+        #    session's own sid-keyed logs (R-14, PROJ-039/T-068) are ALSO gitignored
+        #    (logs/*.log) so `-A` alone would miss them — force-stage them explicitly
+        #    first (in place: repo_dir IS the commit target here, unlike the
+        #    migrated-home isolated-worktree path).
+        from lib import session_guard as _sgd
+        _sgd.stage_session_logs(repo_dir, session_id)
         _git(repo_dir, "add", "-A")
         has_staged = _git(repo_dir, "diff", "--cached", "--quiet").returncode != 0
         if has_staged:

@@ -265,9 +265,39 @@ class TestReturnToMainLedgerLifecycle(_GitFixture):
             res["ok"],
             f"return_to_main must tolerate a diverged tracked log file, not halt: {res}")
         self.assertEqual(session_guard.current_branch(self.clone), "main")
-        self.assertFalse(session_guard.working_tree_dirty(self.clone))
         # The ledger's own in-progress content (this session's step records) must
-        # survive on disk — T-030's recovery guard reads it from the working tree.
+        # survive on disk — T-030's recovery guard reads it from the working tree —
+        # even though the path is STILL TRACKED here (the legacy/unmigrated shape:
+        # a tracked file that diverged genuinely re-dirties main once the preserved
+        # bytes are written back; that residual is exactly what the real fix
+        # (logs/*.log gitignored, PROJ-039/T-068) removes entirely — proven by the
+        # sibling gitignored-path test below, which DOES assert a clean tree).
+        self.assertIn("sid-this-session", (self.clone / rel).read_text())
+
+    def test_diverged_IGNORED_log_leaves_a_fully_clean_tree(self) -> None:
+        """The T-068 fix proper: once ``logs/*.log`` is gitignored (this session's
+        ledger/live-log writes are working state, never tracked), the exact same
+        divergence shape above cannot even arise — an ignored file carries no
+        per-branch git history to diverge, so ``return_to_main`` both succeeds AND
+        leaves a fully clean tree, with the in-progress content untouched on disk."""
+        rel = "logs/finalise-state.log"
+        (self.clone / ".gitignore").write_text("logs/*.log\n")
+        _git(self.clone, "add", ".gitignore")
+        _git(self.clone, "commit", "-m", "gitignore logs")
+        _git(self.clone, "push", "origin", "main")
+
+        branch = "session/hephaestus-2026-07-06-t068b"
+        self._branch(branch)
+        self._commit()
+
+        (self.clone / "logs").mkdir(exist_ok=True)
+        (self.clone / rel).write_text('{"sid-this-session": {"step1": "done"}}\n')
+
+        res = session_guard.return_to_main(str(self.clone))
+
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(session_guard.current_branch(self.clone), "main")
+        self.assertFalse(session_guard.working_tree_dirty(self.clone))
         self.assertIn("sid-this-session", (self.clone / rel).read_text())
 
     def _seed_tracked(self, rel: str, body: str) -> Path:
@@ -280,97 +310,65 @@ class TestReturnToMainLedgerLifecycle(_GitFixture):
         return p
 
 
-class TestCommitLogTail(_GitFixture):
-    """PROJ-039/T-063 — the finalise's own tail commit (the log-tail-dirt fix)."""
+class TestStageSessionLogs(_GitFixture):
+    """PROJ-039/T-068 — completed session logs still ride the result PR, via
+    explicit force-add (``git add -f``, since ``logs/*.log`` is gitignored again)
+    rather than blanket tracking (``commit_log_tail``, T-063, now retired: with
+    the ledger + live logs gitignored there is no more post-return-to-main
+    tracked-log dirt for a last-act sweep to clean up)."""
 
-    def _seed_tracked_log(self, rel="logs/finalise-state.log", body="{}\n") -> Path:
-        p = self.clone / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(body)
-        _git(self.clone, "add", rel)
-        _git(self.clone, "commit", "-m", "seed tracked log")
-        _git(self.clone, "push", "origin", "main")
-        return p
+    SID = "abcd1234ef567890"
+    SID8 = SID[:8]
 
-    def test_pure_log_dirt_is_committed_and_pushed(self) -> None:
-        log = self._seed_tracked_log()
-        log.write_text('{"sid": {"complete": true}}\n')  # post-finalise tail write
-        res = session_guard.commit_log_tail(str(self.clone))
-        self.assertTrue(res["ok"])
-        self.assertEqual(res["disposition"], "committed-and-pushed")
-        self.assertFalse(session_guard.working_tree_dirty(self.clone))
-        # Pushed — origin/main carries the tail commit too.
-        origin_log = _git(self.clone, "show", "origin/main:logs/finalise-state.log").stdout
-        self.assertIn("complete", origin_log)
+    def _gitignore_logs(self) -> None:
+        (self.clone / ".gitignore").write_text("logs/*.log\n")
+        _git(self.clone, "add", ".gitignore")
+        _git(self.clone, "commit", "-m", "gitignore logs")
 
-    def test_new_untracked_sid_log_is_committed(self) -> None:
-        # A brand-new sid-keyed log file (untracked "?? " porcelain line), the shape
-        # T-048/T-062 actually produce for a fresh session.
+    def test_stages_matching_sid_logs_in_place(self) -> None:
+        self._gitignore_logs()
         (self.clone / "logs").mkdir(exist_ok=True)
-        (self.clone / "logs" / "libraries-abcd1234.log").write_text("line one\n")
-        res = session_guard.commit_log_tail(str(self.clone))
-        self.assertEqual(res["disposition"], "committed-and-pushed")
-        self.assertFalse(session_guard.working_tree_dirty(self.clone))
+        (self.clone / "logs" / f"libraries-{self.SID8}.log").write_text("line one\n")
+        (self.clone / "logs" / f"primitives-{self.SID8}.log").write_text("prim line\n")
+        (self.clone / "logs" / "libraries-other0000.log").write_text("not this session\n")
 
-    def test_clean_tree_is_a_noop(self) -> None:
-        res = session_guard.commit_log_tail(str(self.clone))
-        self.assertTrue(res["ok"])
-        self.assertEqual(res["disposition"], "clean")
+        staged = session_guard.stage_session_logs(str(self.clone), self.SID)
 
-    def test_non_log_dirt_is_not_swept_into_the_commit(self) -> None:
-        self._seed_tracked_log()
-        (self.clone / "README.md").write_text("real uncommitted work\n")
-        res = session_guard.commit_log_tail(str(self.clone))
-        self.assertFalse(res["ok"])
-        self.assertEqual(res["disposition"], "halt-non-log-dirt")
-        # Untouched — still dirty, nothing committed.
-        self.assertTrue(session_guard.working_tree_dirty(self.clone))
+        self.assertEqual(sorted(staged),
+                         [f"logs/libraries-{self.SID8}.log", f"logs/primitives-{self.SID8}.log"])
+        cached = _git(self.clone, "diff", "--cached", "--name-only").stdout
+        self.assertIn(f"logs/libraries-{self.SID8}.log", cached)
+        self.assertIn(f"logs/primitives-{self.SID8}.log", cached)
+        self.assertNotIn("other0000", cached)
 
-    def test_mixed_log_and_non_log_dirt_is_not_swept(self) -> None:
-        log = self._seed_tracked_log()
-        log.write_text("tail line\n")
-        (self.clone / "app.py").write_text("real work\n")
-        res = session_guard.commit_log_tail(str(self.clone))
-        self.assertEqual(res["disposition"], "halt-non-log-dirt")
-        self.assertTrue(session_guard.working_tree_dirty(self.clone))
+    def test_copies_into_a_different_dest_dir(self) -> None:
+        """The migrated-home shape: commit_home_result authors in an isolated
+        worktree, so the session's live logs must be copied across first."""
+        self._gitignore_logs()
+        (self.clone / "logs").mkdir(exist_ok=True)
+        (self.clone / "logs" / f"libraries-{self.SID8}.log").write_text("worktree-bound\n")
 
-    def test_not_on_main_is_a_noop(self) -> None:
-        self._branch("session/hephaestus-2026-07-03-t045")
-        p = self.clone / "logs" / "finalise-state.log"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text('{"dirty": true}\n')
-        res = session_guard.commit_log_tail(str(self.clone))
-        self.assertEqual(res["disposition"], "not-main")
+        dest = Path(tempfile.mkdtemp())
+        _git(dest, "init", "-q")
+        for k, v in (("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")):
+            _git(dest, "config", k, v)
+        (dest / "seed.txt").write_text("x\n")
+        _git(dest, "add", "seed.txt")
+        _git(dest, "commit", "-m", "seed")
 
-    def test_linked_worktree_skipped(self) -> None:
-        wt = Path(self._tmp.name) / "wt"
-        _git(self.clone, "worktree", "add", str(wt), "-b", "session/x-2026-07-03-t")
-        (wt / "logs").mkdir(exist_ok=True)
-        (wt / "logs" / "finalise-state.log").write_text("{}\n")
-        res = session_guard.commit_log_tail(str(wt))
-        self.assertEqual(res["disposition"], "skipped-worktree")
+        staged = session_guard.stage_session_logs(str(self.clone), self.SID, dest_dir=str(dest))
 
-    def test_back_to_back_sessions_launch_cleanly(self) -> None:
-        """The regression test named in the brief: two sessions in a row, with the
-        tail commit as the only thing between them — no manual log commit, no halt."""
-        # Session 1: does some work, its finalise tail writes to a tracked log.
-        log = self._seed_tracked_log()
-        log.write_text('{"sid-1": {"complete": true}}\n')
-        tail1 = session_guard.commit_log_tail(str(self.clone))
-        self.assertEqual(tail1["disposition"], "committed-and-pushed")
+        self.assertEqual(staged, [f"logs/libraries-{self.SID8}.log"])
+        self.assertEqual((dest / "logs" / f"libraries-{self.SID8}.log").read_text(),
+                         "worktree-bound\n")
+        cached = _git(dest, "diff", "--cached", "--name-only").stdout
+        self.assertIn(f"logs/libraries-{self.SID8}.log", cached)
 
-        # Session 2 launches: preflight must see a clean, ff'd main — never a halt.
-        pre = session_guard.preflight(str(self.clone))
-        self.assertEqual(pre["decision"], "ready")
+    def test_no_matching_logs_is_not_an_error(self) -> None:
+        self.assertEqual(session_guard.stage_session_logs(str(self.clone), self.SID), [])
 
-        # Session 2 does its own work + finalise tail.
-        log.write_text('{"sid-1": {"complete": true}, "sid-2": {"complete": true}}\n')
-        tail2 = session_guard.commit_log_tail(str(self.clone))
-        self.assertEqual(tail2["disposition"], "committed-and-pushed")
-
-        # A third launch is clean too.
-        pre2 = session_guard.preflight(str(self.clone))
-        self.assertEqual(pre2["decision"], "ready")
+    def test_no_session_id_is_not_an_error(self) -> None:
+        self.assertEqual(session_guard.stage_session_logs(str(self.clone), ""), [])
 
 
 class TestSessionLock(unittest.TestCase):

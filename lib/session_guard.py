@@ -288,11 +288,57 @@ def preflight(repo_dir: str, *, auto_recover: bool = True) -> dict:
 # Session-end guard (after PRs pushed) — return the clone to main
 # ---------------------------------------------------------------------------
 
+def _dirty_entries(repo_dir: str) -> list[tuple[str, str]]:
+    """Porcelain ``(status_code, path)`` pairs for every change, tracked or not."""
+    porcelain = _git(repo_dir, "status", "--porcelain").stdout
+    out: list[tuple[str, str]] = []
+    for line in porcelain.splitlines():
+        if not line.strip():
+            continue
+        out.append((line[:2], line[3:].strip()))
+    return out
+
+
+def _all_log_dirt(entries: list[tuple[str, str]]) -> bool:
+    """True if every dirty entry is a log path (or the benign ``.DS_Store``) —
+    the residual class :func:`return_to_main` tolerates (PROJ-039/T-068)."""
+    return bool(entries) and all(
+        p.startswith("logs/") or os.path.basename(p) == ".DS_Store" for _, p in entries
+    )
+
+
 def return_to_main(repo_dir: str, session_branch: Optional[str] = None) -> dict:
     """Session-end guard: return ``repo_dir`` to a ff'd ``main`` and delete the local
     session branch (its work is already pushed as a PR). No-op in the legacy linked
     worktree path — there the primary clone was never branched, and consolidate reaps
     the worktree. Returns ``{"ok", "disposition", "branch", "reason"}``.
+
+    **Residual pure-log dirt tolerance (PROJ-039/T-068, belt-and-braces):** with
+    ``logs/*.log`` gitignored again (the finalise ledger and live per-session logs
+    are working state, not tracked — see ``scaffold/gitignore.template``), this is
+    normally moot: an ignored, untracked file never appears in ``git status`` and so
+    never blocks the checkout/merge below. But a tracked log path can still exist
+    on an unmigrated clone, or a future regression could re-track one — and *any*
+    tracked file that every session's finalise appends to inevitably diverges
+    between a session branch's fork point and ``origin/main`` by the time this runs
+    (session N-1's own commit, or a concurrent clone's), so the plain ``ff_main``
+    merge below refuses on it even though it is pure diagnostic noise, not real
+    work (reproduced against real git for sid ``ca95a57b``, home ``3ad6e62``).
+    A plain ``git stash``/pop is NOT enough here — the tracked file's content has
+    genuinely diverged (this branch's local edit vs. ``origin/main``'s own edit to
+    the same lines), so popping a stash back onto the new ``main`` hits the
+    identical 3-way content conflict one step later (proven against real git during
+    the T-068 investigation). So instead: if every dirty path is under ``logs/``
+    (or the benign ``.DS_Store``), read those files' CURRENT bytes, discard the
+    tracked ones' local modifications (``git checkout HEAD -- <path>``, safe —
+    untracked ones are never touched by checkout/merge in the first place), run the
+    checkout/merge with a now-clean-enough tree, then write the preserved bytes
+    straight back over whatever landed on the new ``main`` — a plain filesystem
+    overwrite, no git content-merge involved, so it cannot conflict. The log
+    content survives (T-030 reads the ledger straight off the working tree); only
+    the git-level conflict is sidestepped. Non-log dirt is never touched this way:
+    that is real uncommitted work and must surface as a genuine failure, not be
+    swept.
 
     Best-effort: any failure yields ``ok=False`` but never raises — teardown must not
     be broken by a guard.
@@ -312,7 +358,23 @@ def return_to_main(repo_dir: str, session_branch: Optional[str] = None) -> dict:
                           reason="clone already on main")
             return result
 
+        entries = _dirty_entries(repo_dir)
+        preserved: dict[str, bytes] = {}
+        if _all_log_dirt(entries):
+            for code, rel in entries:
+                p_ = Path(repo_dir) / rel
+                if p_.is_file():
+                    preserved[rel] = p_.read_bytes()
+                if code.strip() and code != "??":  # tracked-modified — discard, not untracked
+                    _git(repo_dir, "checkout", "HEAD", "--", rel)
+
         ff = ff_main(repo_dir)  # checks out main + ff to origin/main
+
+        for rel, data in preserved.items():
+            p_ = Path(repo_dir) / rel
+            p_.parent.mkdir(parents=True, exist_ok=True)
+            p_.write_bytes(data)
+
         if not ff["ok"]:
             result["reason"] = ff["reason"]
             return result
@@ -338,83 +400,72 @@ def return_to_main(repo_dir: str, session_branch: Optional[str] = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Post-finalise log-tail commit (PROJ-039/T-063)
+# Completed-session log staging (PROJ-039/T-068)
 # ---------------------------------------------------------------------------
+#
+# Retires ``commit_log_tail`` (T-063, v1.2.1): with the ledger + live logs
+# gitignored again, there is no more post-return-to-main tracked-log dirt for a
+# tail commit to sweep — the class of bug it existed to paper over
+# (``return_to_main`` refusing on ledger dirt) is fixed at the source instead
+# (see :func:`return_to_main`'s residual-log-dirt tolerance above). What T-062
+# actually wanted — completed session logs riding the result PR — is served by
+# :func:`stage_session_logs` below, called explicitly by the finalise's result-
+# authoring step (BEFORE ``return_to_main`` runs), not by a last-act sweep.
 
-def commit_log_tail(repo_dir: str) -> dict:
-    """Stage + commit any dirty *pure-log* tracked files as the finalise's true
-    **last act**, so :func:`working_tree_dirty` is false when the hook exits.
+def stage_session_logs(repo_dir: str, session_id: str, *,
+                        dest_dir: Optional[str] = None) -> list[str]:
+    """Force-stage THIS session's own sid-keyed log files so they ride the
+    finalise's own result commit (the T-062 operator intent, kept without
+    blanket-tracking ``logs/*.log`` — PROJ-039/T-068).
 
-    Since T-062 tracked ``logs/*.log`` (they ride the session-result PR as durable
-    diagnostics), the finalise ledger ``complete()`` write and the trailing
-    ``libraries-{sid8}.log`` lines land in already-tracked files *after*
-    :func:`return_to_main` has reset the clone to ``main`` — leaving 2-3 modified
-    tracked files behind. The next session's :func:`preflight` HALTs on that dirt
-    (``working_tree_dirty`` blocks regardless of branch). This closes the gap by
-    having the finalise commit its own tail rather than leaving it for a human
-    (Hermes previously did this by hand — sid ``d350e898``, commit ``730fda1``).
+    Finds files under ``{repo_dir}/logs`` whose name carries the session's
+    8-char sid tag (e.g. ``libraries-{sid8}.log``, ``primitives-{sid8}.log``,
+    a trainee's ``session-{sid8}.jsonl``) and force-adds them (``git add -f`` —
+    they are gitignored) into the commit target:
 
-    Call this ONLY after every other finalise step (including the last log line)
-    has been written — anything logged after this runs re-dirties the tree.
+      * ``dest_dir`` given and different from ``repo_dir`` (the isolated
+        worktree :func:`session_finalise.commit_home_result` authors the result
+        in): each matching file is copied into ``{dest_dir}/logs/`` first, then
+        force-added there — the live session's logs never existed in that
+        worktree otherwise.
+      * ``dest_dir`` omitted or equal to ``repo_dir`` (the trainee path, which
+        commits the LIVE working tree): force-added in place.
 
-    Refuses (``halt-non-log-dirt``, no commit made) if the dirty set contains
-    anything outside ``logs/`` — that is real uncommitted work, not tail noise,
-    and must surface to the operator via the normal ``preflight`` halt rather than
-    being silently swept into a log-only commit. Best-effort: never raises. A push
-    failure leaves the commit local (the working tree is still clean, which is all
-    the next ``preflight`` requires) — non-fatal, since origin catches up next
-    time this repo's main is pushed.
+    Returns the staged ``logs/...`` relative paths (``[]`` if the session has no
+    sid-keyed logs yet — not an error, just nothing to carry). Best-effort: a
+    missing/unwritable file is skipped rather than raising — result authoring
+    must not be broken by a log-staging hiccup.
     """
-    result = {"ok": False, "disposition": "noop", "reason": ""}
+    sid8 = (session_id or "")[:8]
+    if not sid8:
+        return []
+    src_logs = Path(repo_dir) / "logs"
+    if not src_logs.is_dir():
+        return []
     try:
-        if is_linked_worktree(repo_dir):
-            result.update(ok=True, disposition="skipped-worktree",
-                          reason="legacy linked worktree — primary clone untouched")
-            return result
-        if current_branch(repo_dir) != "main":
-            result.update(ok=True, disposition="not-main",
-                          reason="clone not on main — left for preflight to surface")
-            return result
+        matches = sorted(
+            p for p in src_logs.iterdir()
+            if p.is_file() and sid8 in p.name and p.suffix in (".log", ".jsonl")
+        )
+    except Exception:
+        return []
 
-        # NOTE: use raw stdout, not `_out()` — `_out` strips the *whole* blob, which
-        # eats the leading space of a first porcelain line like " M path" (status
-        # codes that start with a space) and shifts every `line[3:]` slice by one.
-        porcelain = _git(repo_dir, "status", "--porcelain").stdout
-        paths = [line[3:].strip() for line in porcelain.splitlines() if line.strip()]
-        if not paths:
-            result.update(ok=True, disposition="clean", reason="nothing to commit")
-            return result
-
-        non_log = [p for p in paths
-                   if not p.startswith("logs/") and os.path.basename(p) != ".DS_Store"]
-        if non_log:
-            result.update(disposition="halt-non-log-dirt",
-                          reason=f"dirty tree includes non-log paths {non_log} — not "
-                                 f"auto-committed; a real preflight halt is correct here")
-            return result
-
-        add = _git(repo_dir, "add", "logs/")
-        if add.returncode != 0:
-            result["reason"] = f"git add logs/ failed: {add.stderr.strip()}"
-            return result
-        commit = _git(repo_dir, "commit", "-m", "chore(logs): post-finalise tail")
-        out = (commit.stdout + commit.stderr).lower()
-        if commit.returncode != 0 and "nothing to commit" not in out:
-            result["reason"] = f"commit failed: {commit.stderr.strip()}"
-            return result
-
-        push = _git(repo_dir, "push", "origin", "main")
-        if push.returncode != 0:
-            result.update(ok=True, disposition="committed-push-failed",
-                          reason=f"committed locally; push failed (non-fatal): "
-                                 f"{push.stderr.strip()}")
-            return result
-        result.update(ok=True, disposition="committed-and-pushed",
-                      reason="post-finalise log tail committed + pushed")
-        return result
-    except Exception as exc:  # never break teardown
-        result["reason"] = f"commit_log_tail error: {exc}"
-        return result
+    target_repo = dest_dir or repo_dir
+    copying = bool(dest_dir) and os.path.realpath(dest_dir) != os.path.realpath(repo_dir)
+    staged: list[str] = []
+    for p in matches:
+        rel = f"logs/{p.name}"
+        try:
+            if copying:
+                dst = Path(target_repo) / "logs" / p.name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                dst.write_bytes(p.read_bytes())
+            add = _git(target_repo, "add", "-f", rel)
+            if add.returncode == 0:
+                staged.append(rel)
+        except Exception:
+            continue
+    return staged
 
 
 # ---------------------------------------------------------------------------

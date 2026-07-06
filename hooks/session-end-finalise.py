@@ -653,19 +653,18 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
         finalise_ledger.complete(session_id)
     _log("finalise complete", session_id=session_id)
 
-    # 9. Post-finalise log-tail commit (PROJ-039/T-063) — the finalise's TRUE last
-    #    act. logs/*.log are tracked (T-062); the ledger complete() write above plus
-    #    every _log() line since the result/return-to-main steps land in already-
-    #    tracked files, leaving the clone dirty on main for the next preflight to
-    #    HALT on. Commit (and best-effort push) that pure-log dirt here so the next
-    #    session launches clean with no manual log commit in between. Nothing may
-    #    log after this call — it would re-dirty the tree it just cleaned.
-    if home_repo:
-        try:
-            from lib import session_guard as _sg_tail
-            _sg_tail.commit_log_tail(home_repo)
-        except Exception:
-            pass  # never break teardown — the next preflight will surface anything left
+    # NOTE (PROJ-039/T-068): there is deliberately no "step 9" post-finalise log-tail
+    # commit here anymore. T-063 (v1.2.1) added `commit_log_tail()` as that literal
+    # last act because `logs/*.log` was blanket-tracked (T-062) and every step above
+    # (including this very `complete()` write) dirtied it — but the ledger and every
+    # live per-session log are GITIGNORED again as of T-068 (they are working state;
+    # a gitignored file is still readable on disk, so the T-030 recovery guard is
+    # unaffected). Nothing written after this point can dirty a tracked path, so
+    # there is nothing left for a tail commit to sweep. The T-062 operator intent —
+    # completed session logs riding the result PR — is served earlier and
+    # explicitly instead: step 7's result-authoring path (session_finalise.
+    # commit_home_result / author_trainee_session_pr) force-adds THIS session's own
+    # sid-keyed logs into its own result commit, before return_to_main runs above.
     return 0
 
 
