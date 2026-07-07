@@ -172,7 +172,7 @@ role_settings_json() {
   # trainee: a deliberately SLIM env (PROJ-011/T-025 R-14). No PODZONE_TELEMETRY_REMOTE
   # (pushing every student workstation's logs to a fleet telemetry repo will not scale —
   # the finalise copies the session log into logs/ before the session commit instead,
-  # riding the R-3 session PR) and no PODZONEAGENTTEAM_REPO (no apex clone in trainee
+  # riding the R-3 session PR) and no PODZONETEAM_REPO (no apex clone in trainee
   # context). Only TRAINEE_RUNTIME=1 remains. SessionStart also runs the fail-soft
   # preflight (R-13) + branch hook; UserPromptSubmit the brief parser (R-1); PreToolUse
   # the context-containment read guard (R-9).
@@ -281,13 +281,13 @@ TRAINEE_SETTINGS
   # repo is hooks-only (no skills/): the SessionEnd finalise hook OWNS the session
   # result — step 6 (apex tasklist/STATUS) defers to Hermes /consolidate-tasks, and
   # step 7 authors the result + PR in the home repo's own results/ off home main
-  # (PROJ-039/T-035). PODZONEAGENTTEAM_REPO is inert for migrated repos (the hook
+  # (PROJ-039/T-035). PODZONETEAM_REPO is inert for migrated repos (the hook
   # must never touch the apex clone) but documents the non-migrated apex path.
   cat <<SETTINGS
 {
   "env": {${trainee_env}${archivist_env}
     "PODZONE_TELEMETRY_REMOTE": "https://github.com/PodZonePlatformEngineering/agent-telemetry.git",
-    "PODZONEAGENTTEAM_REPO": "${HOME}/workspace/podzoneTeam"
+    "PODZONETEAM_REPO": "${HOME}/workspace/podzoneTeam"
   },
   "hooks": {
     "SessionStart": [

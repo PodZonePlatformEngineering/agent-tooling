@@ -163,7 +163,7 @@ class TestIngestFoldedAndOrderedLast(unittest.TestCase):
         os.environ["CLAUDE_PROJECT_DIR"] = str(self.home)
         os.environ["PODZONE_LOG_DIR"] = str(base / "homelogs")
         os.environ.pop("TRAINEE_RUNTIME", None)
-        os.environ.pop("PODZONEAGENTTEAM_REPO", None)
+        os.environ.pop("PODZONETEAM_REPO", None)
 
         self._orig_stdin = sys.stdin
         self.hook = _load_hook()

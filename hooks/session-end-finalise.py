@@ -27,8 +27,8 @@ Step 6/7 ownership splits by repo kind (the load-bearing T-035 decision):
     the home-repo result + PR on a branch off home `main`, decoupled from any work
     PR (`lib.session_finalise.author_home_result`). PROJ-039/T-035.
   * **Apex model** (non-migrated) — step 6 applies to the apex tasklist/STATUS in
-    PODZONEAGENTTEAM_REPO and step 7 raises the brief-result PR there. Best-effort;
-    skipped if PODZONEAGENTTEAM_REPO is unset.
+    PODZONETEAM_REPO and step 7 raises the brief-result PR there. Best-effort;
+    skipped if PODZONETEAM_REPO is unset.
 
 Robustness (PROJ-039/T-030, CC-329 — load-bearing for T-035: the home-repo result
 now rides ENTIRELY on this hook completing):
@@ -379,7 +379,7 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
         )
         _step("cst_prune", "skipped")
 
-    agent_repo = os.environ.get("PODZONEAGENTTEAM_REPO", "")
+    agent_repo = os.environ.get("PODZONETEAM_REPO", "")
     migrated = _is_migrated(home_repo)
     trainee = _is_trainee()
 
@@ -394,7 +394,7 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
     #   * Step 7 is OWNED HERE: the hook authors the home-repo result + PR off home
     #     `main`, decoupled from any work PR (PROJ-039/T-035). This replaces the old
     #     deferral to a `/session-end` skill that does not exist in a migrated repo.
-    # The non-migrated apex path (env PODZONEAGENTTEAM_REPO) is unchanged. ``home_repo``
+    # The non-migrated apex path (env PODZONETEAM_REPO) is unchanged. ``home_repo``
     # is the resolved authoritative home repo (T-054) — every step below binds to it.
 
     # 6. session-finalise (§ 1.4): apply the 4 per-session consolidation steps
@@ -435,7 +435,7 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
             _log(f"session-finalise skipped: {exc}", session_id=session_id, level="WARN")
             _step("session_finalise", "failed")
     else:
-        _log("session-finalise skipped: PODZONEAGENTTEAM_REPO not set",
+        _log("session-finalise skipped: PODZONETEAM_REPO not set",
              session_id=session_id)
         _step("session_finalise", "skipped")
 
@@ -557,7 +557,7 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
             _log(f"brief-result PR skipped: {exc}", session_id=session_id, level="WARN")
             _step("brief_pr", "failed")
     else:
-        _log("brief-result PR skipped: PODZONEAGENTTEAM_REPO not set",
+        _log("brief-result PR skipped: PODZONETEAM_REPO not set",
              session_id=session_id)
         _step("brief_pr", "skipped")
 

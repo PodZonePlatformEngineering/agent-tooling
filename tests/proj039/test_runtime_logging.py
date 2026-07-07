@@ -246,9 +246,9 @@ class TestFinaliseSessionMocked(unittest.TestCase):
         from unittest import mock
         self._td = tempfile.TemporaryDirectory()
         self._saved = {k: os.environ.get(k) for k in
-                       ("PODZONE_LOG_DIR", "PODZONEAGENTTEAM_REPO", "PODZONE_SESSION_ID")}
+                       ("PODZONE_LOG_DIR", "PODZONETEAM_REPO", "PODZONE_SESSION_ID")}
         os.environ["PODZONE_LOG_DIR"] = str(Path(self._td.name) / "logs")
-        os.environ.pop("PODZONEAGENTTEAM_REPO", None)  # skip steps 6/7 (agent repo)
+        os.environ.pop("PODZONETEAM_REPO", None)  # skip steps 6/7 (agent repo)
         self.mock = mock
         # Ensure the lib submodules are imported so we can patch their attrs.
         import lib.session_substrate  # noqa: F401
@@ -339,7 +339,7 @@ class TestFinaliseSessionMocked(unittest.TestCase):
 
     def test_brief_pr_not_repeated_on_rerun(self):
         # brief_pr is the one non-idempotent step. Once recorded done, a re-run must
-        # skip it (no duplicate PR). PODZONEAGENTTEAM_REPO is unset so the live path
+        # skip it (no duplicate PR). PODZONETEAM_REPO is unset so the live path
         # is skipped anyway; assert the ledger guard short-circuits a prior `done`.
         import contextlib
         from lib import finalise_ledger

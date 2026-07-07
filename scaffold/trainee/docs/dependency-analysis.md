@@ -51,7 +51,7 @@ alternatively the secrets MCP / your shell env may provide them at launch.
 
 Trainee repos are deliberately **slim** (R-14): they do **not** use
 `PODZONE_TELEMETRY_REMOTE` (the session log is committed into `logs/` instead of pushed
-to a fleet telemetry repo) or `PODZONEAGENTTEAM_REPO` (no apex clone in trainee
+to a fleet telemetry repo) or `PODZONETEAM_REPO` (no apex clone in trainee
 context). So the single secret above is the whole secret surface.
 
 ### 3. Collaboration / access

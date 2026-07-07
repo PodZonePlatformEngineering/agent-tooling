@@ -14,7 +14,7 @@ synced_at}`` plus a drift flag against a canonical version (e.g. "atlas on
 v1.0.0, canonical v1.1.0").
 
 Fleet list: parsed from ``migrated-agents.md`` (PROJ-032, read from the apex
-clone — ``$PODZONEAGENTTEAM_REPO`` or ``--migrated-agents-path``), filtered to
+clone — ``$PODZONETEAM_REPO`` or ``--migrated-agents-path``), filtered to
 ``status: migrated`` rows, plus ``home-training-template`` (ships the tool set
 without being a migrated *agent*). ``--repos`` overrides the fleet list
 entirely (comma-separated ``owner/repo`` or bare ``repo`` — bare names resolve
@@ -183,7 +183,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--org", default=DEFAULT_ORG)
     ap.add_argument("--migrated-agents-path", default=None,
                     help=f"path to migrated-agents.md (default: "
-                         f"$PODZONEAGENTTEAM_REPO/{DEFAULT_MIGRATED_AGENTS_PATH})")
+                         f"$PODZONETEAM_REPO/{DEFAULT_MIGRATED_AGENTS_PATH})")
     ap.add_argument("--repos", default=None,
                     help="comma-separated repo override — skips migrated-agents.md entirely")
     ap.add_argument("--canonical-version", default=None,
@@ -194,7 +194,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     migrated_agents_path = args.migrated_agents_path
     if not migrated_agents_path and not args.repos:
         import os
-        apex = os.environ.get("PODZONEAGENTTEAM_REPO", "")
+        apex = os.environ.get("PODZONETEAM_REPO", "")
         if apex:
             migrated_agents_path = str(Path(apex) / DEFAULT_MIGRATED_AGENTS_PATH)
 
