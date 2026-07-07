@@ -133,8 +133,9 @@ DEP_DIRS="primitives"
 # copy — tools/ upstream also carries workstation/Hermes-only scripts, e.g.
 # create-brief.py, that must never land in a home repo). update-tooling.py is
 # the brief-gated self-update entry point, wired as the FIRST SessionStart hook
-# command. Kept byte-identical with sync-agent-tooling.sh.
-TOOLS_FILES="update-tooling.py"
+# command; wire-update-tooling.py is the settings.json wiring patcher/verifier
+# the sync drives (PROJ-039/T-069). Kept byte-identical with sync-agent-tooling.sh.
+TOOLS_FILES="update-tooling.py wire-update-tooling.py"
 
 role_title() {
   case "$1" in
@@ -183,7 +184,7 @@ role_settings_json() {
   },
   "hooks": {
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-preflight.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-session-branch.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py" } ] }
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-preflight.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-session-branch.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py", "timeout": 300 } ] }
     ],
     "UserPromptSubmit": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/first-prompt-brief.py" } ] }
@@ -290,7 +291,7 @@ TRAINEE_SETTINGS
   },
   "hooks": {
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "python3 \"\$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py" }, { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }${session_start_materialise}${session_start_extra} ] }
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "python3 \"\$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py", "timeout": 300 }, { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }${session_start_materialise}${session_start_extra} ] }
     ],
     "UserPromptSubmit": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" }${ups_extra} ] }

@@ -49,6 +49,61 @@ session cannot materialise. HALT: this hook set is incompletely synced \
   echo "${HALT_MSG}"
   log_primitive "session-start.sh" "HALT: session-materialise.py missing for brief-first launch (BRIEF_ID=${BRIEF_ID})"
 fi
+
+# Silent-stale hardening (PROJ-039/T-069, T-065 F1/F12) — symmetrical to the T-052
+# materialise guard above. TOOLING_UPDATE set means this launch REQUESTED a tooling
+# self-update, and update-tooling.py — wired as the FIRST SessionStart command — must
+# have already run THIS startup and written its outcome sentinel keyed to this
+# session_id. No sentinel (wiring absent / tool file missing / hook killed) or
+# ok:false (refusal) → HALT loudly. Proceeding on stale tooling while the brief's
+# audit field claims the new version was delivered is the exact silent-no-op class
+# the T-065 shakedown caught live. The short poll only covers a platform that runs
+# SessionStart commands concurrently instead of in listed order; in the sequential
+# case the sentinel is already on disk and the first probe returns.
+if [[ -n "${TOOLING_UPDATE:-}" ]]; then
+  TU_SENTINEL="${CWD}/.workspace/.tooling-update-status.json"
+  TU_STATE="missing"
+  TU_REASON=""
+  for _ in $(seq 1 "${TOOLING_GUARD_WAIT_SECS:-20}"); do
+    TU_PROBE="$(python3 - "${TU_SENTINEL}" "${SESSION_ID}" <<'PYEOF' 2>/dev/null || echo missing
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    print("missing"); raise SystemExit
+if str(d.get("session_id") or "") != sys.argv[2]:
+    print("missing")  # stale sentinel from an earlier startup / manual run
+elif d.get("ok"):
+    print("ok")
+else:
+    print("refused\t" + str(d.get("reason") or ""))
+PYEOF
+)"
+    TU_STATE="${TU_PROBE%%$'\t'*}"
+    TU_REASON="${TU_PROBE#*$'\t'}"
+    [[ "${TU_STATE}" == "missing" ]] || break
+    sleep 1
+  done
+  if [[ "${TU_STATE}" != "ok" ]]; then
+    if [[ "${TU_STATE}" == "missing" ]]; then
+      mkdir -p "${CWD}/.workspace" 2>/dev/null || true
+      python3 - "${TU_SENTINEL}" "${SESSION_ID}" "${TOOLING_UPDATE}" <<'PYEOF' 2>/dev/null || true
+import json, sys
+json.dump({"ok": False, "reason": "updater-never-ran: TOOLING_UPDATE set but no sentinel this startup",
+           "requested": sys.argv[3], "session_id": sys.argv[2]},
+          open(sys.argv[1], "w", encoding="utf-8"), indent=2, sort_keys=True)
+PYEOF
+      TU_REASON="update-tooling.py never ran this startup (wiring absent, tool file missing, or hook killed)"
+    fi
+    HALT_MSG="⛔ TOOLING_UPDATE=${TOOLING_UPDATE} was requested but the tooling self-update DID NOT COMPLETE: \
+${TU_REASON}. HALT: do NOT begin tasking on stale tooling — the brief's audit field claims this \
+version was delivered. Fix the update path (see .workspace/.tooling-update-status.json) and re-launch."
+    echo "${HALT_MSG}" >&2
+    # stdout lands in the agent's context (stderr only reaches the operator).
+    echo "${HALT_MSG}"
+    log_primitive "session-start.sh" "HALT: TOOLING_UPDATE=${TOOLING_UPDATE} set but updater state=${TU_STATE} (${TU_REASON})"
+  fi
+fi
 TRANSCRIPT_PATH="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('transcript_path',''))" "${STDIN}")"
 TIMESTAMP="$(python3 -c "from datetime import datetime,timezone; print(datetime.now(timezone.utc).isoformat())")"
 REPO_NAME="$(basename "${CWD}")"

@@ -141,7 +141,7 @@ DEP_DIRS="primitives"
 # ship to .claude/tools/ for EVERY role. Not a whole-dir DEP_DIRS copy — tools/
 # upstream also carries workstation/Hermes-only scripts (create-brief.py etc.)
 # that must never land in a home repo. Kept byte-identical with scaffold.sh.
-TOOLS_FILES="update-tooling.py"
+TOOLS_FILES="update-tooling.py wire-update-tooling.py"
 TOOLS_SRC="${AGENT_TOOLING_DIR}/tools"
 TOOLS_DST="${HOME_REPO}/.claude/tools"
 
@@ -343,6 +343,25 @@ else
   fi
 fi
 
+# --- SessionStart updater wiring in settings.json (PROJ-039/T-069, T-065 F1) ---
+# The committed .claude/settings.json can never join the byte-copy set (its env
+# block is per-repo), so the updater WIRING joins the sync set structurally
+# instead: wire-update-tooling.py patches the hooks block in place — updater as
+# the FIRST SessionStart command (trainee: last, after trainee-session-branch.py)
+# — leaving env and every other hook untouched. This closes the T-065 F1
+# chicken-and-egg: the release that ships the updater now also wires it.
+
+echo ""
+echo "==> Wiring update-tooling.py into SessionStart (.claude/settings.json)"
+
+SETTINGS_DST="${HOME_REPO}/.claude/settings.json"
+if [[ ! -f "$SETTINGS_DST" ]]; then
+  echo "  ERROR: ${SETTINGS_DST} not found — not a v2 home repo? Run scaffold.sh."
+  exit 1
+fi
+python3 "${TOOLS_SRC}/wire-update-tooling.py" --settings "$SETTINGS_DST" --role "$ROLE" \
+  | sed 's/^/  /'
+
 # --- Runtime lib closure (home-runtime-lib.manifest) ---
 # lib/ is synced module-by-module from the manifest (the runtime closure), NOT as
 # the whole agent-tooling lib/. Out-of-closure modules left over from a pre-C2-v2.1b
@@ -537,6 +556,10 @@ if [[ -f "$GITIGNORE_SRC" ]]; then
   diff -q "$GITIGNORE_SRC" "$GITIGNORE_DST" > /dev/null 2>&1 \
     || { echo "  DRIFT: .gitignore"; DRIFT=1; }
 fi
+# Updater wiring invariant (PROJ-039/T-069): structural, not byte — the updater
+# must sit at its canonical SessionStart position in the committed settings.json.
+python3 "${TOOLS_SRC}/wire-update-tooling.py" --settings "${HOME_REPO}/.claude/settings.json" --role "$ROLE" --check > /dev/null 2>&1 \
+  || { echo "  DRIFT: settings.json (update-tooling.py not wired at canonical SessionStart position)"; DRIFT=1; }
 # lib/ invariant is manifest-scoped: every manifest module byte-identical to source,
 # AND no out-of-closure module present (the slim-closure guarantee). PROJ-039 C2-v2.1b.
 if [[ -f "$LIB_MANIFEST" ]]; then
