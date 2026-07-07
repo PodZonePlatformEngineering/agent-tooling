@@ -12,7 +12,7 @@
 #
 # Canonical direction (see docs/skills-sync.md):
 #   SOURCE  : agent-tooling/skills/                  (the one editable copy)
-#   MIRRORS : podzoneAgentTeam/.claude/skills/       (apex)
+#   MIRRORS : podzoneTeam/.claude/skills/       (apex)
 #             trainingTeam/.claude/skills/           (fissioned team)
 #             roadmapTeam/.claude/skills/            (fissioned team)
 #
@@ -63,7 +63,7 @@ done
 if [[ ${#MIRRORS[@]} -eq 0 ]]; then
   PARENT="$(cd "${SCRIPT_DIR}/.." && pwd)"
   MIRRORS=(
-    "${PARENT}/podzoneAgentTeam/.claude/skills"
+    "${PARENT}/podzoneTeam/.claude/skills"
     "${PARENT}/trainingTeam/.claude/skills"
     "${PARENT}/roadmapTeam/.claude/skills"
   )

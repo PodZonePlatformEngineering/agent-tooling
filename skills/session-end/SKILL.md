@@ -49,7 +49,7 @@ Read `home_repo` from the identity YAML.
 
 **Coexistence selector (PROJ-039/T-011 C2, T-005).** If `home_repo` matches
 `home-*` (e.g. `home-podzone-hephaestus`), this agent has **migrated** — use the
-**§ 2-migrated** flow below. Otherwise (`home_repo` ∈ {`podzoneAgentTeam`,
+**§ 2-migrated** flow below. Otherwise (`home_repo` ∈ {`podzoneTeam`,
 `trainingTeam`, `roadmapTeam`}) use the legacy **§ 2-legacy** flow. Non-migrated
 agents are unaffected by C2.
 
@@ -91,7 +91,7 @@ General rule: `home_repo` value → `PodZonePlatformEngineering/{home_repo}`.
 
 | `home_repo` | PR target |
 |---|---|
-| `podzoneAgentTeam` | `PodZonePlatformEngineering/podzoneAgentTeam` |
+| `podzoneTeam` | `PodZonePlatformEngineering/podzoneTeam` |
 | `trainingTeam` | `PodZonePlatformEngineering/trainingTeam` |
 | `roadmapTeam` | `PodZonePlatformEngineering/roadmapTeam` |
 
@@ -127,8 +127,8 @@ Add the PR reference to `## PRs Raised` in the outbox:
 - Cross-team handoff from a fissioned agent: draft goes to
   `team/{recipient}/incoming/drafts/` in your own fissioned repo. If the
   recipient is on a different team (apex or sibling), write the draft into the
-  plain podzoneAgentTeam clone at
-  `~/workspace/podzoneAgentTeam/team/{recipient}/incoming/drafts/{date}-{slug}.md`.
+  plain podzoneTeam clone at
+  `~/workspace/podzoneTeam/team/{recipient}/incoming/drafts/{date}-{slug}.md`.
   Hermes picks these up via the fissioned-team draft scan during
   `/consolidate-tasks`.
 

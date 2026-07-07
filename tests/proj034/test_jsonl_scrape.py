@@ -108,7 +108,7 @@ class TestScrape(unittest.TestCase):
     # T8: cwd derivation when no entry has .cwd
     def test_cwd_derived_from_jsonl_parent(self) -> None:
         with tempfile.TemporaryDirectory() as td:
-            parent = Path(td) / "-Users-martincolley-workspace-podzoneAgentTeam"
+            parent = Path(td) / "-Users-martincolley-workspace-podzoneTeam"
             parent.mkdir()
             f = parent / "abc.jsonl"
             f.write_text(
@@ -122,8 +122,8 @@ class TestScrape(unittest.TestCase):
                 }) + "\n"
             )
             p = jsonl_scrape.scrape(f)
-            self.assertEqual(p["cwd"], "/Users/martincolley/workspace/podzoneAgentTeam")
-            self.assertEqual(p["workspace"], "podzoneAgentTeam")
+            self.assertEqual(p["cwd"], "/Users/martincolley/workspace/podzoneTeam")
+            self.assertEqual(p["workspace"], "podzoneTeam")
 
     def test_file_not_found(self) -> None:
         with self.assertRaises(FileNotFoundError):

@@ -286,7 +286,7 @@ TRAINEE_SETTINGS
 {
   "env": {${trainee_env}${archivist_env}
     "PODZONE_TELEMETRY_REMOTE": "https://github.com/PodZonePlatformEngineering/agent-telemetry.git",
-    "PODZONEAGENTTEAM_REPO": "${HOME}/workspace/podzoneAgentTeam"
+    "PODZONEAGENTTEAM_REPO": "${HOME}/workspace/podzoneTeam"
   },
   "hooks": {
     "SessionStart": [
@@ -670,7 +670,7 @@ cat > "${TARGET_DIR}/.claude/instructions.md" <<INSTRUCTIONS
 Role: ${ROLE_TITLE} — FILL IN one-line summary of primary responsibility
 Team: ${TEAM}; operator: Martin (system-owner)
 Task source: context/brief.md (pulled from Qdrant work_items at session start)
-Cross-team work: raise draft in podzoneAgentTeam/briefs/{recipient}/ — do not write to other agents' home repos
+Cross-team work: raise draft in podzoneTeam/briefs/{recipient}/ — do not write to other agents' home repos
 Results: write to results/session-{date}-{slug}-{sid}.md; hook pushes and raises PR
 Memory: read memory/MEMORY.md; update memory/ when learning something durable
 Headless (PROJ-039/T-041): if the brief needs operator direction you cannot resolve, raise it to your team lead with progress so far via the session response and exit — never block, never AskUserQuestion-and-wait (no operator is on the line)

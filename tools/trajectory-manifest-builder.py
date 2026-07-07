@@ -2,7 +2,7 @@
 """trajectory-manifest-builder.py — emit trajectory-manifest.yaml for a design.
 
 PROJ-038/T-002 — operator-side input to the decay-detector. Auto-generates
-the manifest by scanning four sources (Claude Code JSONLs, podzoneAgentTeam
+the manifest by scanning four sources (Claude Code JSONLs, podzoneTeam
 outbox + incoming, cloud Qdrant `sessions`) for artefacts mentioning the
 project ID.
 
@@ -14,8 +14,8 @@ back to `READMEFIRST.md` for projects with no spec.md. Override with
 Example:
 
     tools/trajectory-manifest-builder.py \\
-        --project-dir ~/workspace/podzoneAgentTeam/planning/projects/PROJ-003-gitopsapi-product \\
-        --team-root  ~/workspace/podzoneAgentTeam \\
+        --project-dir ~/workspace/podzoneTeam/planning/projects/PROJ-003-gitopsapi-product \\
+        --team-root  ~/workspace/podzoneTeam \\
         --include outbox --include incoming --dry-run
 
 See team/hephaestus/incoming/2026-05-27-trajectory-manifest-builder.md for
@@ -67,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project-dir", required=True, type=Path,
                    help="Design project directory (e.g. .../PROJ-003-gitopsapi-product/).")
     p.add_argument("--team-root", type=Path, default=None,
-                   help="podzoneAgentTeam root for outbox/incoming scans. "
+                   help="podzoneTeam root for outbox/incoming scans. "
                         "Auto-detected if --project-dir is under a planning/projects/ tree.")
     p.add_argument("--output", type=Path, default=None,
                    help="Manifest output path (default: "

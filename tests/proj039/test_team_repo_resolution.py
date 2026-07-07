@@ -35,7 +35,7 @@ class TestTeamFromHomeRepo(unittest.TestCase):
 
     def test_non_home_names_return_none(self) -> None:
         self.assertIsNone(team_repo.team_from_home_repo("trainingTeam"))
-        self.assertIsNone(team_repo.team_from_home_repo("podzoneAgentTeam"))
+        self.assertIsNone(team_repo.team_from_home_repo("podzoneTeam"))
         self.assertIsNone(team_repo.team_from_home_repo(""))
 
 
@@ -86,9 +86,9 @@ class TestLegacyAndApex(unittest.TestCase):
         self.assertEqual(res["mode"], "local")
 
     def test_apex_hermes_full_mode(self) -> None:
-        ident = {"home_repo": "podzoneAgentTeam", "role_class": "agenticflows/roles/team-lead/"}
+        ident = {"home_repo": "podzoneTeam", "role_class": "agenticflows/roles/team-lead/"}
         res = team_repo.resolve_team_repo(ident, workspace_root=WS)
-        self.assertEqual(res["team_repo"], "podzoneAgentTeam")
+        self.assertEqual(res["team_repo"], "podzoneTeam")
         self.assertEqual(res["mode"], "apex")
         self.assertFalse(res["separate_from_home"])
 

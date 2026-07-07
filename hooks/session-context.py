@@ -98,7 +98,7 @@ def _resolve_from_workspace_settings(cwd: str) -> tuple[str, str, str]:
             m = re.search(r"identity_file:\s*(\S+)", instructions)
             if not m:
                 continue
-            # Paths are relative to workspace parent (e.g. "podzoneAgentTeam/workspaces/identity/...")
+            # Paths are relative to workspace parent (e.g. "podzoneTeam/workspaces/identity/...")
             rel = m.group(1)
             identity_path = Path(cwd).parent / rel
             if not identity_path.exists():

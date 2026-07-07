@@ -38,7 +38,7 @@ from lib.sessions_reader import scroll_all_sessions  # noqa: E402
 DEFAULT_OUTPUT_DIR = (
     Path.home()
     / "workspace"
-    / "podzoneAgentTeam"
+    / "podzoneTeam"
     / "team"
     / "hermes"
     / "outgoing"

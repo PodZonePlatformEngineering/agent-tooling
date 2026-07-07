@@ -34,7 +34,7 @@ SESSIONS_COLLECTION = "sessions"
 SCROLL_LIMIT = 256
 
 DEFAULT_OUTPUT_DIR = (
-    Path.home() / "workspace" / "podzoneAgentTeam" / "team" / "hermes" / "outgoing" / "usage-reports"
+    Path.home() / "workspace" / "podzoneTeam" / "team" / "hermes" / "outgoing" / "usage-reports"
 )
 
 SPARK_CHARS = "▁▂▃▄▅▆▇█"

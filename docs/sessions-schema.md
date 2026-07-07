@@ -32,7 +32,7 @@ documented migration.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `workspace` | string | yes | basename of `cwd` (e.g. `podzoneAgentTeam`) |
+| `workspace` | string | yes | basename of `cwd` (e.g. `podzoneTeam`) |
 | `agent` | string \| null | optional | derived by `lib/session_metadata.resolve()`; may be `null` if no identity file matches |
 | `first_message_ts` | ISO 8601 \| null | yes | min `.timestamp` across all JSONL entries; `null` only for an empty file |
 | `last_message_ts` | ISO 8601 \| null | yes | max `.timestamp`; same null rule |

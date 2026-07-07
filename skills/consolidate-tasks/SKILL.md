@@ -8,9 +8,9 @@ This skill is for **Team Leads only** — Hermes (apex) or a fissioned team's ow
 At skill start, read the operator's identity YAML (same resolution chain as session-start).
 Check `home_repo` and `role_class`:
 
-- If `home_repo == podzoneAgentTeam` (Hermes): run the **full mode** described below —
+- If `home_repo == podzoneTeam` (Hermes): run the **full mode** described below —
   cross-team scan including fissioned repo Step 1b. All steps apply.
-- If `home_repo != podzoneAgentTeam` AND `role_class` contains `team-lead`:
+- If `home_repo != podzoneTeam` AND `role_class` contains `team-lead`:
   run **local mode** — see the Local Mode section after Step 1b.
 - If `role_class` does NOT contain `team-lead` and the operator is not the system-owner:
   refuse with: "consolidate-tasks is for Team Leads only. Raise a task proposal via
@@ -19,7 +19,7 @@ Check `home_repo` and `role_class`:
 Run at the start of a Hermes session (after reviewing incoming) or when agents have
 completed sessions since the last consolidation.
 
-## Step 0 — Sessions registry and podzoneAgentTeam PR review
+## Step 0 — Sessions registry and podzoneTeam PR review
 
 Read `planning/sessions/active.md`.
 
@@ -30,28 +30,28 @@ For each session with status `in-flight`:
 - If a concluded outbox file exists: update status to `concluded` in `active.md`
 - If no outbox file and session launched more than 2 days ago: flag to Martin as lost session
 
-### 0b — podzoneAgentTeam session PR review
+### 0b — podzoneTeam session PR review
 
-For each session with status `concluded`, find the podzoneAgentTeam session PR:
+For each session with status `concluded`, find the podzoneTeam session PR:
 ```bash
-gh pr list --repo PodZonePlatformEngineering/podzoneAgentTeam \
+gh pr list --repo PodZonePlatformEngineering/podzoneTeam \
   --head session/{agent}-{YYYY-MM-DD}-{task-slug} --json number,state,title,files
 ```
 
 For each open session PR:
 
 **Apex-clone-on-main guard (PROJ-039/T-031) — assert BEFORE the push.** A migrated session
-that took podzoneAgentTeam as a write-target should have branched a worktree under
-`~/sessions/{sid}/podzoneAgentTeam`, never the shared primary clone. If the primary clone was
+that took podzoneTeam as a write-target should have branched a worktree under
+`~/sessions/{sid}/podzoneTeam`, never the shared primary clone. If the primary clone was
 branched by mistake (the C2b defect, #102), `push origin main` below would push the wrong ref
 or fail. Refuse to push unless the apex clone is on `main`:
 ```bash
-APEX_BRANCH=$(git -C ~/workspace/podzoneAgentTeam rev-parse --abbrev-ref HEAD)
+APEX_BRANCH=$(git -C ~/workspace/podzoneTeam rev-parse --abbrev-ref HEAD)
 if [ "$APEX_BRANCH" != "main" ]; then
-  echo "ABORT: ~/workspace/podzoneAgentTeam is on '$APEX_BRANCH', expected 'main'." >&2
+  echo "ABORT: ~/workspace/podzoneTeam is on '$APEX_BRANCH', expected 'main'." >&2
   echo "A session branch was checked out in the primary clone (should be a worktree under" >&2
-  echo "~/sessions/{sid}/podzoneAgentTeam). Restore before consolidating:" >&2
-  echo "  git -C ~/workspace/podzoneAgentTeam checkout main" >&2
+  echo "~/sessions/{sid}/podzoneTeam). Restore before consolidating:" >&2
+  echo "  git -C ~/workspace/podzoneTeam checkout main" >&2
   exit 1
 fi
 ```
@@ -59,7 +59,7 @@ fi
 **Push before diff — prevents Hermes unpushed commits appearing as agent changes:**
 ```bash
 # Push any unpushed Hermes commits so gh pr diff uses the correct merge-base
-git -C ~/workspace/podzoneAgentTeam push origin main 2>/dev/null || true
+git -C ~/workspace/podzoneTeam push origin main 2>/dev/null || true
 ```
 
 **Structural check — diff must only touch permitted paths:**
@@ -79,7 +79,7 @@ gh pr diff {number} --name-only
 
 **Outcome A** — checks pass: merge the PR:
 ```bash
-gh pr merge {number} --merge --repo PodZonePlatformEngineering/podzoneAgentTeam
+gh pr merge {number} --merge --repo PodZonePlatformEngineering/podzoneTeam
 ```
 Mark session `concluded-merged` in `active.md`.
 
@@ -120,7 +120,7 @@ Scan all agent outboxes for session status files:
 ls team/*/outgoing/session-*.md 2>/dev/null
 ```
 
-This covers all current podzoneAgentTeam agents (Hermes, Hephaestus, Atlas, Thoth) plus
+This covers all current podzoneTeam agents (Hermes, Hephaestus, Atlas, Thoth) plus
 any fissioned-team stub agents (Clio, Alex, Norma, Eben) whose stubs land here.
 
 ### Step 1a — Migrated home-repo scan (PROJ-039/T-011 C2, T-007)
@@ -164,8 +164,8 @@ ls {local_path}/team/*/outgoing/session-*.md 2>/dev/null
 ```
 
 **Stub deduplication rule:** Some fissioned-team agents (e.g. Clio) also write a stub
-file to `podzoneAgentTeam/team/{agent}/outgoing/` for visibility. If a stub exists in
-podzoneAgentTeam for the same agent/date/slug as a full file found in the fissioned repo,
+file to `podzoneTeam/team/{agent}/outgoing/` for visibility. If a stub exists in
+podzoneTeam for the same agent/date/slug as a full file found in the fissioned repo,
 prefer the full file and skip the stub. Mark the stub as superseded in the Step 6 report.
 
 If a fissioned team's local path does not exist or is unreachable, flag it in the
@@ -173,7 +173,7 @@ Step 6 report and continue.
 
 ## Local Mode (fissioned Team Lead)
 
-Activated when `home_repo != podzoneAgentTeam` and `role_class` contains `team-lead`.
+Activated when `home_repo != podzoneTeam` and `role_class` contains `team-lead`.
 The fissioned Team Lead consolidates their own team without depending on Hermes.
 
 ### Resolve the TEAM REPO first — `home_repo` may NOT be the team repo (PROJ-039/T-038)
@@ -204,22 +204,22 @@ migrated lead is a DIFFERENT checkout from `home_repo`):
 
 | Full mode step | Local mode behaviour |
 |---|---|
-| Step 0 — sessions registry + podzoneAgentTeam PR review | **Skip** — fissioned session PRs are in `{team_repo}` (handled in Step 0b equivalent below) |
-| Step 1 — podzoneAgentTeam outbox scan | **Skip** — not applicable |
+| Step 0 — sessions registry + podzoneTeam PR review | **Skip** — fissioned session PRs are in `{team_repo}` (handled in Step 0b equivalent below) |
+| Step 1 — podzoneTeam outbox scan | **Skip** — not applicable |
 | Step 1b — fissioned repo scan | **Run for `{team_repo}` only**: `ls {team_repo}/team/*/outgoing/session-*.md 2>/dev/null` (plus the migrated-home-repo `results/` scan of Step 1a for any migrated team members) |
 | Step 2 — read and parse | Same as full mode |
 | Step 2b — PR review | Look up session PRs in `{github_repo}` (e.g. `PodZonePlatformEngineering/trainingTeam`) |
 | Step 2c — drafts reconciliation | Scan `{team_repo}/team/*/incoming/drafts/*.md` only |
-| Step 3 — apply to tasklist | Update `{team_repo}/planning/team-tasklist.md`, not podzoneAgentTeam's and not the home repo's |
+| Step 3 — apply to tasklist | Update `{team_repo}/planning/team-tasklist.md`, not podzoneTeam's and not the home repo's |
 | Step 4 — update STATUS.md | Update `{team_repo}/planning/STATUS.md` |
 | Step 5 — mark outbox files | Write `<!-- consolidated YYYY-MM-DD -->` in `{team_repo}` outbox files |
 | Step 6 — report | Same format with header `[LOCAL MODE — {TeamName}]` |
 
 **Optional upward-sync step (after Step 5):**
 If cross-team tasks or apex programme changes surfaced during consolidation (e.g. a task
-that affects podzoneAgentTeam agents, a blocker requiring Martin, or a new decision),
-write a draft to the plain podzoneAgentTeam clone:
-`~/workspace/podzoneAgentTeam/team/hermes/incoming/drafts/{date}-{team}-sync.md`
+that affects podzoneTeam agents, a blocker requiring Martin, or a new decision),
+write a draft to the plain podzoneTeam clone:
+`~/workspace/podzoneTeam/team/hermes/incoming/drafts/{date}-{team}-sync.md`
 
 Include only meaningful upward content — do not write a sync draft if there is nothing
 new for the apex.
@@ -258,14 +258,14 @@ When the outbox being parsed belongs to a fissioned team agent (i.e. the file ca
 a fissioned repo path in Step 1b), the downstream steps differ from the standard flow:
 
 - **Step 3:** Update `{fissioned_team_path}/planning/team-tasklist.md`, NOT
-  podzoneAgentTeam's `planning/team-tasklist.md`.
+  podzoneTeam's `planning/team-tasklist.md`.
   - If the fissioned team has no `planning/team-tasklist.md`, list all tasks in the
     Step 6 report and flag to Hermes. Do not create the file.
-- **Step 4:** Do NOT write fissioned team task details into podzoneAgentTeam `STATUS.md`.
+- **Step 4:** Do NOT write fissioned team task details into podzoneTeam `STATUS.md`.
   Add one summary line per team only:
   `{TeamName}: N tasks consolidated — see {team}/planning/team-tasklist.md`
 - **Step 5:** Write `<!-- consolidated YYYY-MM-DD -->` into the outbox file in the
-  fissioned repo (not in podzoneAgentTeam).
+  fissioned repo (not in podzoneTeam).
 
 ## Step 2b — Structural PR Review
 
@@ -277,7 +277,7 @@ gh pr view {repo}#{number} --json state,title,headRefName,commits,statusCheckRol
 
 **Fissioned team session PRs:** When checking the session PR (not task-repo PRs) for a
 fissioned team agent, look it up in the repo from the Step 1b config table
-(e.g. `PodZonePlatformEngineering/trainingTeam`), not `podzoneAgentTeam`.
+(e.g. `PodZonePlatformEngineering/trainingTeam`), not `podzoneTeam`.
 
 **Check 1 — PR exists and is open** (state == `OPEN`):
 - If `MERGED`: already done — note as complete, skip further checks
@@ -417,7 +417,7 @@ was renamed; either way the item is no longer actionable).
 so misfires are visible. Surface every strip in the Step 8 report with the
 artefact age (e.g. "merged 41 d ago"). Silence after the protocol is stable.
 
-**Apex-only:** This step runs in full mode (Hermes consolidating podzoneAgentTeam).
+**Apex-only:** This step runs in full mode (Hermes consolidating podzoneTeam).
 Fissioned teams typically have no `### Martin` block in their own STATUS.md — if
 the block is absent in local mode, skip this step silently.
 

@@ -182,8 +182,8 @@ brief-first is the same launch without `-p`.) **Verify (Step 9)** by simulating 
 > search below IS that resolved `<team>Team`.
 
 Read the agent's identity YAML. Search in this order:
-1. `podzoneAgentTeam/workspaces/identity/{agent}.identity.yaml`
-2. `podzoneAgentTeam/workspaces/identity/martin-{agent}-*.identity.yaml`
+1. `podzoneTeam/workspaces/identity/{agent}.identity.yaml`
+2. `podzoneTeam/workspaces/identity/martin-{agent}-*.identity.yaml`
 3. `{fissioned_team}/workspaces/identity/{agent}.identity.yaml` (if a fissioned team repo
    is present in the workspace and the agent belongs to it)
 
@@ -199,7 +199,7 @@ default to all repos in the identity file).
 **Mode determination:**
 - If `home_repo` matches `home-*` (e.g. `home-podzone-hephaestus`) → **migrated home-repo mode**
   (PROJ-039/T-011 C2, T-006) — see the migrated note in Step 2 and the migrated subsections below.
-- Else if `home_repo == podzoneAgentTeam` → **standard mode**
+- Else if `home_repo == podzoneTeam` → **standard mode**
 - Else (`trainingTeam` / `roadmapTeam`) → **fissioned team mode**
 
 The migrated set is authoritative in
@@ -275,11 +275,11 @@ Before creating any worktrees, confirm a commission brief for this session exist
 (e.g. when the brief is on an unmerged Team Lead branch).
 
 **Home repo for the check:**
-- Standard mode: `podzoneAgentTeam`
+- Standard mode: `podzoneTeam`
 - Fissioned mode: the agent's `home_repo`
 - **Migrated home-repo mode (T-006):** the agent's `home_repo` (`home-<team>-<agent>`).
   The Team Lead routes the brief by committing it to a **`team-lead`** branch on the home
-  repo and raising a PR to the home repo's `main` (not `podzoneAgentTeam/team/{agent}/incoming/`).
+  repo and raising a PR to the home repo's `main` (not `podzoneTeam/team/{agent}/incoming/`).
   The pre-flight check confirms the brief is merged to the home repo's `origin/main` before
   launch; the SessionStart materialise hook then materialises `.workspace/` from Qdrant
   `session_substrate` (the committed file is the human-/PR-visible record).
@@ -287,7 +287,7 @@ Before creating any worktrees, confirm a commission brief for this session exist
 
   > ✅ **Resolved (operator-DECIDED 2026-06-17, PROJ-039/T-011 C2-v2.1):** the canonical
   > committed brief path for a migrated agent is **`team-lead/briefs/{date}-{task-slug}.md`
-  > on the agent home repo** (not `podzoneAgentTeam/team/{agent}/incoming/`). The Team Lead
+  > on the agent home repo** (not `podzoneTeam/team/{agent}/incoming/`). The Team Lead
   > PRs the brief there; the migrated-mode pre-flight check below and template §11 are
   > aligned to this path. (`session_substrate` in Qdrant is the runtime source the
   > materialise hook reads; the committed file is the human-/PR-visible record.)
@@ -349,8 +349,8 @@ Branch naming is unchanged: `session/{agent}-{YYYY-MM-DD}-{task-slug}` for the h
 repo, `{agent}/{YYYY-MM-DD}-{task-slug}` for task repos (append `-2`, `-3` on a same-slug
 retry). preflight already fast-forwarded `main`, so the branch starts from current origin —
 the per-worktree fast-forward dance of Step 3a is gone (one fetch+ff per clone, inside
-preflight). The launch cwd is `~/workspace/{home_repo}` (Step 8). **podzoneAgentTeam as a
-write-target:** branch the **primary** `~/workspace/podzoneAgentTeam` on a `session/…`
+preflight). The launch cwd is `~/workspace/{home_repo}` (Step 8). **podzoneTeam as a
+write-target:** branch the **primary** `~/workspace/podzoneTeam` on a `session/…`
 branch via the same guard+lock — the T-031 "never branch the apex primary clone" rule is
 now the *normal* path, so its end-guard returns it to main at finalise (read-only apex use
 still references the plain clone, unbranched).
@@ -400,11 +400,11 @@ git -C ~/workspace/{repo} merge --ff-only origin/main
 - `.DS_Store`-only dirt does not block `checkout main`; any other uncommitted change in
   the local clone should be surfaced before proceeding.
 
-### Standard mode (home_repo == podzoneAgentTeam)
+### Standard mode (home_repo == podzoneTeam)
 
 #### Task repo worktrees
 
-For each required task repo (excluding podzoneAgentTeam itself):
+For each required task repo (excluding podzoneTeam itself):
 
 ```bash
 git -C ~/workspace/{repo-path} worktree add \
@@ -415,27 +415,27 @@ git -C ~/workspace/{repo-path} worktree add \
 Branch naming: `{agent}/{YYYY-MM-DD}-{task-slug}` — session-scoped, collision-free.
 If a branch with that name already exists (retry same task): append `-2`, `-3`, etc.
 
-#### podzoneAgentTeam PAT worktree
+#### podzoneTeam PAT worktree
 
-Always create a podzoneAgentTeam worktree — agents write their outbox and memory files
+Always create a podzoneTeam worktree — agents write their outbox and memory files
 here on a session branch, then raise a PR to main at session end.
 
 Branch naming: `session/{agent}-{YYYY-MM-DD}-{task-slug}`
 
 ```bash
-git -C ~/workspace/podzoneAgentTeam worktree add \
-  ~/sessions/{session-id}/podzoneAgentTeam \
+git -C ~/workspace/podzoneTeam worktree add \
+  ~/sessions/{session-id}/podzoneTeam \
   -b session/{agent}-{YYYY-MM-DD}-{task-slug}
 ```
 
-### Fissioned team mode (home_repo != podzoneAgentTeam)
+### Fissioned team mode (home_repo != podzoneTeam)
 
-Fissioned agents do **not** get a podzoneAgentTeam session branch. Their PAT branch
+Fissioned agents do **not** get a podzoneTeam session branch. Their PAT branch
 lives in their own home repo.
 
 #### Fissioned task repo worktrees
 
-For each repo in the identity `repos` list **except** podzoneAgentTeam:
+For each repo in the identity `repos` list **except** podzoneTeam:
 
 ```bash
 git -C ~/workspace/{repo-name} worktree add \
@@ -451,13 +451,13 @@ git -C ~/workspace/{home_repo} worktree add \
   -b session/{agent}-{YYYY-MM-DD}-{task-slug}
 ```
 
-#### podzoneAgentTeam — plain clone reference (no worktree)
+#### podzoneTeam — plain clone reference (no worktree)
 
-If podzoneAgentTeam is listed in the agent's repos (for read-only skills/ops doc access),
+If podzoneTeam is listed in the agent's repos (for read-only skills/ops doc access),
 reference it as a plain folder — do not create a worktree or session branch:
 
 ```
-podzoneAgentTeam path: ~/workspace/podzoneAgentTeam  (plain clone, read-only)
+podzoneTeam path: ~/workspace/podzoneTeam  (plain clone, read-only)
 ```
 
 ### Migrated home-repo mode — Legacy worktree option (`--legacy-worktree` only, PROJ-039/T-045)
@@ -477,7 +477,7 @@ git -C ~/workspace/{home_repo} worktree add \
 ```
 
 For each task repo in the identity `repos` list (excluding the home repo and excluding
-podzoneAgentTeam) create a task worktree:
+podzoneTeam) create a task worktree:
 
 ```bash
 git -C ~/workspace/{repo-name} worktree add \
@@ -485,46 +485,46 @@ git -C ~/workspace/{repo-name} worktree add \
   -b {agent}/{YYYY-MM-DD}-{task-slug}
 ```
 
-If podzoneAgentTeam is in scope, decide **read-only vs. write-target** for this session:
+If podzoneTeam is in scope, decide **read-only vs. write-target** for this session:
 
 - **Read-only** (the common case — skills/ops-doc/identity access only): reference the
   plain clone — no worktree, no session branch:
 
   ```
-  podzoneAgentTeam path: ~/workspace/podzoneAgentTeam  (plain clone, read-only)
+  podzoneTeam path: ~/workspace/podzoneTeam  (plain clone, read-only)
   ```
 
-- **Write-target** (the session must commit apex planning artefacts to podzoneAgentTeam —
+- **Write-target** (the session must commit apex planning artefacts to podzoneTeam —
   e.g. registry flips in `planning/projects/PROJ-032-agent-home-repos/migrated-agents.md`,
-  reconciliation reports, or an apex outbox): create a **proper podzoneAgentTeam worktree**
+  reconciliation reports, or an apex outbox): create a **proper podzoneTeam worktree**
   under the session directory on a `session/…` branch. **NEVER** branch the shared primary
-  clone `~/workspace/podzoneAgentTeam` — doing so leaves the apex clone off `main` and trips
+  clone `~/workspace/podzoneTeam` — doing so leaves the apex clone off `main` and trips
   the next Hermes consolidation push (the PROJ-039/T-031 / C2b defect: a `session/…` branch
   was checked out in the primary clone and PR'd from there, #102).
 
   ```bash
-  git -C ~/workspace/podzoneAgentTeam worktree add \
-    ~/sessions/{session-id}/podzoneAgentTeam \
+  git -C ~/workspace/podzoneTeam worktree add \
+    ~/sessions/{session-id}/podzoneTeam \
     -b session/{agent}-{YYYY-MM-DD}-{task-slug}
   ```
 
-  The session writes apex artefacts in `~/sessions/{session-id}/podzoneAgentTeam` and PRs
-  from that branch to podzoneAgentTeam `main`. `git worktree add` does not move the primary
+  The session writes apex artefacts in `~/sessions/{session-id}/podzoneTeam` and PRs
+  from that branch to podzoneTeam `main`. `git worktree add` does not move the primary
   clone's HEAD, so the apex clone stays on `main`.
 
 #### Apex-clone-on-main guard (migrated write-target)
 
-Whenever a migrated session takes podzoneAgentTeam as a write-target, assert the shared
+Whenever a migrated session takes podzoneTeam as a write-target, assert the shared
 primary clone is on `main` **before** creating the worktree and **after** it (and again at
 consolidation). This catches an accidental primary-clone branching before it propagates:
 
 ```bash
-APEX_BRANCH=$(git -C ~/workspace/podzoneAgentTeam rev-parse --abbrev-ref HEAD)
+APEX_BRANCH=$(git -C ~/workspace/podzoneTeam rev-parse --abbrev-ref HEAD)
 if [ "$APEX_BRANCH" != "main" ]; then
-  echo "ABORT: ~/workspace/podzoneAgentTeam is on '$APEX_BRANCH', expected 'main'." >&2
+  echo "ABORT: ~/workspace/podzoneTeam is on '$APEX_BRANCH', expected 'main'." >&2
   echo "The apex clone must stay on main; session work belongs in a worktree under" >&2
-  echo "~/sessions/{session-id}/podzoneAgentTeam. Restore with:" >&2
-  echo "  git -C ~/workspace/podzoneAgentTeam checkout main" >&2
+  echo "~/sessions/{session-id}/podzoneTeam. Restore with:" >&2
+  echo "  git -C ~/workspace/podzoneTeam checkout main" >&2
   exit 1
 fi
 ```
@@ -596,7 +596,7 @@ Re-check Qdrant reachability / API key / Ollama embed and re-run Step 5.
 
 ### Standard / fissioned mode — generate session workspace file
 
-**Standard mode:** Copy from `podzoneAgentTeam/workspaces/{workspace}.code-workspace`.
+**Standard mode:** Copy from `podzoneTeam/workspaces/{workspace}.code-workspace`.
 
 **Fissioned team mode:** Copy from `{home_repo_path}/workspaces/{workspace}.code-workspace`
 (e.g. `~/workspace/trainingTeam/workspaces/athena.code-workspace`).
@@ -605,15 +605,15 @@ Write to: `~/sessions/{session-id}/session.code-workspace`
 
 Rewrite all `path` entries to point to session-local worktree paths:
 - `gitopsapi` → `~/sessions/{session-id}/gitopsapi`
-- `podzoneAgentTeam` → `~/sessions/{session-id}/podzoneAgentTeam` (standard mode)
-- `podzoneAgentTeam` → `~/workspace/podzoneAgentTeam` (fissioned mode — plain clone path)
+- `podzoneTeam` → `~/sessions/{session-id}/podzoneTeam` (standard mode)
+- `podzoneTeam` → `~/workspace/podzoneTeam` (fissioned mode — plain clone path)
 - `trainingTeam` → `~/sessions/{session-id}/trainingTeam`
 - etc.
 
 Rewrite `identity_file:` in `claude.projectInstructions` to resolve against the
 session-local worktree path of the home repo:
-- Standard: `podzoneAgentTeam/workspaces/identity/{agent}.identity.yaml`
-  → `~/sessions/{session-id}/podzoneAgentTeam/workspaces/identity/{agent}.identity.yaml`
+- Standard: `podzoneTeam/workspaces/identity/{agent}.identity.yaml`
+  → `~/sessions/{session-id}/podzoneTeam/workspaces/identity/{agent}.identity.yaml`
 - Fissioned: `{home_repo}/workspaces/identity/{agent}.identity.yaml`
   → `~/sessions/{session-id}/{home_repo}/workspaces/identity/{agent}.identity.yaml`
 
@@ -640,7 +640,7 @@ carry is `BRIEF_ID` (brief-first) — or pass it inline on the launch command (s
 
 ### Standard mode
 
-Append a row to the **main clone** of `podzoneAgentTeam/planning/sessions/active.md`
+Append a row to the **main clone** of `podzoneTeam/planning/sessions/active.md`
 (not the session worktree — this file is Team Lead-managed on main):
 
 ```markdown
@@ -656,7 +656,7 @@ Append a row to the **main clone** of `podzoneAgentTeam/planning/sessions/active
    | {session-id} | {agent} | {task-slug} | {YYYY-MM-DD} | in-flight | ~/sessions/{session-id} | session/{agent}-{YYYY-MM-DD}-{task-slug} |
    ```
 
-2. Also append a one-line summary to `~/workspace/podzoneAgentTeam/planning/sessions/active.md`
+2. Also append a one-line summary to `~/workspace/podzoneTeam/planning/sessions/active.md`
    for apex visibility (status column = `fissioned — see {home_repo}`):
 
    ```markdown
@@ -665,7 +665,7 @@ Append a row to the **main clone** of `podzoneAgentTeam/planning/sessions/active
 
 ### Migrated home-repo mode
 
-Append a row to the **main clone** of `podzoneAgentTeam/planning/sessions/active.md` (apex
+Append a row to the **main clone** of `podzoneTeam/planning/sessions/active.md` (apex
 registry — Team Lead-managed on main). Record the pinned UUID so the session is recoverable
 for a manual finalise:
 
@@ -761,16 +761,16 @@ This is a dry run; the real launch in Step 8 re-materialises at SessionStart.
 ```
 Session launched: atlas-2026-04-06-shared-artifact-store
 
-  Mode:             standard (home_repo: podzoneAgentTeam)
+  Mode:             standard (home_repo: podzoneTeam)
   Workspace:        ~/sessions/atlas-2026-04-06-shared-artifact-store/session.code-workspace
   Task branch:      atlas/2026-04-06-shared-artifact-store
-  PAT branch:       session/atlas-2026-04-06-shared-artifact-store  (podzoneAgentTeam)
-  Worktrees:        agentsonly-infra, agentsonly-apps, podzoneAgentTeam
-  Registered:       planning/sessions/active.md (podzoneAgentTeam)
+  PAT branch:       session/atlas-2026-04-06-shared-artifact-store  (podzoneTeam)
+  Worktrees:        agentsonly-infra, agentsonly-apps, podzoneTeam
+  Registered:       planning/sessions/active.md (podzoneTeam)
 
 Switch to the new VS Code window to run the agent session.
 At session end, the agent commits team/atlas/ changes, pushes the PAT branch, and raises
-a PR to podzoneAgentTeam main. Hermes reviews and merges during /consolidate-tasks.
+a PR to podzoneTeam main. Hermes reviews and merges during /consolidate-tasks.
 ```
 
 ### Fissioned team mode
@@ -782,9 +782,9 @@ Session launched: athena-2026-05-01-curriculum-content
   Task branch:      athena/2026-05-01-curriculum-content  (prompt-engineering-training)
   PAT branch:       session/athena-2026-05-01-curriculum-content  (trainingTeam)
   Worktrees:        prompt-engineering-training, trainingTeam
-  podzoneAgentTeam: ~/workspace/podzoneAgentTeam  (plain clone, read-only)
+  podzoneTeam: ~/workspace/podzoneTeam  (plain clone, read-only)
   Registered:       trainingTeam/planning/sessions/active.md
-                    podzoneAgentTeam/planning/sessions/active.md (apex summary line)
+                    podzoneTeam/planning/sessions/active.md (apex summary line)
 
 Switch to the new VS Code window to run the agent session.
 At session end, the agent commits team/athena/ changes, pushes the PAT branch, and raises
@@ -801,11 +801,11 @@ Session prepared: hephaestus-2026-06-25-proj039-t028
   Brief point:      session_substrate `session` point keyed to the pinned id — read-back ok
                     (from team-lead/briefs/2026-06-25-proj039-t028.md)
   PAT branch:       session/hephaestus-2026-06-25-proj039-t028  (home-podzone-hephaestus)
-  Worktrees:        home-podzone-hephaestus (launch cwd), agent-tooling, podzoneAgentTeam
+  Worktrees:        home-podzone-hephaestus (launch cwd), agent-tooling, podzoneTeam
   Materialise hook: wired locally (settings.local.json + hook copy + git exclude)
                     [or "resident — no-op" once C4 lands]
   SessionEnd:       resident (session-end-finalise.py, C2-v2.1c)
-  Registered:       planning/sessions/active.md (podzoneAgentTeam, apex)
+  Registered:       planning/sessions/active.md (podzoneTeam, apex)
   Mode:             headless (autonomous build — default; T-040)
   Verify:           materialise OK {'brief': 1, 'tasks': 50}
 
@@ -841,4 +841,4 @@ git -C ~/workspace/{home_repo} worktree remove ~/sessions/{session-id}/{home_rep
 rmdir ~/sessions/{session-id}   # only if empty
 ```
 
-(For standard mode the PAT worktree is `~/sessions/{session-id}/podzoneAgentTeam`.)
+(For standard mode the PAT worktree is `~/sessions/{session-id}/podzoneTeam`.)

@@ -49,7 +49,7 @@ def _scope_patterns(home: Optional[str] = None) -> list[str]:
         "!/.gitignore",
         f"!{pfx}-sessions-*/",            # launch-session worktrees (all agents)
         f"!{pfx}-workspace-home-*/",      # resident migrated home repos
-        f"!{pfx}-workspace-podzoneAgentTeam/",
+        f"!{pfx}-workspace-podzoneTeam/",
         f"!{pfx}-workspace-trainingTeam/",
         f"!{pfx}-workspace-roadmapTeam/",
         f"!{pfx}-workspace-agent-tooling/",

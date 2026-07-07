@@ -3,7 +3,7 @@
 tooling-drift-report.py — fleet-wide agent-tooling version + drift visibility
 (PROJ-039/T-057, Sharpening 4).
 
-Apex (podzoneAgentTeam) is read-only to agents: the *catalog* Hermes maintains
+Apex (podzoneTeam) is read-only to agents: the *catalog* Hermes maintains
 there is derived and hand-applied by Hermes, never agent-written. This tool is
 the derivation — it reads each fleet home repo's SHIPPED
 ``.claude/tooling-manifest.json`` (PROJ-039/T-055 manifest v2, written by

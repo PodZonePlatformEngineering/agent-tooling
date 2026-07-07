@@ -6,7 +6,7 @@
 # Collection: agent-tooling-test (768-dim cosine)
 #
 # Point IDs are deterministic UUIDs derived from friendly names (md5 hash),
-# matching the pattern used in podzoneAgentTeam hooks. Friendly names are
+# matching the pattern used in podzoneTeam hooks. Friendly names are
 # stored in payload.name.
 #   test-wf-001 → 878e3ac7-5b7e-0ae8-eee7-221a885595d1
 #   test-wf-002 → 9bf66cfd-5318-ccd8-0998-e431e3e9d5d4
