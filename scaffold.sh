@@ -133,8 +133,9 @@ DEP_DIRS="primitives"
 # copy — tools/ upstream also carries workstation/Hermes-only scripts, e.g.
 # create-brief.py, that must never land in a home repo). update-tooling.py is
 # the brief-gated self-update entry point, wired as the FIRST SessionStart hook
-# command. Kept byte-identical with sync-agent-tooling.sh.
-TOOLS_FILES="update-tooling.py"
+# command; wire-update-tooling.py is the settings.json wiring patcher/verifier
+# the sync drives (PROJ-039/T-069). Kept byte-identical with sync-agent-tooling.sh.
+TOOLS_FILES="update-tooling.py wire-update-tooling.py"
 
 role_title() {
   case "$1" in
@@ -171,7 +172,7 @@ role_settings_json() {
   # trainee: a deliberately SLIM env (PROJ-011/T-025 R-14). No PODZONE_TELEMETRY_REMOTE
   # (pushing every student workstation's logs to a fleet telemetry repo will not scale —
   # the finalise copies the session log into logs/ before the session commit instead,
-  # riding the R-3 session PR) and no PODZONEAGENTTEAM_REPO (no apex clone in trainee
+  # riding the R-3 session PR) and no PODZONETEAM_REPO (no apex clone in trainee
   # context). Only TRAINEE_RUNTIME=1 remains. SessionStart also runs the fail-soft
   # preflight (R-13) + branch hook; UserPromptSubmit the brief parser (R-1); PreToolUse
   # the context-containment read guard (R-9).
@@ -183,7 +184,7 @@ role_settings_json() {
   },
   "hooks": {
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-preflight.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-session-branch.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py" } ] }
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-preflight.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-session-branch.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py", "timeout": 300 } ] }
     ],
     "UserPromptSubmit": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/first-prompt-brief.py" } ] }
@@ -280,17 +281,17 @@ TRAINEE_SETTINGS
   # repo is hooks-only (no skills/): the SessionEnd finalise hook OWNS the session
   # result — step 6 (apex tasklist/STATUS) defers to Hermes /consolidate-tasks, and
   # step 7 authors the result + PR in the home repo's own results/ off home main
-  # (PROJ-039/T-035). PODZONEAGENTTEAM_REPO is inert for migrated repos (the hook
+  # (PROJ-039/T-035). PODZONETEAM_REPO is inert for migrated repos (the hook
   # must never touch the apex clone) but documents the non-migrated apex path.
   cat <<SETTINGS
 {
   "env": {${trainee_env}${archivist_env}
     "PODZONE_TELEMETRY_REMOTE": "https://github.com/PodZonePlatformEngineering/agent-telemetry.git",
-    "PODZONEAGENTTEAM_REPO": "${HOME}/workspace/podzoneTeam"
+    "PODZONETEAM_REPO": "${HOME}/workspace/podzoneTeam"
   },
   "hooks": {
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "python3 \"\$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py" }, { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }${session_start_materialise}${session_start_extra} ] }
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "python3 \"\$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py", "timeout": 300 }, { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }${session_start_materialise}${session_start_extra} ] }
     ],
     "UserPromptSubmit": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" }${ups_extra} ] }

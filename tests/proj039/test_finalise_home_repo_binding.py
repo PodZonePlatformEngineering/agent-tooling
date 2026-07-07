@@ -17,7 +17,7 @@ shell cwd deliberately inside ``.workspace/academy-admin``:
   * the ``.workspace/academy-admin`` subrepo is left **entirely untouched**;
   * the one-session lock is released True (regression: it used to report False);
   * the result-authoring step targets the HOME repo — and NOT the apex
-    ``PODZONEAGENTTEAM_REPO`` clone, even though that env is set (team-lead
+    ``PODZONETEAM_REPO`` clone, even though that env is set (team-lead
     home_repo≠team_repo case: the migrated path wins).
 """
 
@@ -143,7 +143,7 @@ class TestFinaliseHomeRepoBinding(unittest.TestCase):
         os.environ["CLAUDE_PROJECT_DIR"] = str(self.home)
         os.environ["PODZONE_LOG_DIR"] = str(base / "homelogs")
         # Apex env set on purpose — the migrated path must still win (team-lead case).
-        os.environ["PODZONEAGENTTEAM_REPO"] = str(base / "apex-must-not-be-touched")
+        os.environ["PODZONETEAM_REPO"] = str(base / "apex-must-not-be-touched")
         os.environ.pop("TRAINEE_RUNTIME", None)
 
         self._orig_stdin = sys.stdin
@@ -187,7 +187,7 @@ class TestFinaliseHomeRepoBinding(unittest.TestCase):
         # Result authoring targeted the HOME repo, never the apex clone.
         self.assertEqual(self.author_calls, [str(self.home)])
         self.assertEqual(self.apex_calls, [],
-                         "the migrated home path must not touch PODZONEAGENTTEAM_REPO")
+                         "the migrated home path must not touch PODZONETEAM_REPO")
 
         # Lock released True (regression: used to be False) — the lock file is gone.
         lock_path = session_guard._lock_path(str(self.home))

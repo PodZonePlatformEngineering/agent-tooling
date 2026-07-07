@@ -34,10 +34,25 @@ Flow:
      home repo — this both applies the update AND re-proves the byte-identity
      invariant; a sync failure (byte-identity FAIL or script error) is a
      refusal, not a partial apply.
-  6. if the sync produced a diff, commit it on the CURRENT branch (the session
-     branch when run at session start) — this rides the session/result PR to
-     `main` exactly like any other in-session commit (PROJ-039/T-060).
-  7. delete the ``.workspace/agent-tooling`` clone.
+  6. one-time untracking migration (PROJ-039/T-069, T-065 F6): any file the
+     freshly-synced ``.gitignore`` now covers but git still tracks (the T-068
+     log files in every pre-1.3.2 clone) is ``git rm --cached``-ed so the
+     divergence class it names (return_to_main conflicts on shared live logs)
+     ends here rather than lying latent. Idempotent — a clean repo is a no-op.
+  7. if the sync (or the untracking) produced a diff, commit it on the CURRENT
+     branch (the session branch when run at session start) — this rides the
+     session/result PR to `main` exactly like any other in-session commit
+     (PROJ-039/T-060).
+  8. delete the ``.workspace/agent-tooling`` clone.
+
+Outcome sentinel (PROJ-039/T-069, T-065 F1/F12): whenever ``TOOLING_UPDATE``
+is set, the run's outcome — success OR refusal — is written to
+``.workspace/.tooling-update-status.json``, keyed to the startup's
+``session_id`` (read from the SessionStart hook stdin JSON; empty on a manual
+run). session-start.sh guards on it: env set but no ok:true sentinel for THIS
+session id → HALT loudly. That kills the silent-no-op class the T-065
+shakedown caught live (env set + updater unwired = stale tooling while the
+brief's audit field claims the new version was delivered).
 
 All refusals are loud (printed to both stdout — so the agent sees it in the
 SessionStart context — and stderr) but the process always exits 0: a
@@ -47,11 +62,13 @@ session-materialise.py's HALT).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 DEFAULT_REMOTE = "https://github.com/PodZonePlatformEngineering/agent-tooling.git"
@@ -133,6 +150,21 @@ def detect_role(home_repo: str) -> str:
     )
 
 
+def untrack_newly_ignored(home_repo: str) -> list[str]:
+    """One-time untracking migration (PROJ-039/T-069, T-065 F6): a sync can
+    deliver a ``.gitignore`` rule but git keeps already-tracked files tracked,
+    so every pre-T-068 clone carries the tracked-live-log divergence latently
+    (Athena's manual fix, home-training-athena ``ef628be``, is the reference).
+    ``git rm --cached`` every tracked file the CURRENT ignore rules cover; the
+    staged deletions ride the same update commit. Returns the untracked paths
+    (empty on a clean repo — idempotent)."""
+    cp = _git(home_repo, "ls-files", "--cached", "--ignored", "--exclude-standard", check=False)
+    files = [line for line in (cp.stdout or "").splitlines() if line.strip()]
+    if files:
+        _git(home_repo, "rm", "--cached", "--quiet", "--", *files)
+    return files
+
+
 def run_update(home_repo: str, role: str, requested: str, *, remote: str = DEFAULT_REMOTE) -> dict:
     """Execute the self-update flow (§ module docstring). Returns a result dict
     on success; raises UpdateRefusal on any refusal condition."""
@@ -171,17 +203,21 @@ def run_update(home_repo: str, role: str, requested: str, *, remote: str = DEFAU
         shutil.rmtree(clone_dir, ignore_errors=True)
         raise UpdateRefusal(f"sync-failed (byte-identity FAIL or sync error):\n{sync_output}")
 
+    untracked = untrack_newly_ignored(home_repo)
+
     changed = working_tree_dirty(home_repo)
     if changed:
         _git(home_repo, "add", "-A")
-        _git(home_repo, "commit", "-m",
-             f"chore(update-tooling): sync agent-tooling to {tag} (role={role})")
+        msg = f"chore(update-tooling): sync agent-tooling to {tag} (role={role})"
+        if untracked:
+            msg += f"\n\nuntracked newly-ignored files (T-069/F6 migration): {', '.join(untracked)}"
+        _git(home_repo, "commit", "-m", msg)
 
     shutil.rmtree(clone_dir, ignore_errors=True)
 
     commit = _git(home_repo, "rev-parse", "HEAD", check=False).stdout.strip()
     return {"ok": True, "tag": tag, "role": role, "changed": changed, "commit": commit,
-            "sync_output": sync_output}
+            "untracked": untracked, "sync_output": sync_output}
 
 
 def _resolve_home_repo() -> str:
@@ -192,23 +228,64 @@ def _resolve_home_repo() -> str:
     return cp.stdout.strip() or os.getcwd()
 
 
+def _read_session_id_from_stdin() -> str:
+    """The SessionStart hook stdin JSON carries the session_id the sentinel is
+    keyed to. A manual (terminal) run has no hook payload — return "" so the
+    guard never mistakes a pre-launch manual run for this startup's run."""
+    try:
+        if sys.stdin.isatty():
+            return ""
+        raw = sys.stdin.read()
+        if not raw.strip():
+            return ""
+        return str(json.loads(raw).get("session_id", "") or "")
+    except Exception:
+        return ""
+
+
+def write_sentinel(home_repo: str, payload: dict) -> None:
+    """Best-effort outcome sentinel at .workspace/.tooling-update-status.json
+    (.workspace/ is gitignored — never rides a commit). session-start.sh's
+    T-069 guard reads it; the orientation ritual refuses on ok:false."""
+    try:
+        ws = Path(home_repo) / ".workspace"
+        ws.mkdir(parents=True, exist_ok=True)
+        payload = dict(payload)
+        payload.setdefault("written_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+        (ws / ".tooling-update-status.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except Exception as exc:  # sentinel failure must never break startup
+        print(f"update-tooling: sentinel write failed: {exc}", file=sys.stderr)
+
+
 def main() -> int:
     requested = os.environ.get("TOOLING_UPDATE", "").strip()
     if not requested:
-        return 0  # no-op — the default for every ordinary launch
+        return 0  # no-op — the default for every ordinary launch (no sentinel)
 
     home_repo = _resolve_home_repo()
     remote = os.environ.get("AGENT_TOOLING_REMOTE", "").strip() or DEFAULT_REMOTE
+    session_id = _read_session_id_from_stdin()
 
     try:
         role = os.environ.get("TOOLING_UPDATE_ROLE", "").strip() or detect_role(home_repo)
         result = run_update(home_repo, role, requested, remote=remote)
     except UpdateRefusal as exc:
+        write_sentinel(home_repo, {
+            "ok": False, "reason": str(exc), "requested": requested,
+            "session_id": session_id,
+        })
         msg = f"⛔ update-tooling REFUSED ({home_repo}): {exc}"
         print(msg, file=sys.stderr)
         print(msg)
         return 0  # a SessionStart hook must never break startup
 
+    write_sentinel(home_repo, {
+        "ok": True, "requested": requested, "tag": result["tag"],
+        "role": result["role"], "changed": result["changed"],
+        "commit": result["commit"], "untracked": result["untracked"],
+        "session_id": session_id,
+    })
     msg = (
         f"✅ update-tooling: {home_repo} synced to {result['tag']} "
         f"(role={result['role']}) — "

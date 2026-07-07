@@ -54,7 +54,18 @@ class _GitFixture(unittest.TestCase):
         for k, v in (("user.email", "t@t"), ("user.name", "T"), ("commit.gpgsign", "false")):
             _git(work, "config", k, v)
         (work / "VERSION").write_text("1.0.0\n")
-        (work / "sync-agent-tooling.sh").write_text("#!/usr/bin/env bash\nexit 0\n")
+        # Stub sync: emulate the one side effect the T-069 untracking migration
+        # keys off — the real sync delivers a .gitignore that newly covers the
+        # T-068 log files (everything else the real sync does is byte-copy,
+        # proven live; re-testing it here would just re-test sync itself).
+        (work / "sync-agent-tooling.sh").write_text(
+            "#!/usr/bin/env bash\n"
+            "while [[ $# -gt 0 ]]; do\n"
+            "  case \"$1\" in --home-repo) HR=\"$2\"; shift 2 ;; *) shift ;; esac\n"
+            "done\n"
+            "printf 'logs/*.log\\n.workspace/\\n' > \"${HR}/.gitignore\"\n"
+            "exit 0\n"
+        )
         _git(work, "add", "-A")
         _git(work, "commit", "-m", "v1.0.0")
         _git(work, "tag", "v1.0.0")
@@ -158,6 +169,92 @@ class TestRunUpdateRefusals(_GitFixture):
         )
         self.assertEqual(cp.returncode, 0)
         self.assertEqual(cp.stdout.strip(), "")
+        # no sentinel either — an ordinary launch leaves no trace
+        self.assertFalse(
+            (Path.cwd() / ".workspace" / ".tooling-update-status.json").exists())
+
+
+class TestUntrackingMigration(_GitFixture):
+    """PROJ-039/T-069 F6: the sync delivers the ignore rule; the updater must
+    perform the one-time untracking of files it newly covers — idempotently."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        logs = self.home_repo / "logs"
+        logs.mkdir()
+        (logs / "primitives.log").write_text("tracked live log\n")
+        _git(self.home_repo, "add", "-A")
+        _git(self.home_repo, "commit", "-m", "tracked log (pre-T-068 state)")
+
+    def test_untracks_newly_ignored_and_commits(self) -> None:
+        result = update_tooling.run_update(
+            str(self.home_repo), "coder", "v1.1.0", remote=str(self.remote))
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["changed"])
+        self.assertEqual(result["untracked"], ["logs/primitives.log"])
+        tracked = _git(self.home_repo, "ls-files").stdout.splitlines()
+        self.assertNotIn("logs/primitives.log", tracked)
+        self.assertIn(".gitignore", tracked)
+        # the file itself stays on disk (working state), only the index entry goes
+        self.assertTrue((self.home_repo / "logs" / "primitives.log").exists())
+        # the migration rides the update commit — tree ends clean
+        self.assertFalse(update_tooling.working_tree_dirty(str(self.home_repo)))
+
+    def test_second_run_is_a_noop(self) -> None:
+        update_tooling.run_update(
+            str(self.home_repo), "coder", "v1.1.0", remote=str(self.remote))
+        head = _git(self.home_repo, "rev-parse", "HEAD").stdout.strip()
+        result = update_tooling.run_update(
+            str(self.home_repo), "coder", "v1.1.0", remote=str(self.remote))
+        self.assertFalse(result["changed"])
+        self.assertEqual(result["untracked"], [])
+        self.assertEqual(head, _git(self.home_repo, "rev-parse", "HEAD").stdout.strip())
+
+
+class TestOutcomeSentinel(_GitFixture):
+    """PROJ-039/T-069 F1/F12: TOOLING_UPDATE set ⇒ a sid-keyed outcome sentinel
+    lands at .workspace/.tooling-update-status.json on success AND refusal —
+    session-start.sh's guard halts the launch without it."""
+
+    SENTINEL = ".workspace/.tooling-update-status.json"
+
+    def _main(self, *, dirty: bool = False, sid: str = "sid-1234"):
+        import os
+        if dirty:
+            (self.home_repo / "scratch.txt").write_text("x")
+        env = dict(os.environ)
+        env.update({
+            "TOOLING_UPDATE": "v1.1.0",
+            "AGENT_TOOLING_REMOTE": str(self.remote),
+            "CLAUDE_PROJECT_DIR": str(self.home_repo),
+        })
+        return subprocess.run(
+            [sys.executable, str(REPO_ROOT / "tools" / "update-tooling.py")],
+            env=env, input=f'{{"session_id": "{sid}", "cwd": "{self.home_repo}"}}',
+            capture_output=True, text=True,
+        )
+
+    def _sentinel(self) -> dict:
+        import json
+        return json.loads((self.home_repo / self.SENTINEL).read_text())
+
+    def test_success_writes_ok_sentinel_keyed_to_sid(self) -> None:
+        cp = self._main()
+        self.assertEqual(cp.returncode, 0)
+        self.assertIn("✅ update-tooling", cp.stdout)
+        s = self._sentinel()
+        self.assertTrue(s["ok"])
+        self.assertEqual(s["session_id"], "sid-1234")
+        self.assertEqual(s["tag"], "v1.1.0")
+
+    def test_refusal_writes_ok_false_sentinel_with_reason(self) -> None:
+        cp = self._main(dirty=True)
+        self.assertEqual(cp.returncode, 0)  # SessionStart hooks never break startup
+        self.assertIn("REFUSED", cp.stdout)
+        s = self._sentinel()
+        self.assertFalse(s["ok"])
+        self.assertIn("dirty-tree", s["reason"])
+        self.assertEqual(s["session_id"], "sid-1234")
 
 
 if __name__ == "__main__":

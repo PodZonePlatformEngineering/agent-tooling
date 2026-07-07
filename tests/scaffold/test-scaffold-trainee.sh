@@ -73,7 +73,7 @@ assert "R-13 trainee-preflight.py"        "$(has "${TARGET}/.claude/hooks/traine
 
 # R-14: env slimmed — no telemetry remote / apex repo in settings
 assert "R-14 no PODZONE_TELEMETRY_REMOTE" "$(grep_absent 'PODZONE_TELEMETRY_REMOTE' "${TARGET}/.claude/settings.json")"
-assert "R-14 no PODZONEAGENTTEAM_REPO"    "$(grep_absent 'PODZONEAGENTTEAM_REPO' "${TARGET}/.claude/settings.json")"
+assert "R-14 no PODZONETEAM_REPO"    "$(grep_absent 'PODZONETEAM_REPO' "${TARGET}/.claude/settings.json")"
 assert "R-14 TRAINEE_RUNTIME set"         "$(grep_q 'TRAINEE_RUNTIME' "${TARGET}/.claude/settings.json")"
 
 # settings.json valid JSON
