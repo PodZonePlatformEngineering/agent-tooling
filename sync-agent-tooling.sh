@@ -665,6 +665,18 @@ manifest = {
     "files": files,
     "root_files": root_files,
 }
+# Idempotent re-sync (PROJ-039/T-069): an already-current repo must produce NO
+# diff — otherwise every TOOLING_UPDATE launch commits a synced_at-only change.
+# Keep the existing timestamp when nothing else moved.
+existing_path = claude_dir / "tooling-manifest.json"
+if existing_path.is_file():
+    try:
+        existing = json.loads(existing_path.read_text(encoding="utf-8"))
+        if {k: v for k, v in existing.items() if k != "synced_at"} == \
+           {k: v for k, v in manifest.items() if k != "synced_at"} and existing.get("synced_at"):
+            manifest["synced_at"] = existing["synced_at"]
+    except ValueError:
+        pass
 claude_dir.mkdir(parents=True, exist_ok=True)
 (claude_dir / "tooling-manifest.json").write_text(
     json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
