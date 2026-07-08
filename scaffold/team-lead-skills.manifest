@@ -14,20 +14,20 @@
 #
 #   consolidate-tasks   local-mode consolidation of the lead's team repo
 #   launch-session      launching the lead's team agents
+#   create-task         guided task-board entry creation (identity-routed, no apex hardcode)
+#   usage-report        7-day usage digest, output resolved via team_repo (D-2, T-076;
+#                        de-apexed — no hardcoded podzoneTeam/team/hermes path, no
+#                        hardcoded ~/workspace/agent-tooling tool path)
 #
 # DELIBERATELY EXCLUDED (kept hook-driven / out of the parity-enforced subset):
 #   session-start / session-end   — agent ceremony is hook-driven in every home repo;
 #                                    the finalise hook owns the result (T-035). A team
 #                                    lead does not need them as skills.
-#   usage-report                  — NOT yet canonical in agent-tooling/skills/ (it
-#                                    drifts between the apex + training mirrors and
-#                                    references a non-resident workstation tool). Adding
-#                                    it to a byte-identity-enforced subset would force a
-#                                    premature canonicalisation with roadmapTeam blast
-#                                    radius. Flagged to Hermes; add once canonicalised.
 #
 # Format: one canonical skill name per line (must exist as agent-tooling/skills/<name>/).
 # Blank lines and lines starting with '#' are ignored.
 
 consolidate-tasks
 launch-session
+create-task
+usage-report
