@@ -29,9 +29,22 @@ import json
 import os
 import re
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+# Bare-script shim (PROJ-039/T-075 F9, plan D-7): the documented invocation
+# `python3 …/lib/session_guard.py <cmd>` runs this file as __main__ with
+# sys.path[0] = lib/ — `from lib import …` then fails, and the bare fallback
+# below crashes one level deeper (finalise_ledger's relative
+# `from . import runtime_log` has no parent package). Putting the repo root on
+# sys.path first makes the package import work from ANY cwd with an empty
+# PYTHONPATH — the same anchor pattern the hooks/ entrypoints use.
+if __package__ in (None, ""):  # pragma: no cover — bare-script run only
+    _repo_root = str(Path(__file__).resolve().parents[1])
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
 
 try:  # closure-leaf import; both live in .claude/lib/ in a home repo
     from lib import finalise_ledger
@@ -490,6 +503,17 @@ def _lock_path(repo: str) -> Path:
     return LOCK_DIR / f"{key}.lock"
 
 
+def lock_holder(repo: str) -> Optional[dict]:
+    """The current lock holder dict for a clone, or ``None`` when unlocked (or
+    the lock file is unreadable). Read-only — never mutates the lock. The T-075
+    F14 resume-guard reads this to distinguish a live mid-session restart (lock
+    held) from a resume after the finalise released it."""
+    try:
+        return json.loads(_lock_path(repo).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 # A lock older than this with no live owner pid is presumed orphaned (crashed launch
 # that never finalised) and may be stolen — so a dead session can never wedge a clone
 # indefinitely. Well above a normal session's length; finalise releases far sooner.
@@ -606,6 +630,93 @@ class SessionLock:
 
 
 # ---------------------------------------------------------------------------
+# All-clones end-guard (PROJ-039/T-075 F13, plan D-4)
+# ---------------------------------------------------------------------------
+#
+# The finalise end-guard used to return ONLY the home repo — every additional
+# task-repo clone the launch branched + locked was stranded on its session branch
+# with its lock held (three consecutive manual Hermes sweeps of
+# `~/workspace/agent-tooling`: t069, t070, t071/sid b62cddc8). The launch-recorded
+# lock set is already on disk (`~/.claude/session-locks/*.lock`, written by
+# `session_guard.py lock` per clone), so finalise can enumerate exactly the clones
+# THIS session locked and end-guard each one.
+
+_BRIEF_SID_PREFIX = "brief:"
+
+
+def owned_sid_set(session_id: str = "", brief_id: str = "") -> set:
+    """Every sid form this session's locks may be keyed under.
+
+    A pinned-sid launch locks with the runtime UUID; a brief-first launch locks
+    with the brief_id — observed on disk BOTH bare (``podzone/{date}-{slug}``,
+    the t071 home lock) and ``brief:``-prefixed (this session's own locks). The
+    session point stores the bare form, so matching must accept prefixed and
+    unprefixed alike or a lock release silently mismatches (the T-054
+    always-False class, resurfacing one convention drift later)."""
+    owned = {session_id or "", brief_id or ""}
+    if brief_id:
+        if brief_id.startswith(_BRIEF_SID_PREFIX):
+            owned.add(brief_id[len(_BRIEF_SID_PREFIX):])
+        else:
+            owned.add(_BRIEF_SID_PREFIX + brief_id)
+    owned.discard("")
+    return owned
+
+
+def locked_repos(owned_sids: set) -> list[dict]:
+    """The launch-recorded lock set for this session: every holder dict under
+    :data:`LOCK_DIR` whose ``session_id`` is one of ``owned_sids`` and which
+    names a ``repo``. Unparseable or foreign locks are left untouched (never
+    a skeleton key). Best-effort: any error yields ``[]``."""
+    out: list[dict] = []
+    try:
+        if not owned_sids or not LOCK_DIR.is_dir():
+            return out
+        for p in sorted(LOCK_DIR.glob("*.lock")):
+            try:
+                holder = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if (isinstance(holder, dict) and holder.get("repo")
+                    and holder.get("session_id") in owned_sids):
+                out.append(holder)
+    except Exception:
+        pass
+    return out
+
+
+def end_guard_all_clones(home_repo: str, *, session_id: str = "",
+                         brief_id: str = "") -> list[dict]:
+    """Session-end guard over EVERY clone this session locked (T-075 F13).
+
+    Home repo first (the result PR rides it), then each remaining clone in the
+    launch-recorded lock set: :func:`return_to_main` (same per-clone safety
+    semantics — unpushed branches are kept and surfaced, T-068 log-dirt
+    tolerance unchanged, already-on-main is a no-op) + lock release keyed on
+    every owned sid form. Returns one entry per clone:
+    ``{"repo", "kind": "home"|"task", "return": <return_to_main dict>,
+    "lock_released": bool}``. Best-effort throughout — a failure on one clone
+    is recorded in its entry, never raised, and never blocks the next clone."""
+    owned = sorted(owned_sid_set(session_id, brief_id))
+    results: list[dict] = []
+    home_real = os.path.realpath(home_repo) if home_repo else ""
+    if home_repo:
+        res = return_to_main(home_repo)
+        released = SessionLock(home_repo, session_id).release(owned_sids=owned)
+        results.append({"repo": home_repo, "kind": "home",
+                        "return": res, "lock_released": released})
+    for holder in locked_repos(set(owned)):
+        repo = str(holder.get("repo", ""))
+        if not repo or os.path.realpath(repo) == home_real:
+            continue  # home handled above; its lock is already released
+        res = return_to_main(repo)
+        released = SessionLock(repo, session_id).release(owned_sids=owned)
+        results.append({"repo": repo, "kind": "task",
+                        "return": res, "lock_released": released})
+    return results
+
+
+# ---------------------------------------------------------------------------
 # CLI — lets the launch-session / consolidate skills call one line each
 # ---------------------------------------------------------------------------
 
@@ -639,7 +750,7 @@ def _main(argv: Optional[list] = None) -> int:
     if args.cmd == "preflight":
         res = preflight(args.repo, auto_recover=not args.no_recover)
         print(json.dumps(res))
-        print(res["message"], file=__import__("sys").stderr)
+        print(res["message"], file=sys.stderr)
         return 0 if res["decision"] in ("ready", "recovered") else 3
     if args.cmd == "return-to-main":
         res = return_to_main(args.repo, args.branch)

@@ -8,9 +8,9 @@ intended as the reference for the Phase-C fleet rollout.
 
 | Event | Hook | Writes | Discipline |
 |---|---|---|---|
-| `SessionStart` | `session-materialise.py` | `<cwd>/.workspace/` from the `session` point | Halts (no fabrication) on empty/unreachable — R-006 / SD-3-002 |
+| `SessionStart` | `session-materialise.py` | `<cwd>/.workspace/` from the `session` point | Halts (no fabrication) on empty/unreachable — R-006 / SD-3-002. Halts a sid resumed AFTER its finalise completed (`resumed-after-finalise`, re-arm instructions) — T-075 F14 |
 | `Stop` | `substrate-stop.sh` → `append-session-stop.py` | `session_stop[]` on the point | `set_payload` only — never a full upsert (SD-3-001) |
-| `SessionEnd` | `session-end-finalise.py` | `response` + `rollup`, telemetry push, push-then-delete, session-finalise, brief-result PR | Order is load-bearing (§ 2.4); raw-delete gated on the telemetry push (C-006) |
+| `SessionEnd` | `session-end-finalise.py` | `response` + `rollup`, telemetry push, push-then-delete, session-finalise, brief-result PR | Order is load-bearing (§ 2.4); raw-delete gated on the telemetry push (C-006); end-guard returns EVERY clone in the launch-recorded lock set, home first — T-075 F13 |
 
 Wire them from `hooks/settings-substrate-snippet.json`.
 
