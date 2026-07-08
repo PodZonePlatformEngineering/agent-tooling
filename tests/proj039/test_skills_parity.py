@@ -152,12 +152,15 @@ class TestTeamLeadHomeSubsetParity(unittest.TestCase):
     def _build_source(self, root: Path) -> Path:
         source = root / "agent-tooling" / "skills"
         source.mkdir(parents=True)
-        for skill in ("consolidate-tasks", "launch-session", "session-end", "session-start"):
+        for skill in (
+            "consolidate-tasks", "launch-session", "session-end", "session-start",
+            "create-task", "usage-report",
+        ):
             (source / skill).mkdir()
             (source / skill / "SKILL.md").write_text(f"{skill} body\n")
         return source
 
-    SUBSET = ["consolidate-tasks", "launch-session"]
+    SUBSET = ["consolidate-tasks", "launch-session", "create-task", "usage-report"]
 
     def _build_home(self, root: Path, source: Path, skills: list[str]) -> Path:
         home = root / "home-training-athena" / ".claude" / "skills"

@@ -144,8 +144,10 @@ in the registry are scanned the legacy way, unchanged.
 
 List the files found (legacy + migrated). If none, print "No pending outbox files." and stop.
 
-For each file, note: agent, date, and whether it appears already processed
-(look for a `<!-- consolidated -->` comment at the top).
+For each file, note: agent, date, and whether it appears already processed. **Marker rule:**
+look for a `<!-- consolidated -->` comment as the file's first line, **or, when the file
+opens with YAML frontmatter (`---` ... `---`), immediately after the closing `---`** — head-scan
+at least the first 3 lines to cover both cases.
 
 ## Step 1b — Fissioned team repo scan
 
@@ -252,6 +254,23 @@ For each unprocessed file, extract:
 Use semantic names throughout — no raw IDs in the report.
 See `agenticflows/operations/task-naming.md` for the full programme:project mapping.
 
+**All-empty result ⇒ ground-truth verify (F7, the board-lie class).** If a result file's
+body has nothing in Completed/Started/Blockers/Decisions/PRs Raised/Questions AND its
+frontmatter `status_transition` is also empty, do **not** accept that at face value as
+"nothing happened this session" — an empty result can mean a genuine no-op, or it can mean
+the agent's rich response failed to extract and finalise fell back to a stub (T-047's
+raw-embed fallback covers the write side; this is the read-side check). Before recording
+the task as unchanged, run a ground-truth check against the session's actual repo state:
+
+```bash
+gh pr list --repo PodZonePlatformEngineering/{repo} --head {agent}/{date}-{slug} --json number,state,title
+gh api repos/PodZonePlatformEngineering/{repo}/commits --jq '.[0].commit.message' 2>/dev/null
+```
+
+If a PR or commits exist that the empty result gave no account of, flag it in the Step 7
+report under Protocol violations (`{agent}: empty result but PR/commits found — {repo}#{n}`)
+and route back rather than silently marking the task unchanged.
+
 ### Fissioned team divergence rules
 
 When the outbox being parsed belongs to a fissioned team agent (i.e. the file came from
@@ -354,7 +373,7 @@ For each draft, choose one of three outcomes:
 2. Move the draft to `team/hermes/incoming/applied/{date}-{slug}.md` (create the
    `applied/` subfolder if missing). Preserve the file untouched for the audit
    trail — do not strip headers or edit content.
-3. Note the disposition in the Step 8 report under `Drafts reconciled` with
+3. Note the disposition in the Step 7 report under `Drafts reconciled` with
    reason `→ applied (already complete)`.
 
 **The `applied/` and `rejected/` subfolders MUST be excluded from the drafts scan**
@@ -407,14 +426,14 @@ Apply this table:
 | `{repo}#{n}` PR ref | `gh pr view {n} -R PodZonePlatformEngineering/{repo} --json state` | Strip line if `state` is `MERGED` or `CLOSED` |
 | `v{x.y.z}` tag ref | `gh release view {tag} -R PodZonePlatformEngineering/{repo}` (fallback: `git tag -l {tag}` in the repo) | Strip line if the tag exists in the PPE repo |
 | `transfer repos to ... org` (PROJ-028 close-out) | `gh repo list PodZonePlatformEngineering --limit 50` | Strip line if expected repo present |
-| Free-text decision (e.g. "Option A or B") | No automated check | Leave as-is; if older than 30 days, surface for explicit triage in the Step 8 report |
+| Free-text decision (e.g. "Option A or B") | No automated check | Leave as-is; if older than 30 days, surface for explicit triage in the Step 7 report |
 
 **Failure handling:** `gh pr view` on a missing PR number returns non-zero — treat
 "not found" as a strip-and-log condition (the PR ref was likely typo'd or the repo
 was renamed; either way the item is no longer actionable).
 
 **Verbosity:** Make the reaper output verbose for the first 3 consolidation runs
-so misfires are visible. Surface every strip in the Step 8 report with the
+so misfires are visible. Surface every strip in the Step 7 report with the
 artefact age (e.g. "merged 41 d ago"). Silence after the protocol is stable.
 
 **Apex-only:** This step runs in full mode (Hermes consolidating podzoneTeam).
@@ -428,37 +447,48 @@ processed outbox files. Follow session-end STATUS.md format rules.
 
 ## Step 5 — Mark outbox files processed
 
-Add `<!-- consolidated YYYY-MM-DD -->` as the first line of each processed file
-to prevent double-processing in future passes.
+Add `<!-- consolidated YYYY-MM-DD -->` as the first line of each processed file — **or,
+when the file opens with YAML frontmatter, as the first line immediately after the
+closing `---`** (never inside the frontmatter block) — to prevent double-processing in
+future passes. Both scanners (this step and Step 1's already-processed check) head-scan
+at least the first 3 lines, so either placement is detected.
 
-## Step 7 — Refresh sessions collection (gap-fill)
+## Step 6 — Refresh sessions collection (gap-fill)
 
 After outbox files are marked processed, refresh the cloud Qdrant `sessions`
 collection so the Team Lead has current per-workspace usage data when writing
 the consolidation report.
 
+**Path convention:** every `agent-tooling/tools/*.py` invocation below uses the single
+`.workspace/agent-tooling` on-demand-clone path (same convention as the Local Mode team-repo
+resolver above) — never the `~/workspace/agent-tooling` hardcode. **Apex exception:** Hermes's
+primary clone is permanently at `~/workspace/agent-tooling` (it is the canonical source, not
+an on-demand checkout); prefer that path if it exists, falling back to `.workspace/agent-tooling`
+(clone on demand) otherwise.
+
 Run the existing backfill walker — it is idempotent and applies the §D6 status
 rules automatically (`in_progress` < 30 min, `idle` < 6 h, `ended` else):
 
 ```bash
-python3 ~/workspace/agent-tooling/tools/backfill-sessions.py 2>&1 | tee /tmp/gapfill-output.txt
+AT="${HOME}/workspace/agent-tooling"; [ -d "$AT" ] || AT=".workspace/agent-tooling"
+python3 "${AT}/tools/backfill-sessions.py" 2>&1 | tee /tmp/gapfill-output.txt
 ```
 
-Capture the output's top-line summary for the Step 8 report. Specifically:
+Capture the output's top-line summary for the Step 7 report. Specifically:
 
 - Total `Upserted` count
 - Per-workspace token totals (raw counts, no dollar values — Phase 1)
 - Any multi-agent attribution warnings
 
 If `backfill-sessions.py` is not on disk (agent-tooling not present): skip
-silently and note in Step 8 that the `sessions` collection was not refreshed
+silently and note in Step 7 that the `sessions` collection was not refreshed
 this pass.
 
 Sessions whose JSONL mtime is > 6 h old will transition to `status: ended`
 on this run if they were still flagged `in_progress` from the Stop hook
 (window-close case — the gap this step closes).
 
-## Step 7b — Generate usage summary
+## Step 6b — Generate usage summary
 
 After the gap-fill, render a 7-day usage summary so the consolidation report
 carries current workspace/model/outlier figures. Step 0 of the tool runs a
@@ -466,17 +496,18 @@ zombie-cleanup pass against the `sessions` collection (pre-T-005 heartbeat-only
 points missing `data_source`) — leave it on.
 
 ```bash
-python3 ~/workspace/agent-tooling/tools/usage-report.py --days 7 2>&1 | tee /tmp/usage-report-output.txt
+AT="${HOME}/workspace/agent-tooling"; [ -d "$AT" ] || AT=".workspace/agent-tooling"
+python3 "${AT}/tools/usage-report.py" --days 7 2>&1 | tee /tmp/usage-report-output.txt
 ```
 
-Capture the 6-line digest from stdout for the Step 8 report. The markdown
+Capture the 6-line digest from stdout for the Step 7 report. The markdown
 file is written to `team/hermes/outgoing/usage-reports/{today}-usage-summary.md`
 (same-day overwrite — last consolidation of the day wins).
 
 If `usage-report.py` is not on disk or Qdrant is unreachable: skip silently
-and note in Step 8 that no usage summary was generated this pass.
+and note in Step 7 that no usage summary was generated this pass.
 
-## Step 7c — Tooling-drift check (PROJ-039/T-057)
+## Step 6c — Tooling-drift check (PROJ-039/T-057)
 
 Render the fleet tooling-version table so the consolidation report surfaces drift
 against canonical `VERSION`. Reads each home repo `main`'s shipped
@@ -484,36 +515,37 @@ against canonical `VERSION`. Reads each home repo `main`'s shipped
 agents; this derived view is the only catalog write path (Hermes-side).
 
 ```bash
-python3 ~/workspace/agent-tooling/tools/tooling-drift-report.py \
+AT="${HOME}/workspace/agent-tooling"; [ -d "$AT" ] || AT=".workspace/agent-tooling"
+python3 "${AT}/tools/tooling-drift-report.py" \
   --migrated-agents-path planning/projects/PROJ-032-agent-home-repos/migrated-agents.md \
   2>&1 | tee /tmp/tooling-drift-output.txt
 ```
 
-Capture the counts (N current / N drifted / N flagged) for the Step 8 report, and
+Capture the counts (N current / N drifted / N flagged) for the Step 7 report, and
 refresh the `tooling_version` column in
 `planning/projects/PROJ-032-agent-home-repos/migrated-agents.md` from the table
 (a `--json` run gives machine-readable values). A drifted or flagged repo is not an
 error to fix here — it is a dispatch signal: the repo picks up canonical on its next
 brief via `TOOLING_UPDATE` (T-056) or a T-034 sweep task.
 
-If the tool is not on disk or `gh` is unavailable: skip silently and note in Step 8
+If the tool is not on disk or `gh` is unavailable: skip silently and note in Step 7
 that no drift check ran this pass.
 
-## Step 8 — Report
+## Step 7 — Report
 
 ```
 Sessions registry: N in-flight, N concluded, N cleaned-up
   ⚠️  Lost session (no outbox): {session-id}   ← if applicable
 
-Sessions refreshed (Step 7):
+Sessions refreshed (Step 6):
   Upserted: {N}  ({M} newly transitioned to status: ended)
   Per-workspace totals: see /tmp/gapfill-output.txt
 
-Usage summary — last 7 days (Step 7b):
+Usage summary — last 7 days (Step 6b):
   {paste the 6-line digest from /tmp/usage-report-output.txt verbatim}
   Report: team/hermes/outgoing/usage-reports/{today}-usage-summary.md
 
-Tooling drift (Step 7c):
+Tooling drift (Step 6c):
   Canonical vX.Y.Z — {N} current, {N} drifted, {N} flagged (see /tmp/tooling-drift-output.txt)
   Registry column refreshed: planning/projects/PROJ-032-agent-home-repos/migrated-agents.md
 

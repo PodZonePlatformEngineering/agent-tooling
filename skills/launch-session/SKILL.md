@@ -196,17 +196,25 @@ Extract:
 Filter `repos` to those actually needed for this session's task (ask Martin if unclear;
 default to all repos in the identity file).
 
-**Mode determination:**
-- If `home_repo` matches `home-*` (e.g. `home-podzone-hephaestus`) → **migrated home-repo mode**
-  (PROJ-039/T-011 C2, T-006) — see the migrated note in Step 2 and the migrated subsections below.
-- Else if `home_repo == podzoneTeam` → **standard mode**
-- Else (`trainingTeam` / `roadmapTeam`) → **fissioned team mode**
+**Mode determination (F8 — registry first, identity YAML second):** the identity YAML's
+`home_repo` is a **hint**, not the source of truth — an agent's YAML can lag a migration
+(Hestia's still said fissioned post-migration and would have routed a launch down the
+retired path). Always check the registry before trusting the YAML:
 
-The migrated set is authoritative in
-`planning/projects/PROJ-032-agent-home-repos/migrated-agents.md`. Agents not listed
-there are unaffected by C2 — they keep standard / fissioned mode exactly as before.
-When operating on the current session's own agent you may detect migrated directly from
-`home_repo` matching `home-*` (equivalent to registry membership, no file read needed).
+1. Check `planning/projects/PROJ-032-agent-home-repos/migrated-agents.md` first. If the
+   agent is listed there, their `home_repo` in the registry is authoritative → **migrated
+   home-repo mode** (PROJ-039/T-011 C2, T-006) — see the migrated note in Step 2 and the
+   migrated subsections below. If the registry's `home_repo` disagrees with the identity
+   YAML, trust the registry and flag the stale YAML for a sweep (don't silently proceed
+   on the YAML's value).
+2. Otherwise, fall back to the identity YAML's `home_repo`:
+   - `home_repo == podzoneTeam` → **standard mode**
+   - Else (`trainingTeam` / `roadmapTeam`) → **fissioned team mode**
+
+Agents not listed in the registry are unaffected by C2 — they keep standard / fissioned
+mode exactly as before. When operating on the current session's own agent (i.e. the
+identity YAML unambiguously already reads `home_repo: home-*`) you may skip the registry
+read — that value could only be current or migrated, never stale-fissioned.
 
 ### Migrated home-repo mode — the ritual at a glance
 
@@ -221,12 +229,14 @@ The shared Steps 1–2 run first, then the migrated-only steps:
 5. **Preflight + branch the primary clone** (Step 3, migrated subsection): the session
    runs directly in `~/workspace/{home_repo}` (the launch cwd) on a session branch — **no
    worktree, no `~/sessions/{sid}/` dir**. The `session_guard` preflight asserts the clone
-   is clean + on a ff'd `main` (or HALTs), takes a one-session lock, then branches.
+   is clean + on a ff'd `main` (or HALTs), takes a one-session lock, then branches. **If
+   the registry host (`podzoneTeam`) is itself in this loop as a write-target, register
+   it (Step 7) before its branch step — F11** (see the Step 3 callout).
 6. **SessionStart materialise + SessionEnd finalise are resident** (Step 6, migrated
    subsection) — both committed-wired (materialise since PROJ-039/T-052). **No manual copy
    / exclude / `settings.local.json` wiring step** — only make `BRIEF_ID` visible (inline
    or a `settings.local.json` env-only block).
-7. **Register** the session in the apex `active.md` (Step 7).
+7. **Register** the session in the apex `active.md` (Step 7) — unless already done above.
 8. **Emit the launch command for the selected mode** (Step 8) — headless one-shot
    (`-p "<continue+escalate prompt>"`) for builds, interactive standalone-terminal for
    team-lead/high-uncertainty work — + clean-`/exit` reminder; then optionally **verify the
@@ -328,6 +338,17 @@ each task repo from the identity `repos` list), run the start guard, take the lo
 branch the clone itself. The `session_guard` CLI replaces the old worktree + ff + exclude
 bash with one call each:
 
+> **Register before you branch the registry host (F11).** `planning/sessions/active.md`
+> is Team Lead-managed **on main**. If the repo that hosts it — `podzoneTeam` for
+> standard/migrated mode, or the fissioned team's own `home_repo` — is itself one of the
+> clones this loop is about to `checkout -b`, append that repo's Step 7 registration row
+> **before** branching it, while it is still on main. Branching first and registering
+> after would append the row on the session branch instead of main (or, once the end-guard
+> returns the clone to main at finalise, silently drop the row). This is a one-off
+> ordering check per launch — most sessions don't touch the registry host at all, and when
+> they do it is usually already on main from a fresh clone, so registering "first" costs
+> nothing.
+
 ```bash
 SID=…            # the pinned runtime UUID (Step 4)
 for repo in {home_repo} {task_repos…}; do
@@ -339,6 +360,7 @@ for repo in {home_repo} {task_repos…}; do
   # One-session lock (finalise releases it). rc 4 ⇒ a session already holds this clone.
   python3 ~/workspace/agent-tooling/lib/session_guard.py lock --repo "$CLONE" --sid "$SID" || {
     echo "clone $CLONE is locked by a live session — refuse"; exit 1; }
+  # If $repo hosts planning/sessions/active.md, register NOW (Step 7) — still on main.
   # Branch the clone: session/{agent}-{date}-{slug} for the home/PAT repo,
   # {agent}/{date}-{slug} for a task repo.
   git -C "$CLONE" checkout -b {branch}
@@ -353,7 +375,9 @@ preflight). The launch cwd is `~/workspace/{home_repo}` (Step 8). **podzoneTeam 
 write-target:** branch the **primary** `~/workspace/podzoneTeam` on a `session/…`
 branch via the same guard+lock — the T-031 "never branch the apex primary clone" rule is
 now the *normal* path, so its end-guard returns it to main at finalise (read-only apex use
-still references the plain clone, unbranched).
+still references the plain clone, unbranched). **Register it (Step 7) before this
+branch step**, per the callout above — podzoneTeam is exactly the registry host this
+guards against.
 
 > **Legacy worktree option (`--legacy-worktree`).** The pre-T-045 worktree ceremony below is
 > retained for one release for a genuine parallel need. Take it **only** when the launch was
@@ -638,6 +662,14 @@ carry is `BRIEF_ID` (brief-first) — or pass it inline on the launch command (s
 
 ## Step 7 — Register the session
 
+> **F11 — if the registry host is a clone this session branches, this already happened
+> in Step 3.** Registration must land on the registry repo's `main`, so when that repo
+> (`podzoneTeam` for standard/migrated mode, the fissioned team's own `home_repo` for
+> fissioned mode) is also one of the clones Step 3 branches, register it there first,
+> before the `checkout -b` — see the Step 3 callout. This section is the normal case: the
+> registry host is untouched by this session's branching (the common migrated-mode shape,
+> and fissioned/standard mode's own worktree isolation), so register it here as written.
+
 ### Standard mode
 
 Append a row to the **main clone** of `podzoneTeam/planning/sessions/active.md`
@@ -802,8 +834,8 @@ Session prepared: hephaestus-2026-06-25-proj039-t028
                     (from team-lead/briefs/2026-06-25-proj039-t028.md)
   PAT branch:       session/hephaestus-2026-06-25-proj039-t028  (home-podzone-hephaestus)
   Worktrees:        home-podzone-hephaestus (launch cwd), agent-tooling, podzoneTeam
-  Materialise hook: wired locally (settings.local.json + hook copy + git exclude)
-                    [or "resident — no-op" once C4 lands]
+  Materialise hook: resident (session-materialise.py, committed settings.json — no
+                    settings.local.json wiring; the local block is env-only)
   SessionEnd:       resident (session-end-finalise.py, C2-v2.1c)
   Registered:       planning/sessions/active.md (podzoneTeam, apex)
   Mode:             headless (autonomous build — default; T-040)
