@@ -609,7 +609,7 @@ and deleted after PR merge.
 | PreToolUse | \`pre-tool-use.sh\` | Record tool-call telemetry |
 | PostToolUse | \`post-tool-use.sh\` | Record tool-result telemetry |
 | PostCompact | \`post-compact.sh\` | Record compaction telemetry |
-| Stop | \`stop.sh\` | CST Stop point + session_stop[] tasking append |
+| Stop | \`stop.sh\` | Enriched CST Stop point (via \`stop-telemetry.py\`) + session_stop[] tasking append |
 | SessionEnd | \`session-end-finalise.py\` | Telemetry push → rollup → CST prune (post-push) → session-finalise |
 ${EXTRA_HOOK_ROWS}
 ${COORD_SKILLS_SECTION}
