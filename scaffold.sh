@@ -106,7 +106,7 @@ echo "==> Scaffolding ${REPO_NAME} (role: ${ROLE}) → ${TARGET_DIR}"
 # the SessionStart wiring pointed at a missing file and failed silently → no brief-first
 # session point, session_ids[] never appended, finalise ran "not brief-first". Resident
 # + committed-settings.json-wired kills that class.
-SUBSTRATE_BASE="session-start.sh session-materialise.py user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh stop-telemetry.py append-session-stop.py session-end-finalise.py"
+SUBSTRATE_BASE="session-start.sh session-materialise.py user-prompt-submit.sh post-compact.sh stop.sh stop-telemetry.py append-session-stop.py session-end-finalise.py"
 role_hooks() {
   case "$1" in
     team-lead)             echo "${SUBSTRATE_BASE}" ;;
@@ -190,10 +190,7 @@ role_settings_json() {
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/first-prompt-brief.py" } ] }
     ],
     "PreToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-tool-use.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-read-guard.py" } ] }
-    ],
-    "PostToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-tool-use.sh" } ] }
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-read-guard.py" } ] }
     ],
     "PostCompact": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-compact.sh" } ] }
@@ -296,12 +293,6 @@ TRAINEE_SETTINGS
     "UserPromptSubmit": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" }${ups_extra} ] }
     ],
-    "PreToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-tool-use.sh" } ] }
-    ],
-    "PostToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-tool-use.sh" } ] }
-    ],
     "PostCompact": [
       { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"\$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-compact.sh" } ] }
     ],
@@ -317,8 +308,10 @@ SETTINGS
 }
 
 # Build AGENTS.md hook table rows (role-specific rows beyond the universal base).
-# The PROJ-039 substrate (SessionStart/UserPromptSubmit/Pre+PostToolUse/
-# PostCompact/Stop) is universal; only the SubagentStop chain is role-specific.
+# The PROJ-039 substrate (SessionStart/UserPromptSubmit/PostCompact/Stop) is
+# universal; only the SubagentStop chain is role-specific. Pre/PostToolUse CST
+# writers retired at T-073 (CC-383): 91% of the collection was per-tool-call
+# noise; tool counts live in the sessions rollups.
 role_hook_rows() {
   if [[ "$1" == "coder" || "$1" == "cluster-operator" ]]; then
     echo "| SubagentStop | \`subagent-stop.sh\` | Record subagent outcomes to task_events |"
@@ -606,8 +599,6 @@ and deleted after PR merge.
 |---|---|---|
 | SessionStart | \`session-start.sh\` | Identity + brief + session context |
 | UserPromptSubmit | \`user-prompt-submit.sh\` | Record prompt telemetry |
-| PreToolUse | \`pre-tool-use.sh\` | Record tool-call telemetry |
-| PostToolUse | \`post-tool-use.sh\` | Record tool-result telemetry |
 | PostCompact | \`post-compact.sh\` | Record compaction telemetry |
 | Stop | \`stop.sh\` | Enriched CST Stop point (via \`stop-telemetry.py\`) + session_stop[] tasking append |
 | SessionEnd | \`session-end-finalise.py\` | Telemetry push → rollup → CST prune (post-push) → session-finalise |
