@@ -31,6 +31,7 @@ import argparse
 import json
 import re
 import sys
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -46,6 +47,10 @@ COLLECTION = "claude_session_telemetry"
 DEFAULT_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 MATCH_TOLERANCE_S = 5.0
 BACKFILL_NAMESPACE = "stop-backfill"
+
+# A transcript modified this recently is treated as an ACTIVE session: its
+# trailing cut event is suppressed (see derive_stop_events include_cut).
+ACTIVE_TRANSCRIPT_WINDOW_S = 600.0
 
 UUID_FILENAME_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.jsonl$",
@@ -70,12 +75,17 @@ def _epoch(ts: str) -> Optional[float]:
 # Stop-event derivation (streaming, per transcript)
 # --------------------------------------------------------------------------- #
 
-def derive_stop_events(path: Path) -> dict:
+def derive_stop_events(path: Path, *, include_cut: bool = True) -> dict:
     """Stream one transcript; returns {events, skipped_sidechain, skipped_empty}.
 
     An event: ``{uuid, timestamp, session_id, cwd, git_branch, text, cut}``.
     ``cut=True`` marks the trailing final-assistant event of a transcript that
     ended without an ``end_turn`` (headless kill / abrupt cut).
+
+    ``include_cut=False`` suppresses that trailing event — used for transcripts
+    still being written (an ACTIVE session's tail is a moving target: each run
+    would mint a new record-uuid → a new uuid5 point, breaking re-run
+    convergence; its stop events belong to the live T-071 hook anyway).
     """
     events: list[dict] = []
     skipped_sidechain = 0
@@ -111,7 +121,7 @@ def derive_stop_events(path: Path) -> dict:
             events.append(_event_from(rec, text, cut=False))
             last_was_event = True
 
-    if last_text_rec is not None and not last_was_event:
+    if include_cut and last_text_rec is not None and not last_was_event:
         events.append(_event_from(
             last_text_rec, stop_telemetry._text_of(last_text_rec), cut=True
         ))
@@ -120,6 +130,16 @@ def derive_stop_events(path: Path) -> dict:
         "skipped_sidechain": skipped_sidechain,
         "skipped_empty": skipped_empty,
     }
+
+
+def _is_active_transcript(path: Path, *, now: Optional[float] = None) -> bool:
+    """Modified within ACTIVE_TRANSCRIPT_WINDOW_S → the session is still writing."""
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return False
+    return ((now if now is not None else time.time()) - mtime
+            < ACTIVE_TRANSCRIPT_WINDOW_S)
 
 
 def _event_from(rec: dict, text: str, *, cut: bool) -> dict:
@@ -255,7 +275,9 @@ def backfill(projects_dir: Path = DEFAULT_PROJECTS_DIR,
     for ws, path in files:
         entry = bucket(ws)
         try:
-            derived = derive_stop_events(path)
+            derived = derive_stop_events(
+                path, include_cut=not _is_active_transcript(path)
+            )
         except Exception as exc:
             print(f"[backfill-stop] derive failed for {path.name}: {exc}",
                   file=sys.stderr)

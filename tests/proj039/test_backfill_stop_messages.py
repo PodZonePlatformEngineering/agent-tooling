@@ -76,6 +76,29 @@ class TestDeriveStopEvents(unittest.TestCase):
         self.assertEqual([(e["uuid"], e["cut"]) for e in out["events"]],
                          [("u-only", False)])
 
+    def test_include_cut_false_suppresses_trailing_cut_event(self):
+        records = [
+            rec("turn one", stop_reason="end_turn", uuid_="u-1"),
+            rec("mid-flight text", stop_reason="tool_use", uuid_="u-cut"),
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            out = bsm.derive_stop_events(
+                write_transcript(records, td), include_cut=False)
+        self.assertEqual([(e["uuid"], e["cut"]) for e in out["events"]],
+                         [("u-1", False)])
+
+    def test_active_transcript_detection_by_mtime(self):
+        import os
+        with tempfile.TemporaryDirectory() as td:
+            path = write_transcript(
+                [rec("x", stop_reason="end_turn")], td)
+            now = path.stat().st_mtime
+            self.assertTrue(bsm._is_active_transcript(path, now=now + 1))
+            self.assertFalse(bsm._is_active_transcript(
+                path, now=now + bsm.ACTIVE_TRANSCRIPT_WINDOW_S + 1))
+            os.unlink(path)
+            self.assertFalse(bsm._is_active_transcript(path, now=now))
+
     def test_message_capped(self):
         big = "x" * (20 * 1024)
         with tempfile.TemporaryDirectory() as td:
