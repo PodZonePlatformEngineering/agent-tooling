@@ -463,6 +463,205 @@ class TestSessionLock(unittest.TestCase):
         self.assertTrue(other.path.exists())
 
 
+class TestOwnedSidSet(unittest.TestCase):
+    """T-075 F13 — the sid forms a launch may key locks under. Observed on disk:
+    the runtime UUID (pinned-sid launch), the bare brief_id (t071 home lock) AND
+    a ``brief:``-prefixed brief_id (the t075 launch's own locks). Matching must
+    accept all three or a release silently mismatches (the T-054 class)."""
+
+    def test_expands_bare_brief_id_to_prefixed(self) -> None:
+        got = session_guard.owned_sid_set("runtime-uuid", "podzone/2026-07-08-t075")
+        self.assertEqual(got, {"runtime-uuid", "podzone/2026-07-08-t075",
+                               "brief:podzone/2026-07-08-t075"})
+
+    def test_strips_prefix_when_brief_id_already_carries_it(self) -> None:
+        got = session_guard.owned_sid_set("", "brief:podzone/2026-07-08-t075")
+        self.assertEqual(got, {"podzone/2026-07-08-t075",
+                               "brief:podzone/2026-07-08-t075"})
+
+    def test_empty_inputs_yield_empty_set(self) -> None:
+        self.assertEqual(session_guard.owned_sid_set("", ""), set())
+
+
+class _TwoCloneFixture(_GitFixture):
+    """The multi-clone launch shape (T-075 F13): the home clone from _GitFixture
+    plus a second origin+clone standing in for a task repo (the stranded
+    ``~/workspace/agent-tooling`` of t069/t070/t071), with LOCK_DIR redirected."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        base = Path(self._tmp.name)
+        self.task_origin = base / "task-origin.git"
+        self.task_clone = base / "task-clone"
+        _run("git", "init", "--bare", "-b", "main", str(self.task_origin))
+        _run("git", "clone", str(self.task_origin), str(self.task_clone))
+        for k, v in (("user.email", "t@t"), ("user.name", "T"),
+                     ("commit.gpgsign", "false")):
+            _git(self.task_clone, "config", k, v)
+        (self.task_clone / "README.md").write_text("task repo\n")
+        _git(self.task_clone, "add", "README.md")
+        _git(self.task_clone, "commit", "-m", "init")
+        _git(self.task_clone, "push", "origin", "main")
+
+        self._orig_lock_dir = session_guard.LOCK_DIR
+        session_guard.LOCK_DIR = base / "locks"
+
+    def tearDown(self) -> None:
+        session_guard.LOCK_DIR = self._orig_lock_dir
+        super().tearDown()
+
+    def _task_branch_commit_push(self, branch: str, *, push: bool = True) -> None:
+        _git(self.task_clone, "checkout", "-b", branch)
+        (self.task_clone / "w.txt").write_text("task work\n")
+        _git(self.task_clone, "add", "w.txt")
+        _git(self.task_clone, "commit", "-m", "task work")
+        if push:
+            _git(self.task_clone, "push", "origin", branch)
+
+
+class TestLockedRepos(_TwoCloneFixture):
+    def test_enumerates_only_owned_locks(self) -> None:
+        sid = "brief:podzone/2026-07-08-t075"
+        session_guard.SessionLock(str(self.clone), sid).acquire()
+        session_guard.SessionLock(str(self.task_clone), sid).acquire()
+        session_guard.SessionLock("/w/foreign-repo", "someone-else").acquire()
+
+        owned = session_guard.owned_sid_set("runtime", "podzone/2026-07-08-t075")
+        repos = {h["repo"] for h in session_guard.locked_repos(owned)}
+        self.assertEqual(repos, {str(self.clone), str(self.task_clone)})
+
+    def test_unparseable_lock_is_skipped(self) -> None:
+        session_guard.LOCK_DIR.mkdir(parents=True, exist_ok=True)
+        (session_guard.LOCK_DIR / "junk.lock").write_text("not json")
+        self.assertEqual(session_guard.locked_repos({"sid"}), [])
+
+    def test_no_lock_dir_is_empty(self) -> None:
+        self.assertEqual(session_guard.locked_repos({"sid"}), [])
+
+
+class TestEndGuardAllClones(_TwoCloneFixture):
+    """T-075 F13 — the all-clones end-guard. The three-manual-sweep failure: a
+    clean finalise returned the HOME repo only; every additional task-repo clone
+    stayed on its session branch with its lock held. The guard must end-guard
+    the whole launch-recorded lock set, home first."""
+
+    SID = "4aa90fe7-0000-0000-0000-000000000000"
+    BRIEF = "podzone/2026-07-08-t075-lifecycle-hardening"
+
+    def _lock_both(self, lock_sid: str) -> None:
+        self.assertTrue(session_guard.SessionLock(str(self.clone), lock_sid)
+                        .acquire()["ok"])
+        self.assertTrue(session_guard.SessionLock(str(self.task_clone), lock_sid)
+                        .acquire()["ok"])
+
+    def test_multi_clone_lifecycle_returns_all_and_unlocks(self) -> None:
+        """The full t071 shape: brief-keyed locks (prefixed form, as observed on
+        disk for the t075 launch), pushed session branches on both clones, live
+        gitignored ledger writes in the home repo mid-finalise (T-068 shape).
+        A clean end-guard must leave BOTH clones on a ff'd main, session
+        branches deleted, and ZERO locks for this session — no Hermes sweep."""
+        self._lock_both(f"brief:{self.BRIEF}")
+
+        # Home repo: gitignored ledger dirt written during the finalise (T-068).
+        (self.clone / ".gitignore").write_text("logs/*.log\n")
+        _git(self.clone, "add", ".gitignore")
+        _git(self.clone, "commit", "-m", "gitignore logs")
+        _git(self.clone, "push", "origin", "main")
+        home_branch = "session/hephaestus-2026-07-08-t075"
+        self._branch(home_branch)
+        self._commit()
+        _git(self.clone, "push", "origin", home_branch)
+        (self.clone / "logs").mkdir(exist_ok=True)
+        (self.clone / "logs" / "finalise-state.log").write_text(
+            '{"sid": {"steps": {"response": "done"}}}\n')
+
+        # Task repo: its own pushed session branch (the stranded clone).
+        task_branch = "hephaestus/2026-07-08-t075-lifecycle-hardening"
+        self._task_branch_commit_push(task_branch)
+
+        results = session_guard.end_guard_all_clones(
+            str(self.clone), session_id=self.SID, brief_id=self.BRIEF)
+
+        self.assertEqual([e["kind"] for e in results], ["home", "task"],
+                         "home repo must be end-guarded first")
+        for entry in results:
+            self.assertTrue(entry["return"]["ok"], entry)
+            self.assertEqual(entry["return"]["disposition"],
+                             "returned-branch-deleted", entry)
+            self.assertTrue(entry["lock_released"], entry)
+        self.assertEqual(session_guard.current_branch(self.clone), "main")
+        self.assertEqual(session_guard.current_branch(self.task_clone), "main")
+        # Zero .lock files remaining for this session — the acceptance line.
+        self.assertEqual(list(session_guard.LOCK_DIR.glob("*.lock")), [])
+        # The ledger's live content survives on disk (T-030 reads the tree).
+        self.assertIn("response",
+                      (self.clone / "logs" / "finalise-state.log").read_text())
+
+    def test_bare_brief_keyed_locks_also_match(self) -> None:
+        """The t071 home lock was keyed on the BARE brief_id — both conventions
+        must release."""
+        self._lock_both(self.BRIEF)
+        results = session_guard.end_guard_all_clones(
+            str(self.clone), session_id=self.SID, brief_id=self.BRIEF)
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(e["lock_released"] for e in results))
+        self.assertEqual(list(session_guard.LOCK_DIR.glob("*.lock")), [])
+
+    def test_unpushed_task_branch_is_kept_and_surfaced(self) -> None:
+        """Per-clone safety semantics preserved: an unpushed task branch is
+        never deleted — ``returned-branch-kept-unpushed`` surfaces instead."""
+        self._lock_both(f"brief:{self.BRIEF}")
+        task_branch = "hephaestus/2026-07-08-t075-unpushed"
+        self._task_branch_commit_push(task_branch, push=False)
+
+        results = session_guard.end_guard_all_clones(
+            str(self.clone), session_id=self.SID, brief_id=self.BRIEF)
+
+        task = [e for e in results if e["kind"] == "task"][0]
+        self.assertTrue(task["return"]["ok"], task)
+        self.assertEqual(task["return"]["disposition"],
+                         "returned-branch-kept-unpushed")
+        self.assertEqual(session_guard.current_branch(self.task_clone), "main")
+        branches = _git(self.task_clone, "branch", "--list", task_branch).stdout
+        self.assertIn(task_branch, branches, "unpushed branch must survive")
+
+    def test_foreign_lock_and_clone_left_untouched(self) -> None:
+        """A lock held by an UNRELATED session must not have its clone returned
+        or its lock removed — owned_sids is not a skeleton key."""
+        session_guard.SessionLock(str(self.clone), f"brief:{self.BRIEF}").acquire()
+        session_guard.SessionLock(str(self.task_clone), "someone-elses-sid").acquire()
+        foreign_branch = "athena/2026-07-08-someone-elses-work"
+        self._task_branch_commit_push(foreign_branch)
+
+        results = session_guard.end_guard_all_clones(
+            str(self.clone), session_id=self.SID, brief_id=self.BRIEF)
+
+        self.assertEqual([e["kind"] for e in results], ["home"])
+        self.assertEqual(session_guard.current_branch(self.task_clone),
+                         foreign_branch, "foreign clone must not be returned")
+        remaining = list(session_guard.LOCK_DIR.glob("*.lock"))
+        self.assertEqual(len(remaining), 1)
+        self.assertIn("someone-elses-sid", remaining[0].read_text())
+
+    def test_task_clone_already_on_main_is_noop(self) -> None:
+        self._lock_both(f"brief:{self.BRIEF}")
+        results = session_guard.end_guard_all_clones(
+            str(self.clone), session_id=self.SID, brief_id=self.BRIEF)
+        task = [e for e in results if e["kind"] == "task"][0]
+        self.assertTrue(task["return"]["ok"])
+        self.assertEqual(task["return"]["disposition"], "already-main")
+        self.assertTrue(task["lock_released"])
+
+    def test_no_home_repo_still_sweeps_task_locks(self) -> None:
+        """A finalise with no resolvable home repo (edge) must still end-guard
+        the lock set rather than strand it."""
+        session_guard.SessionLock(str(self.task_clone), f"brief:{self.BRIEF}").acquire()
+        results = session_guard.end_guard_all_clones(
+            "", session_id=self.SID, brief_id=self.BRIEF)
+        self.assertEqual([e["kind"] for e in results], ["task"])
+        self.assertEqual(list(session_guard.LOCK_DIR.glob("*.lock")), [])
+
+
 class TestResolveHomeRepo(unittest.TestCase):
     """T-054 — the finalise must bind to the agent's own home repo, never the bare
     wandered cwd (the operator-clone hijack: shell ended in `.workspace/academy-admin`)."""

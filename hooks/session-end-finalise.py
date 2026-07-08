@@ -571,20 +571,31 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
     # window while some sessions still run in worktrees.
     # Binds to the resolved home_repo (T-054): return-to-main + lock release always
     # act on the agent's own home repo, never the wandered cwd's `.workspace/*` subrepo.
+    # T-075 F13: the guard now covers EVERY clone this session locked, not just the
+    # home repo — the launch-recorded lock set (~/.claude/session-locks/*.lock keyed
+    # on this session's sid/brief_id) enumerates the task-repo clones that were
+    # previously stranded on their session branches (three consecutive manual
+    # Hermes sweeps of ~/workspace/agent-tooling: t069/t070/t071).
     if home_repo:
         try:
             from lib import session_guard
-            res = session_guard.return_to_main(home_repo)
-            _log(f"session-end main-guard: {res['disposition']} — {res['reason']}",
-                 session_id=session_id,
-                 level="INFO" if res["ok"] else "WARN")
-            _step("return_to_main", res["disposition"] if res["ok"] else "failed")
-            # Lock release keys on both the runtime sid AND the brief_id (T-054): the
-            # launcher takes the lock keyed on brief_id in the brief-first flow, so a
-            # release with only the runtime sid used to always report False.
-            released = session_guard.SessionLock(home_repo, session_id).release(
-                owned_sids=[brief_id] if brief_id else None)
-            _log(f"session lock released: {released}", session_id=session_id)
+            results = session_guard.end_guard_all_clones(
+                home_repo, session_id=session_id, brief_id=brief_id or "")
+            task_failed = False
+            for entry in results:
+                res = entry["return"]
+                _log(f"session-end main-guard [{entry['kind']}] {entry['repo']}: "
+                     f"{res['disposition']} — {res['reason']}; "
+                     f"lock released: {entry['lock_released']}",
+                     session_id=session_id,
+                     level="INFO" if res["ok"] else "WARN")
+                if entry["kind"] == "home":
+                    _step("return_to_main", res["disposition"] if res["ok"] else "failed")
+                elif not res["ok"]:
+                    task_failed = True
+            task_count = sum(1 for e in results if e["kind"] == "task")
+            _step("return_task_clones",
+                  "skipped" if task_count == 0 else ("failed" if task_failed else "done"))
         except Exception as exc:  # never break teardown
             _log(f"session-end main-guard skipped: {exc}",
                  session_id=session_id, level="WARN")
