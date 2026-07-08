@@ -490,6 +490,17 @@ def _lock_path(repo: str) -> Path:
     return LOCK_DIR / f"{key}.lock"
 
 
+def lock_holder(repo: str) -> Optional[dict]:
+    """The current lock holder dict for a clone, or ``None`` when unlocked (or
+    the lock file is unreadable). Read-only — never mutates the lock. The T-075
+    F14 resume-guard reads this to distinguish a live mid-session restart (lock
+    held) from a resume after the finalise released it."""
+    try:
+        return json.loads(_lock_path(repo).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 # A lock older than this with no live owner pid is presumed orphaned (crashed launch
 # that never finalised) and may be stolen — so a dead session can never wedge a clone
 # indefinitely. Well above a normal session's length; finalise releases far sooner.

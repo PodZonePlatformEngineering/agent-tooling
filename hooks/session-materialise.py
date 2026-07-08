@@ -41,6 +41,75 @@ HALT_MESSAGE = (
 )
 
 
+def resumed_after_finalise(session_id: str, cwd: str) -> dict | None:
+    """T-075 F14 resume-guard (plan D-3, operator-confirmed): detect a session
+    resumed AFTER its finalise already completed.
+
+    The Athena T-065 failure (sid ``0e0d37f0``): a CLI restart fired the
+    SessionEnd finalise (result PR raised, session branch deleted, lock
+    released, clone returned to ``main``) — then the resumed conversation came
+    back on the SAME sid, on ``main``, unbranched and unlocked, and post-resume
+    work committed straight to ``main`` outside the guarded lifecycle.
+
+    Halt condition — ALL of: the finalise ledger records ``complete: true`` for
+    the incoming sid, AND the (resolved) home clone is on ``main``, AND no live
+    lock is held for it. A resumed sid still on its live session branch with
+    its lock held (a normal mid-session restart BEFORE finalise) returns
+    ``None`` and passes through unchanged.
+
+    Returns the halt status dict (``ok: false``, reason
+    ``resumed-after-finalise``, re-arm instructions) or ``None`` to proceed."""
+    if not session_id:
+        return None
+    try:
+        from lib import finalise_ledger, session_guard
+    except Exception:
+        return None  # guard is best-effort; materialise's own paths still run
+    try:
+        if not finalise_ledger.is_complete(session_id):
+            return None
+        home_repo = session_guard.resolve_home_repo(cwd)
+        if not home_repo:
+            return None
+        if session_guard.current_branch(home_repo) != "main":
+            return None  # live session branch — mid-session restart, pass through
+        if session_guard.lock_holder(home_repo) is not None:
+            return None  # a live lock is held — not the after-finalise state
+    except Exception:
+        return None
+    brief_id = os.environ.get("BRIEF_ID", "").strip()
+    rearm_branch = f"session/{{agent}}-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}-{{slug}}"
+    return {
+        "ok": False,
+        "reason": "resumed-after-finalise",
+        "session_id": session_id,
+        "ts": _now(),
+        "rearm": {
+            "branch": rearm_branch,
+            "lock_sid": brief_id or session_id,
+            "steps": [
+                f"git -C {home_repo} checkout -b {rearm_branch}  # re-branch, keyed to the same brief",
+                f"python3 ~/workspace/agent-tooling/lib/session_guard.py lock "
+                f"--repo {home_repo} --sid '{brief_id or session_id}'  # re-lock",
+                "then continue the brief's work on the new branch",
+            ],
+        },
+    }
+
+
+def _resume_halt_message(status: dict) -> str:
+    steps = "\n".join(f"  {i}. {s}" for i, s in
+                      enumerate(status.get("rearm", {}).get("steps", []), 1))
+    return (
+        "⛔ RESUMED-AFTER-FINALISE — this session's finalise already completed "
+        "(result PR raised, session branch deleted, lock released, clone "
+        "returned to main). This resumed conversation is on `main`, UNBRANCHED "
+        "and UNLOCKED — do NOT accept or commit any work in this state. "
+        "Re-arm the guarded lifecycle first:\n"
+        f"{steps}"
+    )
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -252,6 +321,16 @@ def main() -> int:
 
     session_id = data.get("session_id", "")
     cwd = data.get("cwd", ".")
+
+    # Resume-guard (PROJ-039/T-075 F14): a sid whose finalise already completed
+    # must never accept work unbranched on main — HALT before EITHER materialise
+    # path can overwrite the sentinel with ok:true. A mid-session restart (live
+    # session branch + lock held) passes through to the normal paths below.
+    halt = resumed_after_finalise(session_id, cwd)
+    if halt is not None:
+        _write_status(Path(cwd) / ".workspace", halt)
+        _emit_context(_resume_halt_message(halt))
+        return 0
 
     # Brief-first path (PROJ-039/T-043): a BRIEF_ID env var (settings.local.json
     # env block or shell env at launch) selects the decoupled flow — resolve the
