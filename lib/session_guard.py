@@ -29,9 +29,22 @@ import json
 import os
 import re
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+# Bare-script shim (PROJ-039/T-075 F9, plan D-7): the documented invocation
+# `python3 …/lib/session_guard.py <cmd>` runs this file as __main__ with
+# sys.path[0] = lib/ — `from lib import …` then fails, and the bare fallback
+# below crashes one level deeper (finalise_ledger's relative
+# `from . import runtime_log` has no parent package). Putting the repo root on
+# sys.path first makes the package import work from ANY cwd with an empty
+# PYTHONPATH — the same anchor pattern the hooks/ entrypoints use.
+if __package__ in (None, ""):  # pragma: no cover — bare-script run only
+    _repo_root = str(Path(__file__).resolve().parents[1])
+    if _repo_root not in sys.path:
+        sys.path.insert(0, _repo_root)
 
 try:  # closure-leaf import; both live in .claude/lib/ in a home repo
     from lib import finalise_ledger
@@ -737,7 +750,7 @@ def _main(argv: Optional[list] = None) -> int:
     if args.cmd == "preflight":
         res = preflight(args.repo, auto_recover=not args.no_recover)
         print(json.dumps(res))
-        print(res["message"], file=__import__("sys").stderr)
+        print(res["message"], file=sys.stderr)
         return 0 if res["decision"] in ("ready", "recovered") else 3
     if args.cmd == "return-to-main":
         res = return_to_main(args.repo, args.branch)

@@ -463,6 +463,39 @@ class TestSessionLock(unittest.TestCase):
         self.assertTrue(other.path.exists())
 
 
+class TestBareScriptInvocation(_GitFixture):
+    """T-075 F9 (plan D-7) — the documented CLI form must work BARE:
+    ``python3 …/lib/session_guard.py <cmd>`` from any cwd with an empty
+    PYTHONPATH. Pre-fix it crashed at import (sys.path[0] = lib/, so the
+    ``lib`` package is invisible and the bare fallback dies one level deeper
+    on finalise_ledger's relative import) — hit live at the T-069 launch and
+    PYTHONPATH-worked-around at every launch since."""
+
+    SCRIPT = REPO_ROOT / "lib" / "session_guard.py"
+
+    def _bare_run(self, *args: str) -> subprocess.CompletedProcess:
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        env["PYTHONPATH"] = ""
+        return subprocess.run(
+            [sys.executable, str(self.SCRIPT), *args],
+            cwd=self._tmp.name,  # a foreign cwd — not the agent-tooling repo
+            env=env, capture_output=True, text=True,
+        )
+
+    def test_bare_preflight_runs_from_foreign_cwd(self) -> None:
+        cp = self._bare_run("preflight", "--repo", str(self.clone))
+        self.assertNotIn("ModuleNotFoundError", cp.stderr, cp.stderr)
+        self.assertNotIn("ImportError", cp.stderr, cp.stderr)
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(json.loads(cp.stdout.splitlines()[0])["decision"], "ready")
+
+    def test_bare_return_to_main_runs_from_foreign_cwd(self) -> None:
+        cp = self._bare_run("return-to-main", "--repo", str(self.clone))
+        self.assertEqual(cp.returncode, 0, cp.stderr)
+        self.assertEqual(json.loads(cp.stdout.splitlines()[0])["disposition"],
+                         "already-main")
+
+
 class TestOwnedSidSet(unittest.TestCase):
     """T-075 F13 — the sid forms a launch may key locks under. Observed on disk:
     the runtime UUID (pinned-sid launch), the bare brief_id (t071 home lock) AND
