@@ -93,7 +93,7 @@ fi
 # The real PROJ-039 substrate working set — the hooks proven on the Hephaestus
 # canary, NOT the v2.0 stubs (startup.sh / session-end.sh / task-event.sh) that
 # never existed as a runnable set. The universal substrate (session-start +
-# user-prompt-submit + pre/post-tool-use + post-compact + stop, with
+# user-prompt-submit + post-compact + stop, with
 # append-session-stop.py as stop.sh's per-Stop tasking helper) emits session
 # telemetry + tasking for every role. Roles that spawn subagents
 # (coder / cluster-operator) additionally carry the SubagentStop chain.
@@ -113,7 +113,11 @@ fi
 # the SessionStart wiring pointed at a missing file and failed silently → no brief-first
 # session point, session_ids[] never appended, finalise ran "not brief-first". Resident
 # + committed-settings.json-wired kills that class.
-SUBSTRATE_BASE="session-start.sh session-materialise.py user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py session-end-finalise.py"
+# Pre/PostToolUse CST writers retired at T-073 (CC-383): 91% of the collection
+# was per-tool-call noise — the writers left the set, RETIRED_HOOKS prunes the
+# resident copies, and the settings unwire step below strips their wiring.
+SUBSTRATE_BASE="session-start.sh session-materialise.py user-prompt-submit.sh post-compact.sh stop.sh stop-telemetry.py append-session-stop.py session-end-finalise.py"
+RETIRED_HOOKS="pre-tool-use.sh post-tool-use.sh"
 role_hooks() {
   case "$1" in
     team-lead)             echo "${SUBSTRATE_BASE}" ;;
@@ -212,6 +216,70 @@ for hook in $(role_hooks "$ROLE"); do
   echo "  Updated: ${hook}"
   ((UPDATED++))
 done
+
+# --- Retired hooks prune + settings unwire (PROJ-039/T-073, CC-383) ---
+# The Pre/PostToolUse CST writers left the substrate set; existing fleet repos
+# carry resident copies AND committed settings.json wiring, so a plain list-drop
+# would leave every repo firing hooks at deleted scripts. Prune the files and
+# strip ONLY the entries whose command references a retired script (other
+# Pre/PostToolUse hooks — e.g. the trainee read guard — stay wired).
+
+echo ""
+echo "==> Pruning retired hooks (${RETIRED_HOOKS})"
+
+for hook in $RETIRED_HOOKS; do
+  dst="${HOOKS_DST}/${hook}"
+  if [[ -f "$dst" ]]; then
+    rm -f "$dst"
+    echo "  Removed: ${hook} — retired (T-073)"
+    ((UPDATED++))
+  else
+    echo "  OK    ${hook} — already absent"
+    ((UNCHANGED++))
+  fi
+done
+
+UNWIRE_SETTINGS="${HOME_REPO}/.claude/settings.json"
+if [[ -f "$UNWIRE_SETTINGS" ]]; then
+  python3 - "$UNWIRE_SETTINGS" <<'UNWIRE_PY' | sed 's/^/  /'
+import json, sys
+
+RETIRED = ("pre-tool-use.sh", "post-tool-use.sh")
+path = sys.argv[1]
+with open(path, encoding="utf-8") as fh:
+    settings = json.load(fh)
+
+changed = False
+hooks = settings.get("hooks") or {}
+for event in list(hooks):
+    groups = hooks[event]
+    if not isinstance(groups, list):
+        continue
+    for group in groups:
+        cmds = group.get("hooks")
+        if not isinstance(cmds, list):
+            continue
+        kept = [c for c in cmds
+                if not any(r in (c.get("command") or "") for r in RETIRED)]
+        if len(kept) != len(cmds):
+            group["hooks"] = kept
+            changed = True
+    pruned = [g for g in groups if g.get("hooks")]
+    if pruned != groups:
+        hooks[event] = pruned
+        changed = True
+    if not hooks[event]:
+        del hooks[event]
+        changed = True
+
+if changed:
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps(settings, indent=2) + "\n")
+    print("Unwired retired hook entries from settings.json")
+else:
+    print("OK    settings.json — no retired hook wiring")
+UNWIRE_PY
+fi
 
 # --- Resident dependency dirs (primitives/ + lib/) ---
 

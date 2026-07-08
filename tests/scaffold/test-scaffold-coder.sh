@@ -30,7 +30,7 @@ SETTINGS="${TARGET}/.claude/settings.json"
 
 # 1. Substrate base hooks present (v2.1)
 assert "session-start.sh present" "$([ -f "${HOOKS_DIR}/session-start.sh" ] && echo ok || echo fail)"
-assert "post-tool-use.sh present" "$([ -f "${HOOKS_DIR}/post-tool-use.sh" ] && echo ok || echo fail)"
+assert "post-tool-use.sh NOT present (retired T-073)" "$([ ! -f "${HOOKS_DIR}/post-tool-use.sh" ] && echo ok || echo fail)"
 assert "stop.sh present"          "$([ -f "${HOOKS_DIR}/stop.sh" ] && echo ok || echo fail)"
 assert "append-session-stop.py present" "$([ -f "${HOOKS_DIR}/append-session-stop.py" ] && echo ok || echo fail)"
 
@@ -78,7 +78,7 @@ assert "no decay/ over-copy"           "$([ ! -e "${TARGET}/.claude/lib/decay" ]
 
 # 4. settings.json: valid grouped JSON with substrate + SubagentStop
 assert "settings.json valid JSON"       "$(python3 -c 'import json;json.load(open("'"$SETTINGS"'"))' 2>/dev/null && echo ok || echo fail)"
-assert "settings.json has PostToolUse"  "$(grep -q 'PostToolUse'  "$SETTINGS" && echo ok || echo fail)"
+assert "settings.json no PostToolUse (retired T-073)" "$(! grep -q 'PostToolUse' "$SETTINGS" && echo ok || echo fail)"
 assert "settings.json has SubagentStop" "$(grep -q 'SubagentStop' "$SETTINGS" && echo ok || echo fail)"
 assert "settings.json has SessionStart" "$(grep -q 'SessionStart' "$SETTINGS" && echo ok || echo fail)"
 assert "settings.json has Stop"         "$(grep -q '"Stop"'       "$SETTINGS" && echo ok || echo fail)"
