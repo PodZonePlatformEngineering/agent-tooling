@@ -113,7 +113,7 @@ fi
 # the SessionStart wiring pointed at a missing file and failed silently → no brief-first
 # session point, session_ids[] never appended, finalise ran "not brief-first". Resident
 # + committed-settings.json-wired kills that class.
-SUBSTRATE_BASE="session-start.sh session-materialise.py user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh append-session-stop.py session-end-finalise.py"
+SUBSTRATE_BASE="session-start.sh session-materialise.py user-prompt-submit.sh pre-tool-use.sh post-tool-use.sh post-compact.sh stop.sh stop-telemetry.py append-session-stop.py session-end-finalise.py"
 role_hooks() {
   case "$1" in
     team-lead)             echo "${SUBSTRATE_BASE}" ;;
