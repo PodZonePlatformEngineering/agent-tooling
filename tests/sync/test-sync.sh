@@ -130,6 +130,45 @@ assert "lifecycle_mode: trunk survives a re-sync unchanged" \
 assert "stop.sh still matches source" \
   "$(diff -q "${AGENT_TOOLING_DIR}/hooks/stop.sh" "${TARGET}/.claude/hooks/stop.sh" > /dev/null 2>&1 && echo ok || echo fail)"
 
+# 5b. Team-lead operating manual (PROJ-039/T-081): rendered per-repo, drift
+# restored on sync, in the manifest root_files, byte-identical across re-sync.
+LEAD="/tmp/test-sync-lead-$$"
+NO_TELEMETRY_BOOTSTRAP=1 bash "${AGENT_TOOLING_DIR}/scaffold.sh" training leadsync team-lead --target-dir "$LEAD" > /dev/null
+LEAD_MANUAL="${LEAD}/OPERATING-MANUAL.md"
+assert "team-lead scaffold emitted OPERATING-MANUAL.md" \
+  "$([ -f "$LEAD_MANUAL" ] && echo ok || echo fail)"
+echo "# HAND EDIT" >> "$LEAD_MANUAL"
+bash "${AGENT_TOOLING_DIR}/sync-agent-tooling.sh" \
+  --role team-lead --home-repo "$LEAD" --agent-tooling "${AGENT_TOOLING_DIR}" \
+  --yes > /tmp/test-sync-lead-out-$$ 2>&1
+assert "hand-edited manual restored by sync" \
+  "$(! grep -q 'HAND EDIT' "$LEAD_MANUAL" && echo ok || echo fail)"
+assert "restored manual carries this repo's substitutions" \
+  "$(grep -q 'home-training-leadsync' "$LEAD_MANUAL" && echo ok || echo fail)"
+assert "sync output shows manual restored" \
+  "$(grep -q 'Updated: OPERATING-MANUAL.md' /tmp/test-sync-lead-out-$$ && echo ok || echo fail)"
+LEAD_MANIFEST="${LEAD}/.claude/tooling-manifest.json"
+assert "manifest root_files carries OPERATING-MANUAL.md sha256 matching shipped file" \
+  "$(python3 -c "
+import hashlib, json
+d = json.load(open('${LEAD_MANIFEST}'))
+want = hashlib.sha256(open('${LEAD_MANUAL}', 'rb').read()).hexdigest()
+exit(0 if d.get('root_files', {}).get('OPERATING-MANUAL.md') == want else 1)
+" && echo ok || echo fail)"
+cp "$LEAD_MANUAL" /tmp/test-sync-lead-manual-$$
+bash "${AGENT_TOOLING_DIR}/sync-agent-tooling.sh" \
+  --role team-lead --home-repo "$LEAD" --agent-tooling "${AGENT_TOOLING_DIR}" \
+  --yes > /tmp/test-sync-lead-out2-$$ 2>&1
+assert "manual byte-identical across re-sync (idempotent)" \
+  "$(diff -q /tmp/test-sync-lead-manual-$$ "$LEAD_MANUAL" > /dev/null 2>&1 && echo ok || echo fail)"
+assert "re-sync reports manual unchanged" \
+  "$(grep -q 'OK    OPERATING-MANUAL.md — unchanged' /tmp/test-sync-lead-out2-$$ && echo ok || echo fail)"
+rm -rf "$LEAD" /tmp/test-sync-lead-out-$$ /tmp/test-sync-lead-out2-$$ /tmp/test-sync-lead-manual-$$
+
+# 5c. Non-team-lead sync does not create a manual
+assert "trainer repo has no OPERATING-MANUAL.md after sync" \
+  "$([ ! -f "${TARGET}/OPERATING-MANUAL.md" ] && echo ok || echo fail)"
+
 # 6. Auto-detect role from identity YAML (no --role flag)
 bash "${AGENT_TOOLING_DIR}/scaffold.sh" training auto-test trainer --target-dir "${TARGET}-auto" > /dev/null
 echo "# DRIFT" >> "${TARGET}-auto/.claude/hooks/session-start.sh"
