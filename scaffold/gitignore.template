@@ -10,21 +10,15 @@ __pycache__/
 *.pyo
 
 # Local tool state
-# logs/*.log is WORKING STATE (PROJ-039/T-068, reverting T-062's blanket un-ignore):
-# the finalise ledger (finalise-state.log) and the unkeyed libraries.log/
-# primitives.log are written to by every session in turn, so any tracked copy
-# inevitably diverges between a session branch's fork point and origin/main by
-# the time that session's return_to_main runs -- a real git checkout/merge
-# conflict, not a hypothetical one (see sid ca95a57b, home 3ad6e62). Recovery
-# guards (T-030) read the ledger straight off the working tree, so an ignored
-# file changes nothing for them.
-#
-# The T-062 operator intent (completed session logs ride the result PR as
-# durable diagnostics) is kept by different means: the finalise force-adds
-# (`git add -f`) THIS session's own sid-keyed logs (libraries-{sid8}.log,
-# primitives-{sid8}.log) into its result commit explicitly, before
-# return_to_main runs (lib/session_guard.py stage_session_logs).
-logs/*.log
+# logs/ is WORKING STATE, never committed (PROJ-039/T-093, operator decision
+# 2026-07-09 — reverses T-062/T-068's narrower `logs/*.log` accommodation).
+# Durability for completed sessions' logs is the agent-telemetry repo push
+# (lib/telemetry_repo), not a tracked copy here. Trainee repos are the one
+# exception: they commit their live working tree wholesale to a session
+# branch (lib/session_guard.py stage_session_logs still force-stages their
+# sid-keyed logs before that wholesale add) — unaffected by this ignore,
+# since a force-add always overrides it.
+logs/
 .env
 
 # Per-home-repo scoped env block (plaintext secrets until PROJ-003) — NEVER commit.

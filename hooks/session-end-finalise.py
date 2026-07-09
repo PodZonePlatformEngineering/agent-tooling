@@ -689,54 +689,17 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
         finalise_ledger.complete(session_id)
     _log("finalise complete", session_id=session_id)
 
-    # NOTE (PROJ-039/T-068): there is deliberately no "step 9" post-finalise log-tail
-    # commit here for the BRANCH-mode path. T-063 (v1.2.1) added `commit_log_tail()`
-    # as that literal last act because `logs/*.log` was blanket-tracked (T-062) and
-    # every step above (including this very `complete()` write) dirtied it — but the
-    # ledger and every live per-session log are GITIGNORED again as of T-068 (they
-    # are working state; a gitignored file is still readable on disk, so the T-030
-    # recovery guard is unaffected). Branch-mode's result commit lands in an
-    # ISOLATED WORKTREE (session_finalise.commit_home_result /
-    # author_trainee_session_pr force-add THIS session's own sid-keyed logs there,
-    # before return_to_main runs above) — the live clone's `logs/` tree is never
-    # force-added, so nothing written after this point can dirty a tracked path on
-    # branch-mode's live clone.
-    #
-    # Trunk-mode (PROJ-039/T-091) is the exception: `author_home_result_trunk` (step
-    # 7 above) force-adds + commits + pushes this session's sid-keyed logs straight
-    # into the LIVE working tree (there is no worktree/branch to isolate into — the
-    # result commit IS the working-tree commit). Every _log() call between that push
-    # and here (the main-guard, the archivist gate, the ledger `complete()` write,
-    # the line just above) re-dirties that now-tracked file, so trunk mode needs
-    # its own literal-last-act tail commit — the T-063 pattern, scoped to trunk only
-    # so branch-mode behaviour stays byte-for-byte unchanged (first hit: sid
-    # `7aaf93d5`, dogfood T-086).
-    if home_repo:
-        try:
-            from lib import lifecycle_mode as _lm_tail
-            if _lm_tail.is_trunk_mode(home_repo):
-                from lib import session_finalise as _sf_tail
-                tail = _sf_tail.commit_trunk_log_tail(home_repo)
-                # stderr ONLY below — this is the literal last act; a runtime_log
-                # (_log) call here would append to the very file the tail commit
-                # just cleaned and re-dirty it (self-inflicted, caught live by
-                # TestTrunkFinaliseNoPostCommitDirt).
-                print(
-                    f"[{COMPONENT}] trunk log tail [{tail['disposition']}]: "
-                    f"ok={tail['ok']} {tail.get('reason') or ''}",
-                    file=sys.stderr,
-                )
-                if tail["disposition"] == "halted":
-                    print(
-                        f"[{COMPONENT}] HALT: trunk-mode post-finalise log tail "
-                        f"could not be pushed to {home_repo} main after a rebase + "
-                        "retry — the tail commit is LOCAL ONLY (never force-pushed). "
-                        f"Resolve by hand: git -C {home_repo} push (or "
-                        f"git -C {home_repo} reset --soft HEAD~1 to undo).",
-                        file=sys.stderr,
-                    )
-        except Exception:
-            pass  # never break teardown — the next preflight surfaces anything left
+    # NOTE (PROJ-039/T-093): there is no post-finalise log-tail commit for either
+    # mode. `logs/` is fully gitignored (root .gitignore) and nothing force-adds
+    # session logs into git anymore — the T-091 trunk tail commit this comment
+    # block used to describe is retired along with the machinery it existed to
+    # sweep up after (`commit_trunk_log_tail`, `session_guard.stage_session_logs`
+    # from the home-repo result paths). A trunk session's result commit is the
+    # only commit; nothing written after it can dirty a tracked path. Durable
+    # copies of this session's logs ride the telemetry-repo push instead (step 7
+    # above, `lib/telemetry_repo`). The trainee path is unaffected — it commits
+    # the live tree wholesale and still force-stages its own sid-keyed logs
+    # (`session_guard.stage_session_logs`, unchanged).
     return 0
 
 

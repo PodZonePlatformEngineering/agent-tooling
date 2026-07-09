@@ -413,23 +413,29 @@ def return_to_main(repo_dir: str, session_branch: Optional[str] = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Completed-session log staging (PROJ-039/T-068)
+# Completed-session log staging (PROJ-039/T-068, trainee-only as of T-093)
 # ---------------------------------------------------------------------------
 #
 # Retires ``commit_log_tail`` (T-063, v1.2.1): with the ledger + live logs
 # gitignored again, there is no more post-return-to-main tracked-log dirt for a
 # tail commit to sweep — the class of bug it existed to paper over
 # (``return_to_main`` refusing on ledger dirt) is fixed at the source instead
-# (see :func:`return_to_main`'s residual-log-dirt tolerance above). What T-062
-# actually wanted — completed session logs riding the result PR — is served by
-# :func:`stage_session_logs` below, called explicitly by the finalise's result-
-# authoring step (BEFORE ``return_to_main`` runs), not by a last-act sweep.
+# (see :func:`return_to_main`'s residual-log-dirt tolerance above).
+#
+# PROJ-039/T-093 retired the home-repo (branch- and trunk-mode) call sites:
+# operator decision reversed the T-062/T-068 "completed logs ride the result
+# PR" intent for agent home repos — ``logs/`` is now a plain gitignore entry
+# and durability moves to the agent-telemetry repo push instead. The trainee
+# path (:func:`session_finalise.author_trainee_session_pr`) is UNCHANGED — it
+# commits the live working tree wholesale to a session branch, and its sid-
+# keyed logs are still gitignored, so this function is still called there to
+# force-stage them before the wholesale ``add -A``.
 
 def stage_session_logs(repo_dir: str, session_id: str, *,
                         dest_dir: Optional[str] = None) -> list[str]:
-    """Force-stage THIS session's own sid-keyed log files so they ride the
-    finalise's own result commit (the T-062 operator intent, kept without
-    blanket-tracking ``logs/*.log`` — PROJ-039/T-068).
+    """Force-stage THIS session's own sid-keyed log files so they ride a
+    result/session commit (trainee path only as of PROJ-039/T-093 — see
+    module note above).
 
     Finds files under ``{repo_dir}/logs`` whose name carries the session's
     8-char sid tag (e.g. ``libraries-{sid8}.log``, ``primitives-{sid8}.log``,

@@ -742,13 +742,6 @@ def commit_home_result(
         (Path(worktree) / rel_path).write_text(result_text, encoding="utf-8")
         _git(worktree, "add", rel_path)
 
-        # T-068: force-stage THIS session's own sid-keyed logs (gitignored again,
-        # see scaffold/gitignore.template) into the SAME commit, copying them from
-        # the live repo_dir into this isolated worktree — before return_to_main
-        # runs, per the brief's "completed logs still ride the result PR" acceptance.
-        from lib import session_guard as _sgd
-        _sgd.stage_session_logs(repo_dir, session_id, dest_dir=worktree)
-
         commit = _git(worktree, "commit", "-m",
                       f"chore(session-result): {work_item} ({date}) [{session_id[:8]}]")
         out = (commit.stdout + commit.stderr).lower()
@@ -878,11 +871,6 @@ def commit_and_push_trunk(
         (Path(repo_dir) / rel_path).write_text(result_text, encoding="utf-8")
         _git(repo_dir, "add", rel_path)
 
-        # T-068 parity: force-stage this session's own sid-keyed logs into the
-        # SAME commit, in place (dest_dir omitted — live tree, not a worktree).
-        from lib import session_guard as _sgd
-        _sgd.stage_session_logs(repo_dir, session_id)
-
         commit = _git(repo_dir, "commit", "-m",
                       f"chore(session-result): {work_item} ({date}) [{session_id[:8]}]")
         out = (commit.stdout + commit.stderr).lower()
@@ -918,97 +906,6 @@ def commit_and_push_trunk(
         result["reason"] = str(exc)
         if result["disposition"] != "deferred-cancelled":
             result["disposition"] = "halted"
-        return result
-
-
-def commit_trunk_log_tail(repo_dir: str) -> dict:
-    """Trunk-mode post-finalise log-tail commit (PROJ-039/T-091) — the trunk
-    path's true **last act**, mirroring the retired branch-mode
-    ``commit_log_tail`` (T-063/T-068).
-
-    Unlike branch-mode's :func:`commit_home_result`, which authors the result in
-    an **isolated worktree** (the live clone/branch is never touched),
-    :func:`commit_and_push_trunk` force-stages + commits + pushes THIS session's
-    sid-keyed logs straight into the **live working tree** — because trunk mode
-    has no worktree/branch to isolate into; the result commit IS the working-tree
-    commit. Every finalise step that runs (and calls ``runtime_log.log_library``)
-    AFTER that push — the session-end main-guard, the archivist gate, the ledger
-    ``complete()`` write, the final "finalise complete" line — appends to that
-    now-tracked ``logs/libraries-{sid8}.log``, leaving the clone dirty on `main`
-    for the next `session_guard.preflight` to HALT on (T-091, first hit: sid
-    ``7aaf93d5``).
-
-    Call this ONLY as the literal final step of the trunk finalise, after every
-    other log line has been written — anything logged after this call re-dirties
-    the tree it just cleaned.
-
-    Refuses (``halt-non-log-dirt``, no commit made) if the dirty set contains
-    anything outside ``logs/`` (or the benign ``.DS_Store``) — that is real
-    uncommitted work and must surface via the normal ``preflight`` halt, not be
-    silently swept into a log-only commit. A clean tree (nothing landed after the
-    result commit — e.g. no _log() calls fired) is a no-op. On push failure,
-    rebases onto freshly-fetched ``origin/main`` and retries once, same as
-    :func:`commit_and_push_trunk`; if it still fails, the commit stays LOCAL
-    (never force-pushed) and this returns ``disposition="halted"``.
-
-    Returns ``{"ok", "disposition", "reason"}``. Never raises — best-effort;
-    teardown must not break on a tail-commit hiccup.
-    """
-    result = {"ok": False, "disposition": "noop", "reason": ""}
-    try:
-        porcelain = _git(repo_dir, "status", "--porcelain").stdout
-        paths = [line[3:].strip() for line in porcelain.splitlines() if line.strip()]
-        if not paths:
-            result.update(ok=True, disposition="clean", reason="nothing to commit")
-            return result
-
-        non_log = [p for p in paths
-                   if not p.startswith("logs/") and Path(p).name != ".DS_Store"]
-        if non_log:
-            result.update(disposition="halt-non-log-dirt",
-                          reason=f"dirty tree includes non-log paths {non_log} — not "
-                                 f"auto-committed; a real preflight halt is correct here")
-            return result
-
-        # `-u` (not a plain `add logs/`): stages modifications to ALREADY-TRACKED
-        # paths only. logs/ is gitignored (T-068) — the sid-keyed log was force-added
-        # (`-f`) into the trunk result commit, so it IS tracked, but a plain
-        # `git add logs/` still refuses on the ignored directory ("paths are ignored
-        # by one of your .gitignore files"). `-u` never consults .gitignore for
-        # already-tracked paths, so it stages the post-commit append cleanly.
-        add = _git(repo_dir, "add", "-u", "logs/")
-        if add.returncode != 0:
-            result["reason"] = f"git add -u logs/ failed: {add.stderr.strip()}"
-            return result
-        commit = _git(repo_dir, "commit", "-m", "chore(logs): post-finalise tail")
-        out = (commit.stdout + commit.stderr).lower()
-        if commit.returncode != 0 and "nothing to commit" not in out:
-            result["reason"] = f"commit failed: {commit.stderr.strip()}"
-            return result
-
-        for attempt in (1, 2):
-            rebase = _git(repo_dir, "pull", "--rebase", "origin", "main")
-            if rebase.returncode != 0:
-                result["reason"] = (
-                    f"pull --rebase failed (attempt {attempt}): {rebase.stderr.strip()}"
-                )
-                _git(repo_dir, "rebase", "--abort")
-                if attempt == 2:
-                    result["disposition"] = "halted"
-                    return result
-                continue
-            push = _git(repo_dir, "push", "origin", "main")
-            if push.returncode == 0:
-                result.update(ok=True, disposition="committed-and-pushed",
-                              reason="post-finalise log tail committed + pushed")
-                return result
-            result["reason"] = f"push failed (attempt {attempt}): {push.stderr.strip()}"
-            if attempt == 2:
-                result["disposition"] = "halted"
-                return result
-        return result
-    except Exception as exc:  # never break teardown
-        result["reason"] = f"commit_trunk_log_tail error: {exc}"
         return result
 
 
