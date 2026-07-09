@@ -14,11 +14,28 @@ required acceptance paths are OBSERVED, not just asserted:
 
 Also covers `lib.lifecycle_mode.read_lifecycle_mode` (manifest absent/present/
 corrupt) and the idempotent re-run no-op (result already on `origin/main`).
+
+`TestCommitTrunkLogTail` and `TestTrunkFinaliseNoPostCommitDirt` (PROJ-039/T-091)
+cover the post-commit log-tail regression: in trunk mode `commit_and_push_trunk`
+force-adds + commits + pushes THIS session's sid-keyed logs straight into the LIVE
+working tree (no isolated worktree to shield it, unlike branch-mode). Every
+finalise step that runs afterwards (session-end main-guard, the ledger
+`complete()` write, the final "finalise complete" log line) calls
+`runtime_log.log_library`, which appends to that now-tracked file — leaving the
+clone dirty on `main` for the next `session_guard.preflight` to HALT on (first
+hit: sid `7aaf93d5`, T-086 dogfood). `TestTrunkFinaliseNoPostCommitDirt` drives
+the REAL `session-end-finalise.py` hook end-to-end against a real git repo and
+asserts a clean working tree afterwards — it fails on the pre-fix ordering
+(dirty tree) and passes once `commit_trunk_log_tail` runs as the finalise's
+literal last act.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -28,7 +45,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
-from lib import lifecycle_mode, session_finalise  # noqa: E402
+from lib import (  # noqa: E402
+    lifecycle_mode, session_finalise, session_guard, session_substrate,
+    telemetry_repo, cst_cleanup, brief_substrate,
+)
+
+HOOK_PATH = REPO_ROOT / "hooks" / "session-end-finalise.py"
+
+
+def _load_hook():
+    spec = importlib.util.spec_from_file_location("session_end_finalise", HOOK_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _run(*args, cwd=None):
@@ -166,6 +195,154 @@ class TestCommitAndPushTrunkConflictRetryHalt(_GitFixture):
             (Path(self.clone) / rebase_dir_git / "rebase-merge").exists()
             or (Path(self.clone) / rebase_dir_git / "rebase-apply").exists()
         )
+
+
+class TestCommitTrunkLogTail(_GitFixture):
+    """Unit coverage of `session_finalise.commit_trunk_log_tail` (T-091)."""
+
+    def test_noop_when_clean(self) -> None:
+        res = session_finalise.commit_trunk_log_tail(str(self.clone))
+        self.assertTrue(res["ok"])
+        self.assertEqual(res["disposition"], "clean")
+
+    def test_commits_and_pushes_log_only_dirt(self) -> None:
+        # Simulate a trunk result commit that already force-added a sid-keyed log,
+        # then a POST-commit `_log()` line landing after the push (the T-091 class).
+        sid8 = "7aaf93d5"
+        log_rel = f"logs/libraries-{sid8}.log"
+        (self.clone / "logs").mkdir(parents=True, exist_ok=True)
+        (self.clone / log_rel).write_text("line written before the result commit\n")
+        _git(self.clone, "add", "-f", log_rel)
+        _git(self.clone, "commit", "-m", "chore(session-result): pretend result")
+        _git(self.clone, "push", "origin", "main")
+
+        with open(self.clone / log_rel, "a", encoding="utf-8") as fh:
+            fh.write("finalise complete\n")  # the post-commit tail line
+        self.assertNotEqual(
+            _git(self.clone, "status", "--porcelain").stdout.strip(), "",
+            "fixture sanity: the post-commit append must actually dirty the tree",
+        )
+
+        res = session_finalise.commit_trunk_log_tail(str(self.clone))
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["disposition"], "committed-and-pushed")
+        self.assertEqual(_git(self.clone, "status", "--porcelain").stdout.strip(), "")
+
+        fresh = Path(self._tmp.name) / "fresh-tail"
+        _run("git", "clone", str(self.origin), str(fresh))
+        self.assertIn("finalise complete", (fresh / log_rel).read_text())
+
+    def test_refuses_on_non_log_dirt(self) -> None:
+        (self.clone / "results").mkdir(parents=True, exist_ok=True)
+        (self.clone / "results" / "real-work.md").write_text("uncommitted work\n")
+
+        res = session_finalise.commit_trunk_log_tail(str(self.clone))
+        self.assertFalse(res["ok"])
+        self.assertEqual(res["disposition"], "halt-non-log-dirt")
+        # Left exactly as found — real work is never auto-committed.
+        status = _git(self.clone, "status", "--porcelain").stdout
+        self.assertIn("results/", status)
+
+
+SESSION_POINT = {
+    "session_id": "7aaf93d5-1234-4f78-aba6-29dcf3c4e55a",
+    "agent": "Hephaestus", "work_item": "PROJ-039/T-091",
+    "brief_id": "", "brief": {"text": "trunk log tail fix"},
+    "response": {"text": "done", "status_transition": "in_progress->complete"},
+    "rollup": {},
+}
+
+
+class TestTrunkFinaliseNoPostCommitDirt(unittest.TestCase):
+    """End-to-end regression (T-091): drive the REAL `session-end-finalise.py`
+    hook against a real trunk-mode home repo and assert it exits with a clean
+    working tree. FAILS on the pre-fix ordering — the hook's own post-commit
+    `_log()` calls (main-guard, ledger `complete()`, the final log line) re-dirty
+    the sid-keyed log file that `commit_and_push_trunk` just force-added, commit-
+    ted, and pushed — and PASSES once `commit_trunk_log_tail` runs as the trunk
+    finalise's literal last act.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        self.origin = base / "home.git"
+        self.home = base / "home-podzone-hephaestus"
+        _run("git", "init", "--bare", "-b", "main", str(self.origin))
+        _run("git", "clone", str(self.origin), str(self.home))
+        for k, v in (("user.email", "t@t"), ("user.name", "T"),
+                     ("commit.gpgsign", "false")):
+            _git(self.home, "config", k, v)
+        claude_dir = self.home / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "tooling-manifest.json").write_text(
+            json.dumps({"version": "1.8.1", "lifecycle_mode": "trunk"}))
+        (self.home / ".gitignore").write_text("logs/\n")
+        _git(self.home, "add", ".claude", ".gitignore")
+        _git(self.home, "commit", "-m", "init")
+        _git(self.home, "push", "origin", "main")
+
+        self._orig_lockdir = session_guard.LOCK_DIR
+        session_guard.LOCK_DIR = base / "locks"
+        self.sid = SESSION_POINT["session_id"]
+        acq = session_guard.SessionLock(str(self.home), self.sid).acquire()
+        assert acq["ok"], acq
+
+        self._patches = []
+        self._patch(session_substrate, "upsert_response", lambda *a, **k: None)
+        self._patch(session_substrate, "get_session_point", lambda sid: SESSION_POINT)
+        self._patch(session_substrate, "compute_rollup",
+                    lambda tp: {"tool_usage": {}, "cost_tokens": {}})
+        self._patch(session_substrate, "attach_rollup", lambda *a, **k: None)
+        self._patch(brief_substrate, "complete_brief", lambda *a, **k: None)
+        self._patch(telemetry_repo, "resolve_remote", lambda *a, **k: None)
+        self._patch(telemetry_repo, "ensure_repo",
+                    lambda *a, **k: {"repo_dir": "", "initialised": False})
+        self._patch(telemetry_repo, "commit_and_push",
+                    lambda *a, **k: {"committed": False, "pushed": False, "reason": "test"})
+        self._patch(cst_cleanup, "delete_raw_tool_events",
+                    lambda *a, **k: {"deleted_before_count": 0})
+
+        self._orig_env = dict(os.environ)
+        os.environ["CLAUDE_PROJECT_DIR"] = str(self.home)
+        os.environ["PODZONE_LOG_DIR"] = str(self.home / "logs")
+        os.environ.pop("PODZONETEAM_REPO", None)
+        os.environ.pop("TRAINEE_RUNTIME", None)
+        os.environ.pop("PODZONE_INGEST_TRANSCRIPT", None)
+
+        self._orig_stdin = sys.stdin
+        self.hook = _load_hook()
+
+    def _patch(self, mod, name, fn) -> None:
+        orig = getattr(mod, name)
+        self._patches.append((mod, name, orig))
+        setattr(mod, name, fn)
+
+    def tearDown(self) -> None:
+        for mod, name, orig in reversed(self._patches):
+            setattr(mod, name, orig)
+        sys.stdin = self._orig_stdin
+        session_guard.LOCK_DIR = self._orig_lockdir
+        os.environ.clear()
+        os.environ.update(self._orig_env)
+        self._tmp.cleanup()
+
+    def test_hook_exits_with_clean_tree_on_trunk_repo(self) -> None:
+        sys.stdin = io.StringIO(json.dumps({
+            "session_id": self.sid, "transcript_path": "", "cwd": str(self.home),
+        }))
+        self.assertEqual(self.hook.main(), 0)
+
+        status = _git(self.home, "status", "--porcelain").stdout
+        self.assertEqual(status.strip(), "",
+                          f"trunk finalise left the clone dirty: {status!r}")
+
+        # The result really landed on origin/main (no branch, no PR).
+        fresh = Path(self._tmp.name) / "fresh-check"
+        _run("git", "clone", str(self.origin), str(fresh))
+        results = list((fresh / "results").glob("session-*.md")) if \
+            (fresh / "results").is_dir() else []
+        self.assertTrue(results, "trunk result commit did not land on origin/main")
 
 
 class TestLifecycleMode(unittest.TestCase):
