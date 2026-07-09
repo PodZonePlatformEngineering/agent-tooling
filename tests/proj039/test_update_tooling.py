@@ -134,14 +134,86 @@ class TestWorkingTreeDirty(_GitFixture):
         self.assertTrue(update_tooling.working_tree_dirty(str(self.home_repo)))
 
 
+class TestDirtyWriteSetPaths(_GitFixture):
+    """PROJ-039/T-092: the dirty-tree guard is scoped to the sync's own
+    write-set (.claude/hooks|primitives|lib|skills|tools, settings.json,
+    tooling-manifest.json, root .gitignore) — dirt anywhere else (logs/**
+    above all, self-dirtied by concurrently-running sibling SessionStart
+    hooks) must never refuse a self-update."""
+
+    def test_clean_tree_has_no_dirt(self) -> None:
+        write_set, ignored = update_tooling.dirty_write_set_paths(str(self.home_repo))
+        self.assertEqual(write_set, [])
+        self.assertEqual(ignored, [])
+
+    def test_logs_dirt_is_ignored_not_write_set(self) -> None:
+        logs = self.home_repo / "logs"
+        logs.mkdir()
+        (logs / "primitives.log").write_text("sibling hook wrote this\n")
+        (logs / "primitives-a662e9ae.log").write_text("sid-suffixed sibling log\n")
+        write_set, ignored = update_tooling.dirty_write_set_paths(str(self.home_repo))
+        self.assertEqual(write_set, [])
+        self.assertEqual(
+            sorted(ignored),
+            ["logs/primitives-a662e9ae.log", "logs/primitives.log"],
+        )
+
+    def test_manifest_write_set_dirt_is_flagged(self) -> None:
+        hooks_dir = self.home_repo / ".claude" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        (hooks_dir / "session-start.sh").write_text("# uncommitted edit\n")
+        write_set, ignored = update_tooling.dirty_write_set_paths(str(self.home_repo))
+        self.assertEqual(write_set, [".claude/hooks/session-start.sh"])
+        self.assertEqual(ignored, [])
+
+    def test_root_gitignore_dirt_is_write_set(self) -> None:
+        (self.home_repo / ".gitignore").write_text("*.tmp\n")
+        write_set, ignored = update_tooling.dirty_write_set_paths(str(self.home_repo))
+        self.assertEqual(write_set, [".gitignore"])
+
+    def test_ds_store_alone_is_ignored(self) -> None:
+        (self.home_repo / ".DS_Store").write_text("x")
+        write_set, ignored = update_tooling.dirty_write_set_paths(str(self.home_repo))
+        self.assertEqual(write_set, [])
+        self.assertEqual(ignored, [])
+
+    def test_mixed_dirt_flags_only_write_set(self) -> None:
+        logs = self.home_repo / "logs"
+        logs.mkdir()
+        (logs / "primitives.log").write_text("sibling hook noise\n")
+        tools_dir = self.home_repo / ".claude" / "tools"
+        tools_dir.mkdir(parents=True)
+        (tools_dir / "update-tooling.py").write_text("# local edit\n")
+        write_set, ignored = update_tooling.dirty_write_set_paths(str(self.home_repo))
+        self.assertEqual(write_set, [".claude/tools/update-tooling.py"])
+        self.assertEqual(ignored, ["logs/primitives.log"])
+
+
 class TestRunUpdateRefusals(_GitFixture):
     def test_dirty_tree_refused_before_any_clone(self) -> None:
-        (self.home_repo / "scratch.txt").write_text("x")
+        hooks_dir = self.home_repo / ".claude" / "hooks"
+        hooks_dir.mkdir(parents=True)
+        (hooks_dir / "scratch.sh").write_text("x")
         with self.assertRaises(update_tooling.UpdateRefusal) as ctx:
             update_tooling.run_update(str(self.home_repo), "coder", "latest", remote=str(self.remote))
         self.assertIn("dirty-tree", str(ctx.exception))
         # refused before touching .workspace/ at all
         self.assertFalse((self.home_repo / ".workspace" / "agent-tooling").exists())
+
+    def test_logs_dirt_does_not_refuse_and_update_proceeds(self) -> None:
+        """The T-092 race: sibling SessionStart hooks self-dirty logs/**
+        concurrently with this scan — the update must proceed regardless."""
+        logs = self.home_repo / "logs"
+        logs.mkdir()
+        (logs / "primitives.log").write_text("concurrent sibling-hook write\n")
+        result = update_tooling.run_update(
+            str(self.home_repo), "coder", "v1.1.0", remote=str(self.remote))
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["ignored_dirt"], ["logs/primitives.log"])
+        # the untracked logs/ file is left exactly as it was — sync never
+        # stashes or commits other people's dirt
+        self.assertEqual(
+            (logs / "primitives.log").read_text(), "concurrent sibling-hook write\n")
 
     def test_unknown_tag_refused(self) -> None:
         with self.assertRaises(update_tooling.UpdateRefusal) as ctx:
@@ -221,7 +293,9 @@ class TestOutcomeSentinel(_GitFixture):
     def _main(self, *, dirty: bool = False, sid: str = "sid-1234"):
         import os
         if dirty:
-            (self.home_repo / "scratch.txt").write_text("x")
+            hooks_dir = self.home_repo / ".claude" / "hooks"
+            hooks_dir.mkdir(parents=True)
+            (hooks_dir / "scratch.sh").write_text("x")
         env = dict(os.environ)
         env.update({
             "TOOLING_UPDATE": "v1.1.0",
