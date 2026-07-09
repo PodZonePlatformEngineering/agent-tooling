@@ -508,6 +508,29 @@ if [[ "$ROLE" == "team-lead" ]]; then
   echo "    copied: skills/ (${SKILL_COUNT} coordination skills)"
 fi
 
+# --- Operating manual (team-lead variant only, PROJ-039/T-081) ---
+# The compact team-lead operating manual is a resident, sync-managed artefact:
+# rendered from scaffold/team-lead/OPERATING-MANUAL.template to the repo root
+# (same pattern as the trainee AGENTS.template), substitution-variable keyed,
+# and carried in the sync manifest so every team lead receives updates via
+# TOOLING_UPDATE — never copied ad hoc. Other roles emit nothing here.
+
+TEAM_LEAD_MANUAL_TEMPLATE="${SCAFFOLD_DIR}/team-lead/OPERATING-MANUAL.template"
+if [[ "$ROLE" == "team-lead" ]]; then
+  echo "==> Rendering team-lead operating manual (OPERATING-MANUAL.md)..."
+  if [[ ! -f "$TEAM_LEAD_MANUAL_TEMPLATE" ]]; then
+    echo "Error: team-lead manual template not found: ${TEAM_LEAD_MANUAL_TEMPLATE}"
+    exit 1
+  fi
+  sed -e "s|__AGENT__|${AGENT_CAP}|g" \
+      -e "s|__AGENT_LC__|${AGENT}|g" \
+      -e "s|__TEAM__|${TEAM}|g" \
+      -e "s|__TEAM_REPO__|${TEAM}Team|g" \
+      -e "s|__REPO_NAME__|${REPO_NAME}|g" \
+    "$TEAM_LEAD_MANUAL_TEMPLATE" > "${TARGET_DIR}/OPERATING-MANUAL.md"
+  echo "    rendered: OPERATING-MANUAL.md"
+fi
+
 # --- .gitignore ---
 # Session log files are COMMITTED for EVERY role now (PROJ-039/T-048): the sid-keyed
 # logs/ files (libraries-{sid8}.log, primitives-{sid8}.log) ride the session-result
