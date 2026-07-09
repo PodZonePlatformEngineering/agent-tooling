@@ -339,8 +339,7 @@ mkdir -p \
   "${TARGET_DIR}/workspaces/identity" \
   "${TARGET_DIR}/results" \
   "${TARGET_DIR}/session-reports" \
-  "${TARGET_DIR}/memory" \
-  "${TARGET_DIR}/context"
+  "${TARGET_DIR}/memory"
 
 # git-track empty dirs
 touch "${TARGET_DIR}/results/.gitkeep"
@@ -565,15 +564,21 @@ cat > "${TARGET_DIR}/AGENTS.md" <<AGENTS
 
 ## Startup
 
-On session start, this repo's \`.claude/hooks/session-start.sh\` runs, which:
+On session start, the resident SessionStart hooks run \`session-start.sh\` (identity +
+telemetry) and \`session-materialise.py\`, which:
 
-1. Extracts agent identity from the repo directory name
-2. Queries Qdrant \`work_items\` for the active approved brief (agent=${AGENT}, status=approved)
-3. Materialises \`context/brief.md\` and \`context/identity.yaml\`
+1. Resolves \`BRIEF_ID\` (brief-first launch) or falls back to a legacy session-point
+   lookup for this agent
+2. Reads the resolved brief/tasking from the cloud \`session_substrate\` / \`briefs\`
+   Qdrant collections
+3. Materialises \`.workspace/brief.md\`, \`.workspace/tasks.json\`, and
+   \`.workspace/identity.json\` from that read, plus a \`.workspace/.materialise-status.json\`
+   sentinel
 4. Assembles and injects session context before the LLM opens
 
-If no approved brief is found, session-start.sh injects identity + state only and
-prints a notice: "No active brief — check with team lead for next task."
+If materialisation fails (Qdrant unreachable, no active brief, stale read), the sentinel
+carries \`ok: false\` and the orientation procedure HALTs rather than fabricating a stale
+\`.workspace\` — see \`.workspace/.materialise-status.json\`.
 
 ## Agent
 
@@ -628,7 +633,8 @@ migrated home-repo agents.)
 
 - Open sessions via \`${REPO_NAME}.code-workspace\` only
 - Do not open task repos directly — identity resolution requires home repo as CWD
-- \`context/\` is ephemeral — do not commit its contents
+- \`.workspace/\` is ephemeral (materialised fresh each session, plus on-demand repo
+  clones) — do not commit its contents
 AGENTS
 fi
 
@@ -661,7 +667,7 @@ else
 cat > "${TARGET_DIR}/.claude/instructions.md" <<INSTRUCTIONS
 Role: ${ROLE_TITLE} — FILL IN one-line summary of primary responsibility
 Team: ${TEAM}; operator: Martin (system-owner)
-Task source: context/brief.md (pulled from Qdrant work_items at session start)
+Task source: .workspace/brief.md (materialised from Qdrant session_substrate/briefs at session start)
 Cross-team work: raise draft in podzoneTeam/briefs/{recipient}/ — do not write to other agents' home repos
 Results: write to results/session-{date}-{slug}-{sid}.md; hook pushes and raises PR
 Memory: read memory/MEMORY.md; update memory/ when learning something durable
@@ -669,7 +675,7 @@ Headless (PROJ-039/T-041): if the brief needs operator direction you cannot reso
 INSTRUCTIONS
 
 cat > "${TARGET_DIR}/.claude/guardrails.md" <<GUARDRAILS
-Never commit context/ — it is ephemeral and gitignored
+Never commit .workspace/ — it is ephemeral (materialised session context + on-demand repo clones) and gitignored
 Never open task repos directly — always use ${REPO_NAME}.code-workspace
 Never AskUserQuestion-and-wait or block interactively when operator-blocked — raise to your team lead via the session response and exit (headless: no operator is on the line — PROJ-039/T-041)
 FILL IN role-specific prohibition 2

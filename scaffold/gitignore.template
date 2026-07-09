@@ -1,8 +1,5 @@
-# Working repo clones — never committed
+# Working repo clones + materialised session context — never committed
 .workspace/
-
-# Ephemeral session context — regenerated each session
-context/
 
 # macOS
 .DS_Store
