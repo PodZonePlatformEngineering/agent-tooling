@@ -597,6 +597,79 @@ else
   fi
 fi
 
+# --- Operating manual (team-lead variant only, PROJ-039/T-081) ---
+# The compact team-lead operating manual is a resident, sync-managed root-level
+# artefact (like .gitignore): rendered from scaffold/team-lead/OPERATING-MANUAL
+# .template with the repo's own {team, agent} substituted, so existing team-lead
+# repos receive updates via TOOLING_UPDATE. Byte-identity here means "identical
+# to the freshly rendered template", not to the raw template file. Other roles
+# carry no manual and this section is skipped for them.
+
+MANUAL_TEMPLATE="${AGENT_TOOLING_DIR}/scaffold/team-lead/OPERATING-MANUAL.template"
+MANUAL_DST="${HOME_REPO}/OPERATING-MANUAL.md"
+MANUAL_RENDERED=""
+if [[ "$ROLE" == "team-lead" ]]; then
+  echo ""
+  echo "==> Syncing team-lead operating manual → ${MANUAL_DST}"
+  if [[ ! -f "$MANUAL_TEMPLATE" ]]; then
+    echo "  SKIP  OPERATING-MANUAL.md — template not found (${MANUAL_TEMPLATE})"
+    ((SKIPPED++))
+  else
+    # Derive {team, agent} from the identity YAML's home_repo (authoritative —
+    # survives a --home-repo path whose basename is not the repo name, e.g. a
+    # test scaffold in /tmp), falling back to the directory basename.
+    HR_NAME=""
+    M_IDENTITY_FILE="$(find "${HOME_REPO}/workspaces/identity" -name "*.identity.yaml" 2>/dev/null | head -1)"
+    if [[ -n "$M_IDENTITY_FILE" ]]; then
+      HR_NAME="$(grep '^home_repo:' "$M_IDENTITY_FILE" | head -1 | sed 's/^home_repo:[[:space:]]*//' | tr -d '[:space:]')"
+    fi
+    [[ -z "$HR_NAME" ]] && HR_NAME="$(basename "$HOME_REPO")"
+    if [[ "$HR_NAME" =~ ^home-([a-z0-9]+)-([a-z0-9-]+)$ ]]; then
+      M_TEAM="${BASH_REMATCH[1]}"
+      M_AGENT="${BASH_REMATCH[2]}"
+      M_AGENT_CAP="$(echo "${M_AGENT:0:1}" | tr '[:lower:]' '[:upper:]')${M_AGENT:1}"
+      MANUAL_RENDERED="$(mktemp)"
+      sed -e "s|__AGENT__|${M_AGENT_CAP}|g" \
+          -e "s|__AGENT_LC__|${M_AGENT}|g" \
+          -e "s|__TEAM__|${M_TEAM}|g" \
+          -e "s|__TEAM_REPO__|${M_TEAM}Team|g" \
+          -e "s|__REPO_NAME__|${HR_NAME}|g" \
+        "$MANUAL_TEMPLATE" > "$MANUAL_RENDERED"
+
+      if [[ -f "$MANUAL_DST" ]] && diff -q "$MANUAL_RENDERED" "$MANUAL_DST" > /dev/null 2>&1; then
+        echo "  OK    OPERATING-MANUAL.md — unchanged"
+        ((UNCHANGED++))
+      else
+        if [[ -f "$MANUAL_DST" ]]; then
+          echo "  DIFF  OPERATING-MANUAL.md:"
+          diff -u "$MANUAL_DST" "$MANUAL_RENDERED" || true
+          echo ""
+        else
+          echo "  NEW   OPERATING-MANUAL.md — not present in home repo"
+        fi
+        APPLY=1
+        if [[ $YES -eq 0 ]]; then
+          printf "  Overwrite %s? [y/N] " "OPERATING-MANUAL.md"
+          read -r answer </dev/tty
+          if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+            echo "  Skipped."
+            ((SKIPPED++))
+            APPLY=0
+          fi
+        fi
+        if [[ $APPLY -eq 1 ]]; then
+          cp "$MANUAL_RENDERED" "$MANUAL_DST"
+          echo "  Updated: OPERATING-MANUAL.md"
+          ((UPDATED++))
+        fi
+      fi
+    else
+      echo "  SKIP  OPERATING-MANUAL.md — cannot derive team/agent from '${HR_NAME}' (expected home-<team>-<agent>)"
+      ((SKIPPED++))
+    fi
+  fi
+fi
+
 echo ""
 echo "Sync complete: ${UPDATED} updated, ${UNCHANGED} unchanged, ${SKIPPED} skipped."
 
@@ -647,6 +720,13 @@ if [[ -f "$LIB_MANIFEST" ]]; then
       *) echo "  DRIFT: lib/${rel} (out of closure — not in manifest)"; DRIFT=1 ;;
     esac
   done < <(find "$LIB_DST" -type f ! -path '*/__pycache__/*' 2>/dev/null)
+fi
+
+# Operating-manual invariant (PROJ-039/T-081): a team-lead home repo's root
+# OPERATING-MANUAL.md MUST be byte-identical to the freshly rendered template.
+if [[ "$ROLE" == "team-lead" && -n "$MANUAL_RENDERED" ]]; then
+  diff -q "$MANUAL_RENDERED" "$MANUAL_DST" > /dev/null 2>&1 \
+    || { echo "  DRIFT: OPERATING-MANUAL.md (not byte-identical to rendered template / missing)"; DRIFT=1; }
 fi
 
 # Skills invariant (PROJ-039/T-038): a team-lead home repo's .claude/skills/ MUST be
@@ -724,6 +804,12 @@ root_files = {}
 gitignore = home_repo_dir / ".gitignore"
 if gitignore.is_file():
     root_files[".gitignore"] = hashlib.sha256(gitignore.read_bytes()).hexdigest()
+# Team-lead operating manual (PROJ-039/T-081): root-level, sync-managed, rendered
+# per-repo — the hash is of the shipped (rendered) file, same as everything else.
+if os.environ["ROLE"] == "team-lead":
+    manual = home_repo_dir / "OPERATING-MANUAL.md"
+    if manual.is_file():
+        root_files["OPERATING-MANUAL.md"] = hashlib.sha256(manual.read_bytes()).hexdigest()
 
 manifest = {
     "version": os.environ["TOOLING_VERSION"],
@@ -767,3 +853,5 @@ claude_dir.mkdir(parents=True, exist_ok=True)
 print(f"  Wrote {claude_dir / 'tooling-manifest.json'} ({len(files)} files, "
       f"version={manifest['version']}, source_commit={manifest['source_commit'][:8]})")
 PYEOF
+
+[[ -n "$MANUAL_RENDERED" ]] && rm -f "$MANUAL_RENDERED" || true
