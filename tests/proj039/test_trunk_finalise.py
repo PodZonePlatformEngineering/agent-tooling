@@ -15,19 +15,16 @@ required acceptance paths are OBSERVED, not just asserted:
 Also covers `lib.lifecycle_mode.read_lifecycle_mode` (manifest absent/present/
 corrupt) and the idempotent re-run no-op (result already on `origin/main`).
 
-`TestCommitTrunkLogTail` and `TestTrunkFinaliseNoPostCommitDirt` (PROJ-039/T-091)
-cover the post-commit log-tail regression: in trunk mode `commit_and_push_trunk`
-force-adds + commits + pushes THIS session's sid-keyed logs straight into the LIVE
-working tree (no isolated worktree to shield it, unlike branch-mode). Every
-finalise step that runs afterwards (session-end main-guard, the ledger
-`complete()` write, the final "finalise complete" log line) calls
-`runtime_log.log_library`, which appends to that now-tracked file — leaving the
-clone dirty on `main` for the next `session_guard.preflight` to HALT on (first
-hit: sid `7aaf93d5`, T-086 dogfood). `TestTrunkFinaliseNoPostCommitDirt` drives
-the REAL `session-end-finalise.py` hook end-to-end against a real git repo and
-asserts a clean working tree afterwards — it fails on the pre-fix ordering
-(dirty tree) and passes once `commit_trunk_log_tail` runs as the finalise's
-literal last act.
+`TestTrunkFinaliseNoPostCommitDirt` (PROJ-039/T-091, leaned per T-093) drives
+the REAL `session-end-finalise.py` hook end-to-end against a real trunk-mode
+home repo and asserts a clean working tree AND exactly one commit landed —
+the result commit. Historically (T-091) trunk mode needed a literal-last-act
+tail commit to sweep up post-result-commit log dirt, because the result
+commit force-added a now-tracked sid-keyed log that later `_log()` calls kept
+appending to. T-093 (operator decision 2026-07-09) retired that whole
+machinery: `logs/` is a plain gitignore entry and nothing force-adds it into
+the home-repo result path anymore, so there is no post-commit dirt class left
+to sweep — this test now guards that regression staying dead.
 """
 
 from __future__ import annotations
@@ -145,29 +142,25 @@ class TestCommitAndPushTrunkHappyPath(_GitFixture):
 class TestCommitAndPushTrunkConflictRetryHalt(_GitFixture):
     def test_conflicting_concurrent_write_retries_then_halts_without_force_push(self) -> None:
         sid = "cafefeed0001"
-        sid8 = sid[:8]
         work_item = "PROJ-039/T-084"
         date = "2026-07-09"
-        log_rel = f"logs/libraries-{sid8}.log"
 
-        # This session's own sid-keyed log already exists locally — stage_session_logs
-        # (T-068) force-adds it into the result commit, same as a real finalise.
-        (self.clone / "logs").mkdir(parents=True, exist_ok=True)
-        (self.clone / log_rel).write_text("this session's own log line\n")
-
-        # Land a CONFLICTING commit on origin/main at the SAME log path, from an
-        # independent clone, before this session's commit tries to push — the
+        # Land a CONFLICTING commit on origin/main at a shared TRACKED path, from
+        # an independent clone, before this session's commit tries to push — the
         # "an operator or another process touched the repo out of band" case the
         # plan calls out (§2). The result file itself is sid-keyed-unique so it
-        # can never collide this way in practice; the shared path a real race can
-        # still land on is a log file force-added alongside it.
+        # can never collide this way in practice; a real race lands on an
+        # ordinary tracked file instead (T-093 retired the log-force-add path
+        # that used to be this test's conflict surface).
         other = self._second_clone()
-        (other / "logs").mkdir(parents=True, exist_ok=True)
-        (other / log_rel).write_text("a DIFFERENT concurrent writer's log line\n")
-        _git(other, "add", "-f", log_rel)
+        (other / "README.md").write_text("a DIFFERENT concurrent writer's edit\n")
+        _git(other, "add", "README.md")
         _git(other, "commit", "-m", "concurrent write")
         _git(other, "push", "origin", "main")
         origin_tip_before = _git(self.origin, "rev-parse", "main").stdout.strip()
+
+        (self.clone / "README.md").write_text("this session's own edit\n")
+        _git(self.clone, "add", "README.md")
 
         res = session_finalise.commit_and_push_trunk(
             "this session's own content\n",
@@ -197,53 +190,6 @@ class TestCommitAndPushTrunkConflictRetryHalt(_GitFixture):
         )
 
 
-class TestCommitTrunkLogTail(_GitFixture):
-    """Unit coverage of `session_finalise.commit_trunk_log_tail` (T-091)."""
-
-    def test_noop_when_clean(self) -> None:
-        res = session_finalise.commit_trunk_log_tail(str(self.clone))
-        self.assertTrue(res["ok"])
-        self.assertEqual(res["disposition"], "clean")
-
-    def test_commits_and_pushes_log_only_dirt(self) -> None:
-        # Simulate a trunk result commit that already force-added a sid-keyed log,
-        # then a POST-commit `_log()` line landing after the push (the T-091 class).
-        sid8 = "7aaf93d5"
-        log_rel = f"logs/libraries-{sid8}.log"
-        (self.clone / "logs").mkdir(parents=True, exist_ok=True)
-        (self.clone / log_rel).write_text("line written before the result commit\n")
-        _git(self.clone, "add", "-f", log_rel)
-        _git(self.clone, "commit", "-m", "chore(session-result): pretend result")
-        _git(self.clone, "push", "origin", "main")
-
-        with open(self.clone / log_rel, "a", encoding="utf-8") as fh:
-            fh.write("finalise complete\n")  # the post-commit tail line
-        self.assertNotEqual(
-            _git(self.clone, "status", "--porcelain").stdout.strip(), "",
-            "fixture sanity: the post-commit append must actually dirty the tree",
-        )
-
-        res = session_finalise.commit_trunk_log_tail(str(self.clone))
-        self.assertTrue(res["ok"], res)
-        self.assertEqual(res["disposition"], "committed-and-pushed")
-        self.assertEqual(_git(self.clone, "status", "--porcelain").stdout.strip(), "")
-
-        fresh = Path(self._tmp.name) / "fresh-tail"
-        _run("git", "clone", str(self.origin), str(fresh))
-        self.assertIn("finalise complete", (fresh / log_rel).read_text())
-
-    def test_refuses_on_non_log_dirt(self) -> None:
-        (self.clone / "results").mkdir(parents=True, exist_ok=True)
-        (self.clone / "results" / "real-work.md").write_text("uncommitted work\n")
-
-        res = session_finalise.commit_trunk_log_tail(str(self.clone))
-        self.assertFalse(res["ok"])
-        self.assertEqual(res["disposition"], "halt-non-log-dirt")
-        # Left exactly as found — real work is never auto-committed.
-        status = _git(self.clone, "status", "--porcelain").stdout
-        self.assertIn("results/", status)
-
-
 SESSION_POINT = {
     "session_id": "7aaf93d5-1234-4f78-aba6-29dcf3c4e55a",
     "agent": "Hephaestus", "work_item": "PROJ-039/T-091",
@@ -254,13 +200,13 @@ SESSION_POINT = {
 
 
 class TestTrunkFinaliseNoPostCommitDirt(unittest.TestCase):
-    """End-to-end regression (T-091): drive the REAL `session-end-finalise.py`
-    hook against a real trunk-mode home repo and assert it exits with a clean
-    working tree. FAILS on the pre-fix ordering — the hook's own post-commit
-    `_log()` calls (main-guard, ledger `complete()`, the final log line) re-dirty
-    the sid-keyed log file that `commit_and_push_trunk` just force-added, commit-
-    ted, and pushed — and PASSES once `commit_trunk_log_tail` runs as the trunk
-    finalise's literal last act.
+    """End-to-end regression (T-091, leaned per T-093): drive the REAL
+    `session-end-finalise.py` hook against a real trunk-mode home repo and
+    assert it exits with a clean working tree AND exactly one commit ahead of
+    `init` — the result commit, no tail commit, no dirt. `logs/` is a plain
+    gitignore entry and nothing in the home-repo result path force-adds it
+    anymore, so there is no post-commit dirt class left for a tail commit to
+    sweep (the T-091 machinery this test used to require is retired).
     """
 
     def setUp(self) -> None:
@@ -343,6 +289,12 @@ class TestTrunkFinaliseNoPostCommitDirt(unittest.TestCase):
         results = list((fresh / "results").glob("session-*.md")) if \
             (fresh / "results").is_dir() else []
         self.assertTrue(results, "trunk result commit did not land on origin/main")
+
+        # Exactly ONE commit landed beyond `init` — the result commit. No tail
+        # commit, no `chore(logs)` commit (PROJ-039/T-093 acceptance).
+        log = _git(self.origin, "log", "--oneline", "main").stdout.strip().splitlines()
+        self.assertEqual(len(log), 2, f"expected init + result only, got: {log}")
+        self.assertNotIn("chore(logs)", log[0])
 
 
 class TestLifecycleMode(unittest.TestCase):

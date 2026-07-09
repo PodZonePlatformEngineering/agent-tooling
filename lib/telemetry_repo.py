@@ -121,6 +121,48 @@ def ensure_repo(repo_dir: Optional[str] = None, *, remote: Optional[str] = None,
             "remote": remote or "", "ok": True}
 
 
+def copy_session_logs(home_repo: str, transcript_path: str, session_id: str) -> list[str]:
+    """Copy THIS session's sid-keyed logs (``{home_repo}/logs/*-{sid8}.{log,jsonl}``)
+    alongside its transcript JSONL in the telemetry repo (PROJ-039/T-093 item 4).
+
+    ``logs/`` durability for agent home repos moved here from the retired
+    committed-logs machinery (``session_guard.stage_session_logs`` no longer runs
+    on the home-repo result paths — see ``scaffold/gitignore.template``); this is
+    the replacement: best-effort, same repo/push as the transcript, so a failure
+    here must not fail the finalise. ``transcript_path``'s directory is this
+    session's per-cwd dir under the telemetry repo (already re-included by the
+    scope .gitignore, since the transcript itself lives there) — logs land in the
+    same directory rather than needing a new scope pattern.
+
+    Returns the destination paths written (``[]`` if there is nothing to copy —
+    not an error).
+    """
+    sid8 = (session_id or "")[:8]
+    if not sid8 or not home_repo or not transcript_path:
+        return []
+    src_logs = Path(home_repo) / "logs"
+    if not src_logs.is_dir():
+        return []
+    dest_dir = Path(transcript_path).parent
+    written: list[str] = []
+    try:
+        matches = sorted(
+            p for p in src_logs.iterdir()
+            if p.is_file() and sid8 in p.name and p.suffix in (".log", ".jsonl")
+        )
+    except Exception:
+        return []
+    for p in matches:
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dst = dest_dir / p.name
+            dst.write_bytes(p.read_bytes())
+            written.append(str(dst))
+        except Exception:
+            continue
+    return written
+
+
 def commit_and_push(
     session_id: str,
     *,
