@@ -22,8 +22,18 @@ the live trigger. ``TOOLING_UPDATE`` unset → no-op, exit 0 (every ordinary
 launch).
 
 Flow:
-  1. refuse if the home repo's working tree is dirty (beyond a stray
-     ``.DS_Store``) — a self-update must never ride on top of uncommitted work.
+  1. refuse if the home repo's working tree is dirty **within the sync's own
+     write-set** (beyond a stray ``.DS_Store``) — a self-update must never
+     ride on top of uncommitted work in the paths it is about to overwrite
+     (``.claude/hooks|primitives|lib|skills|tools``, ``.claude/settings.json``,
+     ``.claude/tooling-manifest.json``, root ``.gitignore``; see
+     ``WRITE_SET_PREFIXES``). Dirt OUTSIDE the write-set — ``logs/**`` above
+     all, self-dirtied by concurrently-running sibling SessionStart hooks
+     (PROJ-039/T-092: every command in a SessionStart hook array runs
+     concurrently, not serialised by position — ``session-start.sh``'s first
+     ``log_primitive`` line can land in ``logs/primitives.log`` before this
+     script's own ``git status`` scan runs) — is reported but never blocks
+     the update.
   2. resolve the tag: ``git ls-remote --tags`` (no clone) against the canonical
      agent-tooling remote; ``"latest"`` -> highest semver tag.
   3. shallow-clone agent-tooling at that tag into ``.workspace/agent-tooling``
@@ -75,6 +85,28 @@ DEFAULT_REMOTE = "https://github.com/PodZonePlatformEngineering/agent-tooling.gi
 _TAG_RE = re.compile(r"^refs/tags/(v\d+\.\d+\.\d+)$")
 _ROLE_RE = re.compile(r"^role_class:\s*.*roles/([^/]+)/?\s*$")
 
+# PROJ-039/T-092: the exact set of paths sync-agent-tooling.sh writes to —
+# hooks/primitives/lib/skills/tools under .claude/, the settings.json wiring,
+# the shipped tooling-manifest.json itself, and the root .gitignore (mirrors
+# sync-agent-tooling.sh's HOOKS_DST/DEP_DIRS/TOOLS_DST/GITIGNORE_DST +
+# the tooling-manifest.json `files`/`root_files` write, kept in lockstep by
+# hand since the sync writes the manifest AFTER the dirty check, so the
+# manifest cannot be read as the source of truth for its own guard). Dirt
+# ANYWHERE ELSE (logs/**, .workspace/, results/, etc.) must never refuse a
+# self-update — those paths are never touched by the sync, and logs/** in
+# particular is self-dirtied by concurrently-running sibling SessionStart
+# hooks (T-048 committed logs) on every single launch.
+WRITE_SET_PREFIXES = (
+    ".claude/hooks/",
+    ".claude/primitives/",
+    ".claude/lib/",
+    ".claude/skills/",
+    ".claude/tools/",
+    ".claude/settings.json",
+    ".claude/tooling-manifest.json",
+    ".gitignore",
+)
+
 
 class UpdateRefusal(Exception):
     """A loud, halting refusal — dirty tree / unknown tag / VERSION mismatch /
@@ -91,7 +123,11 @@ def _git(repo: str, *args: str, check: bool = True) -> subprocess.CompletedProce
 
 def working_tree_dirty(repo: str) -> bool:
     """True if `repo` carries any uncommitted change beyond a stray .DS_Store
-    (macOS cruft that must never block a launch — mirrors lib.session_guard)."""
+    (macOS cruft that must never block a launch — mirrors lib.session_guard).
+    Unscoped — used post-sync to detect whether the sync itself produced a
+    diff to commit, where "any change at all" is exactly the right question.
+    The pre-sync refusal gate uses the scoped `dirty_write_set_paths` instead
+    (§ WRITE_SET_PREFIXES, PROJ-039/T-092)."""
     cp = _git(repo, "status", "--porcelain", check=False)
     for line in (cp.stdout or "").splitlines():
         if not line.strip():
@@ -100,6 +136,47 @@ def working_tree_dirty(repo: str) -> bool:
             continue
         return True
     return False
+
+
+def _porcelain_path(line: str) -> str:
+    """Extract the path from one `git status --porcelain` line — handles the
+    ` -> ` rename form (destination path is what matters) and quoted paths."""
+    path = line[3:].strip()
+    if " -> " in path:
+        path = path.split(" -> ", 1)[1]
+    if len(path) >= 2 and path[0] == '"' and path[-1] == '"':
+        path = path[1:-1]
+    return path
+
+
+def _in_write_set(path: str) -> bool:
+    return any(
+        path == prefix.rstrip("/") or path.startswith(prefix)
+        for prefix in WRITE_SET_PREFIXES
+    )
+
+
+def dirty_write_set_paths(repo: str) -> tuple[list[str], list[str]]:
+    """Split `repo`'s dirt (`git status --porcelain`, stray `.DS_Store`
+    excluded) into (write_set, ignored) — paths inside the sync's own
+    write-set (§ WRITE_SET_PREFIXES) vs. everywhere else. Only `write_set`
+    dirt is grounds for refusal (PROJ-039/T-092)."""
+    # `--untracked-files=all` (not the default "normal"): an untracked
+    # directory must be listed file-by-file, not summarised as one `?? dir/`
+    # line — otherwise an untracked `.claude/hooks/` (or `logs/`) collapses to
+    # a single entry and prefix-matching against WRITE_SET_PREFIXES can't tell
+    # a write-set file from a sibling one under the same never-yet-tracked dir.
+    cp = _git(repo, "status", "--porcelain", "--untracked-files=all", check=False)
+    write_set: list[str] = []
+    ignored: list[str] = []
+    for line in (cp.stdout or "").splitlines():
+        if not line.strip():
+            continue
+        path = _porcelain_path(line)
+        if line.startswith("?? ") and os.path.basename(path) == ".DS_Store":
+            continue
+        (write_set if _in_write_set(path) else ignored).append(path)
+    return write_set, ignored
 
 
 def list_semver_tags(remote: str) -> list[str]:
@@ -168,8 +245,12 @@ def untrack_newly_ignored(home_repo: str) -> list[str]:
 def run_update(home_repo: str, role: str, requested: str, *, remote: str = DEFAULT_REMOTE) -> dict:
     """Execute the self-update flow (§ module docstring). Returns a result dict
     on success; raises UpdateRefusal on any refusal condition."""
-    if working_tree_dirty(home_repo):
-        raise UpdateRefusal("dirty-tree: refusing to self-update over uncommitted changes")
+    write_set_dirt, ignored_dirt = dirty_write_set_paths(home_repo)
+    if write_set_dirt:
+        raise UpdateRefusal(
+            "dirty-tree: refusing to self-update over uncommitted changes in "
+            f"the sync write-set: {', '.join(write_set_dirt)}"
+        )
 
     tag = resolve_tag(requested, remote)
 
@@ -217,7 +298,7 @@ def run_update(home_repo: str, role: str, requested: str, *, remote: str = DEFAU
 
     commit = _git(home_repo, "rev-parse", "HEAD", check=False).stdout.strip()
     return {"ok": True, "tag": tag, "role": role, "changed": changed, "commit": commit,
-            "untracked": untracked, "sync_output": sync_output}
+            "untracked": untracked, "sync_output": sync_output, "ignored_dirt": ignored_dirt}
 
 
 def _resolve_home_repo() -> str:
@@ -284,6 +365,7 @@ def main() -> int:
         "ok": True, "requested": requested, "tag": result["tag"],
         "role": result["role"], "changed": result["changed"],
         "commit": result["commit"], "untracked": result["untracked"],
+        "ignored_dirt": result["ignored_dirt"],
         "session_id": session_id,
     })
     msg = (
@@ -291,6 +373,8 @@ def main() -> int:
         f"(role={result['role']}) — "
         f"{'committed ' + result['commit'][:8] if result['changed'] else 'already current, no-op'}"
     )
+    if result["ignored_dirt"]:
+        msg += f" (ignored out-of-write-set dirt: {', '.join(result['ignored_dirt'])})"
     print(msg)
     return 0
 
