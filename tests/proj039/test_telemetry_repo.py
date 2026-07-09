@@ -88,6 +88,46 @@ class TestTelemetryRepo(unittest.TestCase):
             self.assertFalse(res["pushed"])  # the gate the deletion checks
 
 
+class TestCopySessionLogs(unittest.TestCase):
+    """PROJ-039/T-093 item 4: sid-keyed home-repo logs ride the telemetry push
+    alongside the transcript JSONL, now that the home-repo result path no
+    longer force-adds them into git."""
+
+    def test_copies_matching_sid_keyed_logs_next_to_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home_repo = Path(td) / "home"
+            logs = home_repo / "logs"
+            logs.mkdir(parents=True)
+            sid = "abcd1234efgh"
+            sid8 = sid[:8]
+            (logs / f"libraries-{sid8}.log").write_text("line one\n")
+            (logs / f"primitives-{sid8}.log").write_text("line two\n")
+            (logs / "primitives-deadbeef.log").write_text("a different session\n")
+            (logs / "finalise-state.log").write_text("no sid\n")
+
+            transcript_dir = Path(td) / "telemetry-project-dir"
+            transcript_path = transcript_dir / f"{sid}.jsonl"
+            transcript_dir.mkdir()
+            transcript_path.write_text("{}\n")
+
+            written = telemetry_repo.copy_session_logs(str(home_repo), str(transcript_path), sid)
+
+            self.assertEqual(len(written), 2)
+            self.assertTrue((transcript_dir / f"libraries-{sid8}.log").is_file())
+            self.assertTrue((transcript_dir / f"primitives-{sid8}.log").is_file())
+            self.assertFalse((transcript_dir / "primitives-deadbeef.log").exists())
+            self.assertFalse((transcript_dir / "finalise-state.log").exists())
+
+    def test_noop_when_no_logs_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(
+                telemetry_repo.copy_session_logs(td, f"{td}/x.jsonl", "abcd1234efgh"), [])
+
+    def test_noop_when_no_session_id(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            self.assertEqual(telemetry_repo.copy_session_logs(td, f"{td}/x.jsonl", ""), [])
+
+
 class TestTelemetryScopeAndRemote(unittest.TestCase):
     """PROJ-039/T-032: agent-session scope .gitignore + remote resolution."""
 

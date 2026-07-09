@@ -343,6 +343,13 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
         elif ens.get("initialised"):
             _log(f"telemetry: bootstrapped repo at {ens['repo_dir']} (origin={remote})",
                  session_id=session_id)
+        # PROJ-039/T-093 item 4: durability for this session's sid-keyed home-repo
+        # logs moved here (best-effort, alongside the transcript, same push) now
+        # that the home-repo result paths no longer force-add them into git.
+        copied = telemetry_repo.copy_session_logs(home_repo, transcript_path, session_id)
+        if copied:
+            _log(f"telemetry: copied {len(copied)} session log(s) alongside transcript",
+                 session_id=session_id)
         res = telemetry_repo.commit_and_push(session_id, date=date)
         pushed = res.get("pushed", False)
         _log(
