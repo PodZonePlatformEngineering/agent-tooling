@@ -16,7 +16,10 @@ orientation procedure (session-start skill / READMEFIRST) MUST read
 ``.materialise-status.json`` first and refuse to proceed when it is absent or
 ``ok:false``. A SessionStart hook cannot itself block the agent.
 
-Tested by DT-010 (success) and DT-011 (failure-halt).
+Tested by DT-010 (success) and DT-011 (failure-halt). A team-lead session with no
+`BRIEF_ID` is a distinct third case (F15, PROJ-039/T-078): not a failure, since team
+leads don't generally start against a worker-style tasking brief — it skips the
+legacy path with an informational note instead of HALTing.
 
 Reads stdin JSON: ``session_id``, ``cwd``, ``transcript_path``. Always exits 0
 (a SessionStart hook must not break startup); the halt is carried in the sentinel
@@ -312,6 +315,26 @@ def materialise(session_id: str, cwd: str, *, agent: str = "unknown",
     return status
 
 
+def _resolve_agent_and_role(cwd: str) -> tuple[str, str]:
+    """Best-effort (agent, role) via `session-context.py`'s `resolve_agent`.
+
+    Split out from `main()` so tests can monkeypatch it directly instead of
+    stubbing the dynamic-import machinery.
+    """
+    try:
+        sys.path.insert(0, str(REPO_ROOT / "hooks"))
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "session_context", str(REPO_ROOT / "hooks" / "session-context.py")
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore
+        agent, role, _scope = mod.resolve_agent(cwd)
+        return agent, role
+    except Exception:
+        return "unknown", "unknown"
+
+
 def main() -> int:
     try:
         data = json.loads(sys.stdin.read() or "{}")
@@ -331,6 +354,12 @@ def main() -> int:
         _write_status(Path(cwd) / ".workspace", halt)
         _emit_context(_resume_halt_message(halt))
         return 0
+
+    # Best-effort identity (the session point is authoritative for agent/work_item).
+    # Resolved up-front (not just in the legacy branch) because the role drives the
+    # team-lead no-BRIEF_ID skip below (F15).
+    work_item = None
+    agent, role = _resolve_agent_and_role(cwd)
 
     # Brief-first path (PROJ-039/T-043): a BRIEF_ID env var (settings.local.json
     # env block or shell env at launch) selects the decoupled flow — resolve the
@@ -353,20 +382,21 @@ def main() -> int:
             _emit_context(f"{HALT_MESSAGE}\n(reason: {status.get('reason')})")
         return 0
 
-    # Best-effort identity (the session point is authoritative for agent/work_item).
-    agent = "unknown"
-    work_item = None
-    try:
-        sys.path.insert(0, str(REPO_ROOT / "hooks"))
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "session_context", str(REPO_ROOT / "hooks" / "session-context.py")
+    # F15 (PROJ-039/T-078): a team-lead session with no BRIEF_ID is NOT a failure —
+    # team leads don't generally start against a worker-style tasking brief (that's
+    # what BRIEF_ID/materialise_brief_first is for, a distinct inter-team-lead
+    # dispatch — item 2 of the T-078 brief). Skip the legacy session-substrate path
+    # entirely so it never fabricates/HALTs on a brief that was never expected, and
+    # surface an informational note instead. Non-team-lead roles are unchanged —
+    # a missing/unresolvable brief still HALTs for them.
+    if role == "team-lead":
+        status = {"ok": True, "ts": _now(), "reason": "team-lead-no-brief"}
+        _write_status(Path(cwd) / ".workspace", status)
+        _emit_context(
+            "ℹ️ No BRIEF_ID set for this team-lead session — no tasking brief "
+            "expected. Run orientation via the `session-start` skill."
         )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore
-        agent, _role, _scope = mod.resolve_agent(cwd)
-    except Exception:
-        pass
+        return 0
 
     status = materialise(session_id, cwd, agent=agent, work_item=work_item)
 

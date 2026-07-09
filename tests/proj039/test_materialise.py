@@ -175,5 +175,72 @@ class TestMainEmitsContext(unittest.TestCase):
             self.assertIn("MATERIALISE FAILED", ctx)
 
 
+class TestTeamLeadNoBriefSkip(unittest.TestCase):
+    """F15 (PROJ-039/T-078): team-lead + no BRIEF_ID must not HALT; non-team-lead
+    + no BRIEF_ID must HALT unchanged (regression guard); team-lead + BRIEF_ID set
+    must take the unchanged brief-first path."""
+
+    def _run_main(self, cwd: str, *, resolved_role: str):
+        import io
+        from contextlib import redirect_stdout
+
+        with patch.dict(os.environ, clear=False), \
+             patch.object(sm, "_resolve_agent_and_role",
+                          lambda cwd: ("someone", resolved_role)), \
+             patch.object(sys, "stdin", io.StringIO(
+                 json.dumps({"session_id": "s", "cwd": cwd}))):
+            os.environ.pop("BRIEF_ID", None)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = sm.main()
+            return rc, json.loads(buf.getvalue())
+
+    def test_team_lead_no_brief_id_no_halt(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            rc, out = self._run_main(td, resolved_role="team-lead")
+            ctx = out["hookSpecificOutput"]["additionalContext"]
+            self.assertEqual(rc, 0)
+            self.assertNotIn("MATERIALISE FAILED", ctx)
+            self.assertIn("no tasking brief expected", ctx)
+            status = json.loads((Path(td) / ".workspace" / ".materialise-status.json").read_text())
+            self.assertTrue(status["ok"])
+            self.assertEqual(status["reason"], "team-lead-no-brief")
+
+    def test_non_team_lead_no_brief_id_still_halts(self) -> None:
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(session_substrate, "get_session_point", lambda *a, **k: None):
+            rc, out = self._run_main(td, resolved_role="coder")
+            ctx = out["hookSpecificOutput"]["additionalContext"]
+            self.assertEqual(rc, 0)
+            self.assertIn("MATERIALISE FAILED", ctx)
+
+    def test_team_lead_with_brief_id_takes_brief_first_path(self) -> None:
+        brief = {
+            "brief_id": "podzone/2026-07-09-t078", "body": "Lead-to-lead sync.",
+            "status": "approved", "assignee": "hermes",
+            "work_items": ["PROJ-039/T-078"], "session_ids": [],
+        }
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict(os.environ, {"BRIEF_ID": "podzone/2026-07-09-t078"}), \
+             patch.object(brief_substrate, "get_brief", lambda *a, **k: brief), \
+             patch.object(session_substrate, "get_session_point", lambda *a, **k: None), \
+             patch.object(session_substrate, "create_session_point", lambda **k: {"ok": True}), \
+             patch.object(brief_substrate, "append_session_id", lambda *a, **k: {"ok": True}), \
+             patch.object(brief_substrate, "start_brief", lambda *a, **k: {"ok": True}), \
+             patch.object(session_substrate, "active_work_items", lambda *a, **k: []):
+            import io
+            from contextlib import redirect_stdout
+            with patch.object(sys, "stdin", io.StringIO(
+                    json.dumps({"session_id": "s", "cwd": td}))):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = sm.main()
+            out = json.loads(buf.getvalue())
+            ctx = out["hookSpecificOutput"]["additionalContext"]
+            self.assertEqual(rc, 0)
+            self.assertIn("Session materialised from brief", ctx)
+            self.assertTrue((Path(td) / ".workspace" / "brief.md").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
