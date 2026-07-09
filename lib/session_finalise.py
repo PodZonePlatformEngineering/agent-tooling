@@ -811,6 +811,136 @@ def author_home_result(
 
 
 # ---------------------------------------------------------------------------
+# Trunk-mode home-repo result (PROJ-039/T-084, plan §2/§5 Phase B)
+# ---------------------------------------------------------------------------
+#
+# The branch-mode path above (`commit_home_result`) exists because a session-scoped
+# branch + PR is how a result lands on `main` without touching the live working
+# tree/branch. Trunk-mode retires that ceremony for single-writer repos flagged
+# `lifecycle_mode: trunk`: the session already runs directly on `main` (no session
+# branch to fork from, no worktree to isolate into), so the result commit IS the
+# working-tree commit, landed straight onto `main` — `git -C {repo} pull --rebase
+# origin main` then `git -C {repo} push`, no PR. On a push conflict (rare —
+# single-writer, lock-serialised, but not impossible if an operator or another
+# process touched the repo out of band): retry once after a fresh rebase; if it
+# still fails, **HALT loudly and leave the commit local** — never force-push, same
+# "loud failure over silent data loss" principle `session-materialise.py` already
+# follows for a missing brief.
+
+def commit_and_push_trunk(
+    result_text: str,
+    *,
+    session_id: str,
+    work_item: str,
+    date: Optional[str],
+    repo_dir: str,
+) -> dict:
+    """Commit the home-repo result directly to the live tree and push to ``main``
+    (no branch, no PR) — the trunk-mode counterpart of :func:`commit_home_result`.
+
+    Idempotent the same way: if the result file is already reachable from
+    ``origin/main`` (a prior run of this same session already landed it — the
+    SessionStart guard's re-run case), this is a no-op (``disposition="exists"``).
+
+    On push failure, rebases onto the freshly-fetched ``origin/main`` and retries
+    ONCE. If it still fails, the commit stays local (never force-pushed) and this
+    returns ``disposition="halted"`` — the caller must surface this loudly; the
+    working tree is left exactly as committed for an operator to resolve by hand
+    (``git -C {repo} push`` once the conflict is fixed, or ``git -C {repo}
+    reset --soft`` to undo and retry later).
+
+    Returns ``{"file_path", "ok", "reason", "disposition"}`` where ``disposition``
+    ∈ {``done``, ``exists``, ``halted``, ``deferred-cancelled``}. Never raises —
+    best-effort; any unexpected failure before a commit exists yields
+    ``deferred-cancelled`` (nothing local to clean up, same as the branch-mode
+    path's failure mode).
+    """
+    date = date or _now_date()
+    slug = work_item.replace("/", "-").replace(" ", "-").lower()
+    sid = (session_id or "nosid")[:8]
+    filename = f"session-{date}-{slug}-{sid}.md"
+    rel_path = f"results/{filename}"
+
+    result = {"file_path": rel_path, "ok": False, "reason": "",
+              "disposition": "deferred-cancelled"}
+
+    try:
+        # Refresh + idempotency: already landed on origin/main (this session's
+        # own guard-recovery re-run) → no-op, matching commit_home_result's
+        # _result_on_base check.
+        _git(repo_dir, "fetch", "origin", "main")
+        if _result_on_base(repo_dir, "origin/main", rel_path):
+            result.update(ok=True, disposition="exists",
+                          reason="result already on origin/main")
+            return result
+
+        (Path(repo_dir) / "results").mkdir(parents=True, exist_ok=True)
+        (Path(repo_dir) / rel_path).write_text(result_text, encoding="utf-8")
+        _git(repo_dir, "add", rel_path)
+
+        # T-068 parity: force-stage this session's own sid-keyed logs into the
+        # SAME commit, in place (dest_dir omitted — live tree, not a worktree).
+        from lib import session_guard as _sgd
+        _sgd.stage_session_logs(repo_dir, session_id)
+
+        commit = _git(repo_dir, "commit", "-m",
+                      f"chore(session-result): {work_item} ({date}) [{session_id[:8]}]")
+        out = (commit.stdout + commit.stderr).lower()
+        if commit.returncode != 0 and "nothing to commit" not in out:
+            result["reason"] = f"commit failed: {commit.stderr.strip()}"
+            return result
+
+        for attempt in (1, 2):
+            rebase = _git(repo_dir, "pull", "--rebase", "origin", "main")
+            if rebase.returncode != 0:
+                result["reason"] = (
+                    f"pull --rebase failed (attempt {attempt}): "
+                    f"{rebase.stderr.strip()}"
+                )
+                # A failed rebase can leave the tree mid-rebase; abort back to the
+                # commit we made so it stays a clean, pushable local commit for
+                # the operator rather than a half-rebased working tree.
+                _git(repo_dir, "rebase", "--abort")
+                if attempt == 2:
+                    result["disposition"] = "halted"
+                    return result
+                continue
+            push = _git(repo_dir, "push", "origin", "main")
+            if push.returncode == 0:
+                result.update(ok=True, disposition="done", reason="")
+                return result
+            result["reason"] = f"push failed (attempt {attempt}): {push.stderr.strip()}"
+            if attempt == 2:
+                result["disposition"] = "halted"
+                return result
+        return result
+    except Exception as exc:  # never break teardown; commit (if any) stays local
+        result["reason"] = str(exc)
+        if result["disposition"] != "deferred-cancelled":
+            result["disposition"] = "halted"
+        return result
+
+
+def author_home_result_trunk(
+    session_point: dict,
+    *,
+    session_id: str,
+    repo_dir: str,
+    date: Optional[str] = None,
+) -> dict:
+    """Trunk-mode counterpart of :func:`author_home_result` — render + commit
+    the home-repo result straight onto ``main`` via :func:`commit_and_push_trunk`,
+    no branch/PR. Returns the :func:`commit_and_push_trunk` dict."""
+    date = date or _now_date()
+    work_item = session_point.get("work_item", "unknown")
+    text = generate_session_result(session_point, date=date)
+    return commit_and_push_trunk(
+        text, session_id=session_id, work_item=work_item, date=date,
+        repo_dir=repo_dir,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Trainee session PR (PROJ-011/T-021 R-3, CC-351)
 # ---------------------------------------------------------------------------
 #

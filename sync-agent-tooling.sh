@@ -733,10 +733,26 @@ manifest = {
     "files": files,
     "root_files": root_files,
 }
+# lifecycle_mode (PROJ-039/T-084): branch|trunk, default "branch". This field is
+# OPERATOR-set, not sync-derived — sync must carry it forward unchanged rather than
+# stomping it back to the default on every re-sync (the same "preserve, don't derive"
+# treatment synced_at gets below, just permanent rather than idempotency-scoped).
+# Absent on a repo never migrated: every finalise/SessionStart reader treats a
+# missing key as "branch" (see lib/lifecycle_mode.py), so this key is only written
+# once a prior sync (or T-086 migration) already put it there.
+existing_path = claude_dir / "tooling-manifest.json"
+existing_lifecycle_mode = None
+if existing_path.is_file():
+    try:
+        existing_lifecycle_mode = json.loads(
+            existing_path.read_text(encoding="utf-8")).get("lifecycle_mode")
+    except ValueError:
+        pass
+if existing_lifecycle_mode:
+    manifest["lifecycle_mode"] = existing_lifecycle_mode
 # Idempotent re-sync (PROJ-039/T-069): an already-current repo must produce NO
 # diff — otherwise every TOOLING_UPDATE launch commits a synced_at-only change.
 # Keep the existing timestamp when nothing else moved.
-existing_path = claude_dir / "tooling-manifest.json"
 if existing_path.is_file():
     try:
         existing = json.loads(existing_path.read_text(encoding="utf-8"))

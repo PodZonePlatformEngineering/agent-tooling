@@ -28,6 +28,30 @@ CWD="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('cwd','.')
 # children) invokes logs to logs/primitives-{sid8}.log via this export.
 export PODZONE_SESSION_ID="${SESSION_ID}"
 
+# Trunk-mode SessionStart pull (PROJ-039/T-084, plan D-2): unconditional
+# `git -C {repo} pull --ff-only` for any repo flagged `lifecycle_mode: trunk` in
+# its shipped .claude/tooling-manifest.json — BEFORE session-materialise.py runs
+# (next in the SessionStart hook chain, scaffold.sh's wiring order). Absent/unset
+# flag reads "branch" (lib/lifecycle_mode.py's default) and this is a pure no-op —
+# every unmigrated repo is unaffected. Best-effort: a pull failure (offline,
+# diverged local main) must not block startup; it's logged and the session
+# proceeds against whatever main the clone already has.
+LIFECYCLE_MODE="$(python3 -c "
+import json, sys
+try:
+    d = json.load(open(sys.argv[1] + '/.claude/tooling-manifest.json', encoding='utf-8'))
+    print(d.get('lifecycle_mode') or 'branch')
+except Exception:
+    print('branch')
+" "${CWD}")"
+if [[ "${LIFECYCLE_MODE}" == "trunk" ]]; then
+  if git -C "${CWD}" pull --ff-only origin main >/dev/null 2>&1; then
+    log_primitive "session-start.sh" "trunk-mode: pulled --ff-only origin main"
+  else
+    log_primitive "session-start.sh" "trunk-mode: pull --ff-only failed or no-op (offline / diverged local main?)"
+  fi
+fi
+
 # Silent-failure hardening (PROJ-039/T-052): a brief-first launch REQUIRES the resident
 # session-materialise.py to stand up the session point. If BRIEF_ID is set but that hook
 # file is missing (a botched sync — the exact Thoth T-022 failure, where the SessionStart
