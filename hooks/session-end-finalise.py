@@ -486,8 +486,12 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
                      session_id=session_id, level="WARN")
                 _step("brief_pr", "deferred-cancelled")
     elif migrated:
-        # T-035: the hook owns the home-repo result. Author it + PR off home `main`,
-        # decoupled from the work PR. Idempotent (re-checks base + open PRs).
+        # T-035: the hook owns the home-repo result. Idempotent (re-checks base +
+        # open PRs / origin main, per mode). PROJ-039/T-084: repos flagged
+        # `lifecycle_mode: trunk` skip the branch+PR ceremony entirely — the result
+        # commit lands straight on `main` (commit_and_push_trunk); every other repo
+        # (default, `lifecycle_mode` absent or `branch`) keeps the existing
+        # decoupled-branch + PR path unchanged.
         if not home_repo:
             _log("session result skipped (migrated): no home repo dir (cwd / "
                  "CLAUDE_PROJECT_DIR unset)", session_id=session_id, level="WARN")
@@ -496,27 +500,48 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
             try:
                 from lib import session_finalise as _sf, session_substrate as _ss
                 from lib import session_guard as _sg
+                from lib import lifecycle_mode as _lm
                 from datetime import datetime, timezone as _tz
 
                 point = _ss.get_session_point(session_id)
                 if point:
                     date = datetime.now(_tz.utc).strftime("%Y-%m-%d")
-                    # T-060: capture the live session branch BEFORE the return-to-main
-                    # guard runs (below) resets the clone to main — so a mid-session
-                    # commit on this branch (e.g. a resident self-sync) can be forked
-                    # into the result PR instead of being stranded when the branch is
-                    # later reaped.
-                    session_branch = _sg.current_branch(home_repo)
-                    res = _sf.author_home_result(
-                        point, session_id=session_id, repo_dir=home_repo,
-                        date=date, raise_pr=True, session_branch=session_branch,
-                    )
-                    _log(
-                        f"home result [{res['disposition']}]: ok={res['ok']} "
-                        f"branch={res['branch']} pr_url={res['pr_url'] or '(none)'} "
-                        f"{res.get('reason') or ''}",
-                        session_id=session_id,
-                    )
+                    if _lm.is_trunk_mode(home_repo):
+                        res = _sf.author_home_result_trunk(
+                            point, session_id=session_id, repo_dir=home_repo, date=date,
+                        )
+                        _log(
+                            f"home result (trunk) [{res['disposition']}]: "
+                            f"ok={res['ok']} {res.get('reason') or ''}",
+                            session_id=session_id,
+                            level="ERROR" if res["disposition"] == "halted" else "INFO",
+                        )
+                        if res["disposition"] == "halted":
+                            _log(
+                                "HALT: trunk-mode result commit could not be pushed "
+                                f"to {home_repo} main after a rebase + retry — the "
+                                "commit is LOCAL ONLY (never force-pushed). Resolve "
+                                f"by hand: git -C {home_repo} push (or "
+                                f"git -C {home_repo} reset --soft HEAD~1 to undo).",
+                                session_id=session_id, level="ERROR",
+                            )
+                    else:
+                        # T-060: capture the live session branch BEFORE the
+                        # return-to-main guard runs (below) resets the clone to main
+                        # — so a mid-session commit on this branch (e.g. a resident
+                        # self-sync) can be forked into the result PR instead of
+                        # being stranded when the branch is later reaped.
+                        session_branch = _sg.current_branch(home_repo)
+                        res = _sf.author_home_result(
+                            point, session_id=session_id, repo_dir=home_repo,
+                            date=date, raise_pr=True, session_branch=session_branch,
+                        )
+                        _log(
+                            f"home result [{res['disposition']}]: ok={res['ok']} "
+                            f"branch={res['branch']} pr_url={res['pr_url'] or '(none)'} "
+                            f"{res.get('reason') or ''}",
+                            session_id=session_id,
+                        )
                     _step("brief_pr", res["disposition"])
                 else:
                     _log("session result skipped (migrated): session point not found",

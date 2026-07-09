@@ -106,6 +106,26 @@ want = hashlib.sha256(open('${AGENT_TOOLING_DIR}/scaffold/gitignore.template', '
 exit(0 if d.get('root_files', {}).get('.gitignore') == want else 1)
 " && echo ok || echo fail)"
 
+# 4e. lifecycle_mode (PROJ-039/T-084): absent on a fresh sync (default "branch"
+# is a reader default, not a written value); an operator-set flag survives a
+# re-sync unchanged (sync must carry it forward, never derive/reset it).
+assert "manifest carries no lifecycle_mode key on a fresh sync" \
+  "$(python3 -c "import json; d=json.load(open('${MANIFEST}')); exit(0 if 'lifecycle_mode' not in d else 1)" && echo ok || echo fail)"
+python3 -c "
+import json
+p = '${MANIFEST}'
+d = json.load(open(p))
+d['lifecycle_mode'] = 'trunk'
+json.dump(d, open(p, 'w'), indent=2, sort_keys=True)
+"
+bash "${AGENT_TOOLING_DIR}/sync-agent-tooling.sh" \
+  --role trainer \
+  --home-repo "$TARGET" \
+  --agent-tooling "${AGENT_TOOLING_DIR}" \
+  --yes > /dev/null 2>&1
+assert "lifecycle_mode: trunk survives a re-sync unchanged" \
+  "$(python3 -c "import json; d=json.load(open('${MANIFEST}')); exit(0 if d.get('lifecycle_mode')=='trunk' else 1)" && echo ok || echo fail)"
+
 # 5. Unchanged hooks not touched (stop.sh should still match)
 assert "stop.sh still matches source" \
   "$(diff -q "${AGENT_TOOLING_DIR}/hooks/stop.sh" "${TARGET}/.claude/hooks/stop.sh" > /dev/null 2>&1 && echo ok || echo fail)"
