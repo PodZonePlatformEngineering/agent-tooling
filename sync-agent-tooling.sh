@@ -670,6 +670,88 @@ if [[ "$ROLE" == "team-lead" ]]; then
   fi
 fi
 
+# --- Home-repo README (operator-facing, all non-trainee roles, PROJ-039/T-095) ---
+# Resident, sync-managed root-level artefact (same pattern as OPERATING-MANUAL.md
+# above): rendered from scaffold/home-repo-README.template with the repo's own
+# {team, agent, role} substituted, so every non-trainee home repo receives updates
+# via TOOLING_UPDATE. Byte-identity here means "identical to the freshly rendered
+# template". Trainee carries no synced README — trainee-owned, byte-untouched
+# (PROJ-011/T-025 R-7) — and this section is skipped for it.
+
+README_TEMPLATE="${AGENT_TOOLING_DIR}/scaffold/home-repo-README.template"
+README_DST="${HOME_REPO}/README.md"
+README_RENDERED=""
+if [[ "$ROLE" != "trainee" ]]; then
+  echo ""
+  echo "==> Syncing home-repo README → ${README_DST}"
+  if [[ ! -f "$README_TEMPLATE" ]]; then
+    echo "  SKIP  README.md — template not found (${README_TEMPLATE})"
+    ((SKIPPED++))
+  else
+    R_HR_NAME=""
+    R_IDENTITY_FILE="$(find "${HOME_REPO}/workspaces/identity" -name "*.identity.yaml" 2>/dev/null | head -1)"
+    if [[ -n "$R_IDENTITY_FILE" ]]; then
+      R_HR_NAME="$(grep '^home_repo:' "$R_IDENTITY_FILE" | head -1 | sed 's/^home_repo:[[:space:]]*//' | tr -d '[:space:]')"
+    fi
+    [[ -z "$R_HR_NAME" ]] && R_HR_NAME="$(basename "$HOME_REPO")"
+    if [[ "$R_HR_NAME" =~ ^home-([a-z0-9]+)-([a-z0-9-]+)$ ]]; then
+      R_TEAM="${BASH_REMATCH[1]}"
+      R_AGENT="${BASH_REMATCH[2]}"
+      R_AGENT_CAP="$(echo "${R_AGENT:0:1}" | tr '[:lower:]' '[:upper:]')${R_AGENT:1}"
+      case "$ROLE" in
+        team-lead)             R_ROLE_TITLE="Team Lead" ;;
+        coder)                 R_ROLE_TITLE="Coder" ;;
+        archivist)             R_ROLE_TITLE="Archivist" ;;
+        trainer)               R_ROLE_TITLE="Trainer" ;;
+        cluster-operator)      R_ROLE_TITLE="Cluster Operator" ;;
+        curriculum-developer)  R_ROLE_TITLE="Curriculum Developer" ;;
+        historian)             R_ROLE_TITLE="Historian" ;;
+        strategist)            R_ROLE_TITLE="Strategist" ;;
+        *)                     R_ROLE_TITLE="${ROLE}" ;;
+      esac
+      README_RENDERED="$(mktemp)"
+      sed -e "s|__AGENT__|${R_AGENT_CAP}|g" \
+          -e "s|__AGENT_LC__|${R_AGENT}|g" \
+          -e "s|__TEAM__|${R_TEAM}|g" \
+          -e "s|__TEAM_REPO__|${R_TEAM}Team|g" \
+          -e "s|__REPO_NAME__|${R_HR_NAME}|g" \
+          -e "s|__ROLE_TITLE__|${R_ROLE_TITLE}|g" \
+        "$README_TEMPLATE" > "$README_RENDERED"
+
+      if [[ -f "$README_DST" ]] && diff -q "$README_RENDERED" "$README_DST" > /dev/null 2>&1; then
+        echo "  OK    README.md — unchanged"
+        ((UNCHANGED++))
+      else
+        if [[ -f "$README_DST" ]]; then
+          echo "  DIFF  README.md:"
+          diff -u "$README_DST" "$README_RENDERED" || true
+          echo ""
+        else
+          echo "  NEW   README.md — not present in home repo"
+        fi
+        APPLY=1
+        if [[ $YES -eq 0 ]]; then
+          printf "  Overwrite %s? [y/N] " "README.md"
+          read -r answer </dev/tty
+          if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+            echo "  Skipped."
+            ((SKIPPED++))
+            APPLY=0
+          fi
+        fi
+        if [[ $APPLY -eq 1 ]]; then
+          cp "$README_RENDERED" "$README_DST"
+          echo "  Updated: README.md"
+          ((UPDATED++))
+        fi
+      fi
+    else
+      echo "  SKIP  README.md — cannot derive team/agent from '${R_HR_NAME}' (expected home-<team>-<agent>)"
+      ((SKIPPED++))
+    fi
+  fi
+fi
+
 echo ""
 echo "Sync complete: ${UPDATED} updated, ${UNCHANGED} unchanged, ${SKIPPED} skipped."
 
@@ -727,6 +809,13 @@ fi
 if [[ "$ROLE" == "team-lead" && -n "$MANUAL_RENDERED" ]]; then
   diff -q "$MANUAL_RENDERED" "$MANUAL_DST" > /dev/null 2>&1 \
     || { echo "  DRIFT: OPERATING-MANUAL.md (not byte-identical to rendered template / missing)"; DRIFT=1; }
+fi
+
+# Home-repo README invariant (PROJ-039/T-095): a non-trainee home repo's root
+# README.md MUST be byte-identical to the freshly rendered template.
+if [[ "$ROLE" != "trainee" && -n "$README_RENDERED" ]]; then
+  diff -q "$README_RENDERED" "$README_DST" > /dev/null 2>&1 \
+    || { echo "  DRIFT: README.md (not byte-identical to rendered template / missing)"; DRIFT=1; }
 fi
 
 # Skills invariant (PROJ-039/T-038): a team-lead home repo's .claude/skills/ MUST be
@@ -810,6 +899,12 @@ if os.environ["ROLE"] == "team-lead":
     manual = home_repo_dir / "OPERATING-MANUAL.md"
     if manual.is_file():
         root_files["OPERATING-MANUAL.md"] = hashlib.sha256(manual.read_bytes()).hexdigest()
+# Home-repo operator README (PROJ-039/T-095): root-level, sync-managed, rendered
+# per-repo for every non-trainee role — the hash is of the shipped (rendered) file.
+if os.environ["ROLE"] != "trainee":
+    readme = home_repo_dir / "README.md"
+    if readme.is_file():
+        root_files["README.md"] = hashlib.sha256(readme.read_bytes()).hexdigest()
 
 manifest = {
     "version": os.environ["TOOLING_VERSION"],

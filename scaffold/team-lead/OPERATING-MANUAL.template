@@ -47,10 +47,36 @@ The coordination skills resolve the team repo from identity, never from CWD: dec
 `home-<team>-<agent>` → `<team>Team` (canonical resolver: `lib/team_repo.py`, resident
 under `.claude/lib/`), then clone `__TEAM_REPO__` into `.workspace/` on demand.
 
-**Apex exception:** the apex lead (Hermes) has one structural privilege — `podzoneTeam`
-planning writes go direct-to-main, not via a session-branch PR. Fissioned leads have no
-equivalent; local-mode `/consolidate-tasks` commits to the fissioned team repo the same
-way, guarded by identity resolution.
+**Direct-to-main on your own team repo is general team-lead policy** (§2b), not an
+apex-only structural privilege: `/consolidate-tasks` commits your planning writes
+straight to `__TEAM_REPO__`'s default branch, no session-branch PR, guarded by identity
+resolution so you never write another team's repo this way. The apex lead (Hermes) has
+exactly one **genuinely** apex-specific trait here — `podzoneTeam` additionally hosts
+the cross-team registry (the fissioned-teams table, team-wide consolidation) that no
+other team repo carries — not a different visibility rule.
+
+## 2b. The change-visibility policy
+
+Operator decision 2026-07-10, applies fleet-wide — governs which changes arrive as a PR
+and which land directly:
+
+- **Home repos** — agent sessions, hook-managed: push to the default branch, **no PR**.
+- **Team repos** — a team-lead session adjusting its own team repo: push to the default
+  branch, **no PR** (§2 — generalises the former apex-only privilege to every lead, on
+  their own team repo).
+- **Working repos** — repos checked out under `.workspace/`, modified per brief
+  instructions: this is the **PR path**. Such changes are NOT operational changes, even
+  when the checked-out repo happens to be a home or team repo — that only happens when
+  an agent is specifically briefed to adjust that repo.
+- **Rare exception** — a brief or operator instruction explicitly targets the CURRENT
+  operational team/home repo you're standing on ("re-engineering the beam we are
+  standing on"). **Caveat:** a modification to an agent-tooling **manifest item** made
+  this way is overwritten on the next TOOLING_UPDATE — it is not durable unless it also
+  lands as an agent-tooling PR.
+
+A direct-to-main commit on a home or team repo is normal operation, not a bypassed
+review — this manual's brief-routing step (§4.1) and your own consolidation writes (§2)
+are both instances of this policy, not exceptions to it.
 
 ## 3. Your own session lifecycle (hooks-only; trunk vs branch)
 
@@ -99,8 +125,11 @@ many sessions (re-launch fresh after a limit-stop re-materialises the same brief
 Never write task files into an agent's repo yourself; materialise does that.
 
 1. **Author** the brief body as a markdown file in the **assignee's home repo** at
-   `team-lead/briefs/{date}-{slug}.md`, on a `team-lead/{date}-{slug}` branch, PR'd to
-   its `main` and merged — the committed copy is the human/PR audit record.
+   `team-lead/briefs/{date}-{slug}.md`, pushed **directly to its default branch — no
+   branch, no PR** (the change-visibility policy, §2b: dispatching to a home repo is
+   operational, hook-adjacent territory, not briefed work product). The committed file
+   remains the human/audit record; the commit message (`brief(T-XXX): …`) is the
+   visibility surface — there is no PR to review or merge.
 2. **Create + approve** the point (the execution gate):
 
    ```bash
