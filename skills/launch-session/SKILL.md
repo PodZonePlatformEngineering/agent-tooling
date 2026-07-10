@@ -335,11 +335,36 @@ Before creating any worktrees, confirm a commission brief for this session exist
 
 ### Migrated home-repo mode (default) — serial simple-repo, no worktree (PROJ-039/T-045)
 
-The session runs **in the primary clones** on session branches — there is **no
-`~/sessions/{sid}/` directory and no worktree**. For each repo in scope (the home repo +
+**Lifecycle-mode fork (PROJ-039/T-084..T-086, codified T-097).** Per repo in scope, read
+`lifecycle_mode` from its `.claude/tooling-manifest.json` (reader: `lib/lifecycle_mode.py`;
+absent = `branch`):
+
+```bash
+MODE=$(python3 -c "
+import sys; sys.path.insert(0, '$HOME/workspace/agent-tooling')
+from lib import lifecycle_mode
+print(lifecycle_mode.read_lifecycle_mode('$CLONE'))
+")
+```
+
+- **`branch` (default)** — existing preflight + lock + `checkout -b` below, unchanged.
+- **`trunk`** — preflight + lock **only — no branch; the session runs directly on
+  `main`**. **Why:** a trunk repo's SessionEnd finalise commits the session result
+  straight to `main` and `push`es `origin main` (no result branch, no result PR — see
+  the lifecycle-mode table in `scaffold/team-lead/OPERATING-MANUAL.template` §3). If the
+  launcher branched the clone anyway, the finalise's `main`-targeted commit+push would
+  land on the wrong ref and the session's work would be **stranded on an orphan branch
+  nobody merges** — this is the exact failure the T-086 dogfood validated the fix for.
+  So for a trunk repo, stop after the lock: skip the `checkout -b` line in the loop
+  below for that repo, and the launch cwd stays `~/workspace/{repo}` on `main`.
+  The launch registration (Step 7)'s PAT-branch column reads **`(none — trunk)`** for
+  such a repo instead of the usual `session/{agent}-{date}-{slug}`.
+
+The session runs **in the primary clones** — there is **no `~/sessions/{sid}/` directory
+and no worktree**, on either lifecycle mode. For each repo in scope (the home repo +
 each task repo from the identity `repos` list), run the start guard, take the lock, and
-branch the clone itself. The `session_guard` CLI replaces the old worktree + ff + exclude
-bash with one call each:
+— for `branch`-mode repos only — branch the clone itself. The `session_guard` CLI
+replaces the old worktree + ff + exclude bash with one call each:
 
 > **Register before you branch the registry host (F11).** `planning/sessions/active.md`
 > is Team Lead-managed **on main**. If the repo that hosts it — `podzoneTeam` for
@@ -364,6 +389,16 @@ for repo in {home_repo} {task_repos…}; do
   python3 ~/workspace/agent-tooling/lib/session_guard.py lock --repo "$CLONE" --sid "$SID" || {
     echo "clone $CLONE is locked by a live session — refuse"; exit 1; }
   # If $repo hosts planning/sessions/active.md, register NOW (Step 7) — still on main.
+  # Lifecycle-mode fork (T-084/T-097): trunk repos stop here — lock only, no branch.
+  MODE=$(python3 -c "
+import sys; sys.path.insert(0, '$HOME/workspace/agent-tooling')
+from lib import lifecycle_mode
+print(lifecycle_mode.read_lifecycle_mode('$CLONE'))
+")
+  if [ "$MODE" = "trunk" ]; then
+    echo "$CLONE is lifecycle_mode=trunk — locked, no branch; session runs on main"
+    continue
+  fi
   # Branch the clone: session/{agent}-{date}-{slug} for the home/PAT repo,
   # {agent}/{date}-{slug} for a task repo.
   git -C "$CLONE" checkout -b {branch}
@@ -381,6 +416,42 @@ now the *normal* path, so its end-guard returns it to main at finalise (read-onl
 still references the plain clone, unbranched). **Register it (Step 7) before this
 branch step**, per the callout above — podzoneTeam is exactly the registry host this
 guards against.
+
+### Trunk-migration launches — the T-086 runbook
+
+A **migration launch** flips a repo from `branch` to `trunk` lifecycle mode and validates
+the flip in the same dispatch. This is a distinct shape from an ordinary trunk-mode launch
+above (which just reads an already-`trunk` flag) — codifying it here is what closes the gap
+the T-086 dogfood exposed live. Proven across T-086 (`home-podzone-hephaestus`) and its
+sibling dispatches; follow this ordering exactly:
+
+1. **Flip on `main` BEFORE the validating session launches.** The PR (or, on a repo
+   already trunk-eligible for direct writes, the commit) that sets
+   `"lifecycle_mode": "trunk"` in `.claude/tooling-manifest.json` must land on `origin/main`
+   first — same commit/PR that carries the migration brief is fine, but it must be *merged*
+   before Step 3 of the validating launch runs. Launching against a clone that still reads
+   `branch` (or has no `lifecycle_mode` key yet) defeats the point: the launcher would take
+   the branch-mode path and the resident hooks wouldn't be trunk-capable regardless.
+2. **Dispatch with `TOOLING_UPDATE={tag}`.** The flip alone isn't enough — the repo's
+   *resident* `.claude/` hooks (in particular SessionEnd finalise) must also be at a tag
+   that understands `lifecycle_mode: trunk` (`lib/lifecycle_mode.py` shipped, finalise's
+   trunk branch wired). Setting `TOOLING_UPDATE={tag}` on the launch env (§8 of the
+   OPERATING-MANUAL) makes the SessionStart self-update pull that tag before anything
+   else runs, so the hooks are trunk-capable **by SessionEnd** even though the session
+   itself started on the old resident set.
+3. **The validating session runs lock-no-branch**, per the lifecycle-mode fork above —
+   preflight + lock only, working directly on `main`, "commit early and often" now means
+   commit-and-push-to-`main` throughout the session (not just at finalise).
+4. **Abort condition — the self-update did not apply.** Have the session check, early,
+   that the SessionStart self-update actually landed (e.g. `.claude/tooling-manifest.json`
+   reads the target `TOOLING_UPDATE` tag's version, not the pre-migration one) and that the
+   `lifecycle_mode: trunk` field **survived** the manifest rewrite (a sync regression could
+   drop it). If either check fails: **do not proceed** — the resident hooks are not
+   trunk-aware and a normal exit would take the old branch-mode finalise path (a stray
+   result branch/PR at worst, but the validation is void). Flip nothing further, raise to
+   the team lead via the session response with what was found, and exit. A subscription
+   -limit or operator-blocked exit mid-migration is recoverable (re-check A1–A2 on
+   relaunch); silently continuing past a failed self-update is not.
 
 > **Legacy worktree option (`--legacy-worktree`).** The pre-T-045 worktree ceremony below is
 > retained for one release for a genuine parallel need. Take it **only** when the launch was
@@ -708,6 +779,14 @@ for a manual finalise:
 | {session-id} | {agent} | {task-slug} | {YYYY-MM-DD} | in-flight (migrated; sid {pinned-uuid}) | ~/sessions/{session-id} | session/{agent}-{YYYY-MM-DD}-{task-slug} |
 ```
 
+**`lifecycle_mode: trunk` repo:** the PAT-branch column (last column) reads
+**`(none — trunk)`** instead of `session/{agent}-{date}-{slug}` — there is no session
+branch for that repo (Step 3 lifecycle-mode fork):
+
+```markdown
+| {session-id} | {agent} | {task-slug} | {YYYY-MM-DD} | in-flight (trunk; sid {pinned-uuid}) | ~/workspace/{repo} | (none — trunk) |
+```
+
 ## Step 8 — Launch (mode-split)
 
 ### Standard / fissioned mode — launch VS Code window
@@ -763,7 +842,9 @@ cd ~/workspace/{home_repo} && claude --session-id {pinned-uuid} \
   `docs/brief-authoring.md`. Mechanical sweep briefs launch with `--model sonnet`.
 
 > ⚠️ **Finish with a clean `/exit`.** SessionEnd finalise (response + rollup + telemetry
-> push + push-then-delete + brief-result PR) hangs off the SessionEnd hook; a clean `/exit`
+> push + push-then-delete + brief-result PR **on a `branch`-mode repo** — a `trunk`-mode
+> repo's finalise instead commits the result straight to `main` and pushes, no PR, see the
+> lifecycle-mode fork in Step 3) hangs off the SessionEnd hook; a clean `/exit`
 > is what fires it reliably. In **headless** mode, `claude -p` exits cleanly when the one-shot
 > completes, which fires SessionEnd; a subscription-limit halt is the preferred failure mode
 > (re-launch **fresh** from committed state — never resume). Closing the terminal / killing the
@@ -866,6 +947,14 @@ cleanly when the one-shot completes, which fires SessionEnd. At session end the 
 to `main` and deleted its pushed session branch, and released the one-session lock;
 `/consolidate-tasks` Step 0c is only the belt-and-suspenders sweep for a session that crashed
 before finalise ran. Mark the session `cleaned-up` in `planning/sessions/active.md`.
+
+**Trunk-mode repos (`lifecycle_mode: trunk`): even less to reap.** There was never a
+worktree, `~/sessions/{sid}/` dir, *or* session branch — the session ran directly on `main`
+throughout (Step 3 lifecycle-mode fork). The SessionEnd finalise commits the result and
+`pull --rebase` + pushes to `main` directly; the belt-and-suspenders sweep of
+`/consolidate-tasks` Step 0c applies only to `branch`-mode repos (there is no branch to
+return-to-main on a trunk repo — the clone was already on `main` the whole time). Mark the
+session `cleaned-up` in `planning/sessions/active.md` the same way.
 
 **Legacy worktree option (`--legacy-worktree`), done by consolidate-tasks, not here.** After
 all PRs (task repos + the PAT/home repo) are merged:
