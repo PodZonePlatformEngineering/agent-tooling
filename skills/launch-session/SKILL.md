@@ -281,26 +281,28 @@ explicitly-labelled **Legacy worktree option** subsections; take it only when la
 ## Step 2 — Pre-flight brief check
 
 Before creating any worktrees, confirm a commission brief for this session exists on
-`origin/main` of the home repo. This prevents agents from starting without proper context
-(e.g. when the brief is on an unmerged Team Lead branch).
+`origin/main` of the home repo. This prevents agents from starting without proper context.
 
 **Home repo for the check:**
 - Standard mode: `podzoneTeam`
 - Fissioned mode: the agent's `home_repo`
 - **Migrated home-repo mode (T-006):** the agent's `home_repo` (`home-<team>-<agent>`).
-  The Team Lead routes the brief by committing it to a **`team-lead`** branch on the home
-  repo and raising a PR to the home repo's `main` (not `podzoneTeam/team/{agent}/incoming/`).
-  The pre-flight check confirms the brief is merged to the home repo's `origin/main` before
-  launch; the SessionStart materialise hook then materialises `.workspace/` from Qdrant
-  `session_substrate` (the committed file is the human-/PR-visible record).
+  The Team Lead routes the brief by **pushing it directly to the home repo's default
+  branch** — `brief(T-XXX): …` as the commit message, **no branch, no PR** (the
+  2026-07-10 change-visibility policy, OPERATING-MANUAL §2b: dispatching a brief to a
+  home repo is operational, hook-adjacent territory, not briefed work product — see
+  `scaffold/team-lead/OPERATING-MANUAL.template` §2b/§4.1). The committed file is the
+  human-/audit record; the commit message is the visibility surface — there is nothing
+  to review or merge before the pre-flight check below runs. The SessionStart
+  materialise hook then materialises `.workspace/` from Qdrant `session_substrate`
+  (or `briefs`, brief-first path) using that committed file as the source of truth.
   Committed brief path on the migrated home repo: `team-lead/briefs/{date}-{task-slug}.md`.
 
-  > ✅ **Resolved (operator-DECIDED 2026-06-17, PROJ-039/T-011 C2-v2.1):** the canonical
-  > committed brief path for a migrated agent is **`team-lead/briefs/{date}-{task-slug}.md`
-  > on the agent home repo** (not `podzoneTeam/team/{agent}/incoming/`). The Team Lead
-  > PRs the brief there; the migrated-mode pre-flight check below and template §11 are
-  > aligned to this path. (`session_substrate` in Qdrant is the runtime source the
-  > materialise hook reads; the committed file is the human-/PR-visible record.)
+  > This retires the pre-2026-07-10 ceremony (a `team-lead` branch + PR + merge to the
+  > home repo's `main`) — that PR-review step is gone fleet-wide, not just for trunk
+  > repos; branch-mode and trunk-mode home repos both receive briefs the same way.
+  > What still differs by lifecycle mode is the **session's own** launch shape (Step 3),
+  > not brief delivery.
 
 **Brief directory by mode** (call it `{brief-dir}` below):
 - Standard / fissioned mode: `team/{agent}/incoming/`
@@ -313,16 +315,17 @@ Before creating any worktrees, confirm a commission brief for this session exist
    git -C ~/workspace/{home_repo} show origin/main:{brief-dir}
    ```
 2. Scan the listing for a filename matching `*{task-slug}*` (date prefix may vary).
-3. **If a matching file exists:** push `origin/main` so the worktree branches from the
-   current state, then proceed to Step 3:
+3. **If a matching file exists:** pull `origin/main` so the launch proceeds from the
+   current state, then continue to Step 3:
    ```bash
-   git -C ~/workspace/{home_repo} push origin main
+   git -C ~/workspace/{home_repo} pull --ff-only origin main
    ```
-   Push ensures origin/main is current before the worktree branches, preventing PR diff
-   noise from unpushed Team Lead commits.
+   (This is now a read-freshness pull, not a push — the brief already landed on
+   `origin/main` directly in Step 2's routing above; there is no local Team Lead
+   commit left to push here.)
 4. **If no match is found:** abort with:
    ```
-   Commission brief not in main — merge the Team Lead session branch first.
+   Commission brief not on origin/main — push it directly per OPERATING-MANUAL §2b first.
    Expected: {brief-dir}{date}-{task-slug}.md
    Check: git show origin/main:{brief-dir}
    ```
