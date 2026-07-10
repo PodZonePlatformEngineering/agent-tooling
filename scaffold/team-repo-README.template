@@ -1,0 +1,86 @@
+# __TEAM_REPO__ — operator orientation
+
+**Template source: `agent-tooling/scaffold/team-repo-README.template`** (PROJ-039/T-095).
+Team repos are not a `scaffold.sh` target today, so this file is placed **manually,
+once**, by the team lead when the repo is created (see "Placement" at the bottom of
+this file for the recommended mechanism) — it is not TOOLING_UPDATE-synced the way a
+home repo's README is. If the template changes upstream, re-copy and re-substitute by
+hand; there's no drift check for this one yet.
+
+This file is for **you, the operator** — where to look, not how the team lead works.
+Team-lead operating instructions live in each lead's home-repo `OPERATING-MANUAL.md`;
+this README never duplicates them.
+
+## What this repo is
+
+`__TEAM_REPO__` is the **__TEAM__ team's** durable planning surface — shared state that
+outlives any individual session or agent. It is distinct from any agent's **home repo**
+(their session lifecycle, hooks, results) and from a **working repo** (a task repo an
+agent clones into `.workspace/` to do briefed work). Only the team lead writes the
+planning surface here; other agents interact with it only via the drafts channel
+(below).
+
+## Who writes here
+
+- **The team lead** (`__TEAM__` lead) — the only writer of `planning/`. Direct commits
+  to this repo's default branch, per the change-visibility policy below.
+- **Any team agent** — may drop a draft handoff under `team/{recipient}/incoming/
+  drafts/`, addressed to another agent on the team. The recipient (or the lead, at
+  consolidation) reconciles it — promote, merge, or reject; never silently delete.
+- **Another team's lead** — cross-team coordination lands here only via the drafts
+  channel or an inter-team-lead brief, never a direct planning edit.
+
+## Directory structure
+
+| Path | What it is |
+|---|---|
+| `planning/team-tasklist.md` | The team's task board — chronological, lead-owned. |
+| `planning/STATUS.md` | Rolled-up status digest, rewritten at each consolidation pass. |
+| `planning/sessions/active.md` | Session registry — one row per in-flight/recent agent session, lead-owned. |
+| `planning/projects/` | Per-project planning docs (multi-task initiatives). |
+| `team/{agent}/incoming/drafts/` | Cross-team / cross-agent handoff inbox — drafts awaiting reconciliation. |
+| `agenticflows/` | Team conventions, role specs, operations docs — the "how we work" reference material. |
+
+## How agent activity is recorded — where this repo fits in the trail
+
+This repo does not host session commits or results — those live in each agent's own
+**home repo** (`results/session-*.md`). What lands here is the **consolidated view**:
+the team lead's `/consolidate-tasks` pass reads each agent's results/telemetry and
+writes the summary into `planning/sessions/active.md`, `planning/team-tasklist.md`, and
+`planning/STATUS.md`. If you want raw session detail, start at the agent's home repo;
+if you want the team-wide status picture, start here.
+
+## The change-visibility policy — which changes arrive as a PR, and which don't
+
+Decided 2026-07-10; applies fleet-wide:
+
+- **Home repos** — agent sessions are hook-managed: push to the default branch
+  **directly, no PR**.
+- **Team repos** (this repo) — the team lead's own adjustments to its own team repo
+  push to the default branch **directly, no PR** (this generalises what used to be an
+  apex-only privilege to every lead, on their own team repo).
+- **Working repos** — any repo checked out under a session's `.workspace/` and modified
+  per a brief's instructions (including when that repo happens to be a home or team
+  repo, because the brief specifically targeted it) goes through the **PR path**. These
+  are not operational hook-driven changes — they're briefed work product.
+- **Rare exception:** a brief or operator instruction can explicitly target the CURRENT
+  operational team/home repo you're standing on ("re-engineering the beam we are
+  standing on"). **Caveat:** any change made this way to an agent-tooling **manifest
+  item** (a file `sync-agent-tooling.sh` manages) is overwritten on the next
+  `TOOLING_UPDATE` — such a change is not durable unless it also lands as an
+  agent-tooling PR.
+
+In short: if you see a commit straight on this repo's default branch by the team lead,
+that's the policy working as designed, not a bypassed review. A PR against this repo
+means an agent was specifically briefed to modify it as working-repo content.
+
+## Placement (this template is not scaffold-emitted)
+
+Team repos aren't created by `scaffold.sh`, so there's no automatic emission point for
+this README yet. Recommended mechanism until one exists: the team lead copies this
+template to `README.md` at the team repo root once, at team stand-up time (or
+retroactively for an existing team repo), substituting `__TEAM__` and `__TEAM_REPO__`
+by hand. Treat this template file as the canonical source for any future edits — don't
+hand-drift the copies across teams; re-copy from here instead. Wiring an automatic sync
+target for team repos (mirroring the home-repo TOOLING_UPDATE mechanism) was
+deliberately deferred out of this change.

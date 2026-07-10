@@ -169,6 +169,55 @@ rm -rf "$LEAD" /tmp/test-sync-lead-out-$$ /tmp/test-sync-lead-out2-$$ /tmp/test-
 assert "trainer repo has no OPERATING-MANUAL.md after sync" \
   "$([ ! -f "${TARGET}/OPERATING-MANUAL.md" ] && echo ok || echo fail)"
 
+# 5d. Home-repo operator README (PROJ-039/T-095): rendered per-repo for every
+# non-trainee role, drift restored on sync, in the manifest root_files,
+# byte-identical across re-sync; trainee's own README is untouched.
+README_TARGET="/tmp/test-sync-readme-$$"
+NO_TELEMETRY_BOOTSTRAP=1 bash "${AGENT_TOOLING_DIR}/scaffold.sh" training readmesync trainer --target-dir "$README_TARGET" > /dev/null
+README_DST="${README_TARGET}/README.md"
+assert "trainer scaffold emitted README.md" \
+  "$([ -f "$README_DST" ] && echo ok || echo fail)"
+echo "# HAND EDIT" >> "$README_DST"
+bash "${AGENT_TOOLING_DIR}/sync-agent-tooling.sh" \
+  --role trainer --home-repo "$README_TARGET" --agent-tooling "${AGENT_TOOLING_DIR}" \
+  --yes > /tmp/test-sync-readme-out-$$ 2>&1
+assert "hand-edited README restored by sync" \
+  "$(! grep -q 'HAND EDIT' "$README_DST" && echo ok || echo fail)"
+assert "restored README carries this repo's substitutions" \
+  "$(grep -q 'home-training-readmesync' "$README_DST" && echo ok || echo fail)"
+assert "sync output shows README restored" \
+  "$(grep -q 'Updated: README.md' /tmp/test-sync-readme-out-$$ && echo ok || echo fail)"
+README_MANIFEST="${README_TARGET}/.claude/tooling-manifest.json"
+assert "manifest root_files carries README.md sha256 matching shipped file" \
+  "$(python3 -c "
+import hashlib, json
+d = json.load(open('${README_MANIFEST}'))
+want = hashlib.sha256(open('${README_DST}', 'rb').read()).hexdigest()
+exit(0 if d.get('root_files', {}).get('README.md') == want else 1)
+" && echo ok || echo fail)"
+cp "$README_DST" /tmp/test-sync-readme-copy-$$
+bash "${AGENT_TOOLING_DIR}/sync-agent-tooling.sh" \
+  --role trainer --home-repo "$README_TARGET" --agent-tooling "${AGENT_TOOLING_DIR}" \
+  --yes > /tmp/test-sync-readme-out2-$$ 2>&1
+assert "README byte-identical across re-sync (idempotent)" \
+  "$(diff -q /tmp/test-sync-readme-copy-$$ "$README_DST" > /dev/null 2>&1 && echo ok || echo fail)"
+assert "re-sync reports README unchanged" \
+  "$(grep -q 'OK    README.md — unchanged' /tmp/test-sync-readme-out2-$$ && echo ok || echo fail)"
+rm -rf "$README_TARGET" /tmp/test-sync-readme-out-$$ /tmp/test-sync-readme-out2-$$ /tmp/test-sync-readme-copy-$$
+
+# 5e. Trainee sync never touches its own README (trainee-owned, byte-untouched)
+TRAINEE_SYNC_TARGET="/tmp/test-sync-readme-trainee-$$"
+NO_TELEMETRY_BOOTSTRAP=1 bash "${AGENT_TOOLING_DIR}/scaffold.sh" podzone readmesynctrainee trainee --target-dir "$TRAINEE_SYNC_TARGET" > /dev/null
+TRAINEE_README_BEFORE="$(cat "${TRAINEE_SYNC_TARGET}/README.md")"
+bash "${AGENT_TOOLING_DIR}/sync-agent-tooling.sh" \
+  --role trainee --home-repo "$TRAINEE_SYNC_TARGET" --agent-tooling "${AGENT_TOOLING_DIR}" \
+  --yes > /tmp/test-sync-readme-trainee-out-$$ 2>&1
+assert "trainee README unchanged by sync (byte-untouched)" \
+  "$([ "$(cat "${TRAINEE_SYNC_TARGET}/README.md")" == "$TRAINEE_README_BEFORE" ] && echo ok || echo fail)"
+assert "sync does not report a README sync step for trainee" \
+  "$(! grep -q 'Syncing home-repo README' /tmp/test-sync-readme-trainee-out-$$ && echo ok || echo fail)"
+rm -rf "$TRAINEE_SYNC_TARGET" /tmp/test-sync-readme-trainee-out-$$
+
 # 6. Auto-detect role from identity YAML (no --role flag)
 bash "${AGENT_TOOLING_DIR}/scaffold.sh" training auto-test trainer --target-dir "${TARGET}-auto" > /dev/null
 echo "# DRIFT" >> "${TARGET}-auto/.claude/hooks/session-start.sh"

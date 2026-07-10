@@ -52,6 +52,19 @@ assert "no unsubstituted placeholder (__AGENT__/__TEAM__/__REPO_NAME__)" \
 assert "manual ≤ 400 lines (size discipline)" \
   "$([ "$(wc -l < "$MANUAL")" -le 400 ] && echo ok || echo fail)"
 
+# 2b. Change-visibility policy (PROJ-039/T-095): §2b present, §4.1 brief routing is
+# direct-push no-PR, §2 apex framing is generalised (not an apex-only privilege).
+assert "manual carries §2b change-visibility policy section" \
+  "$(grep -q '## 2b. The change-visibility policy' "$MANUAL" && echo ok || echo fail)"
+assert "§4 brief-routing step is direct-push, no branch/PR ceremony" \
+  "$(grep -A2 '1\. \*\*Author\*\* the brief body' "$MANUAL" | grep -q 'directly to its default branch' && echo ok || echo fail)"
+assert "§4 brief-routing step states no PR" \
+  "$(grep -A3 '1\. \*\*Author\*\* the brief body' "$MANUAL" | grep -q 'no PR' && echo ok || echo fail)"
+assert "manual no longer frames direct-to-main as an apex-only structural privilege" \
+  "$(! grep -q 'has one structural privilege' "$MANUAL" && echo ok || echo fail)"
+assert "apex note kept only for the genuinely apex-specific trait (cross-team registry)" \
+  "$(grep -q 'cross-team registry' "$MANUAL" && echo ok || echo fail)"
+
 # 3. Current-reality guards: no dead mechanisms in the shipped manual
 assert "manual has no agents/{name}/incoming/ reference" \
   "$(! grep -q 'agents/{name}/incoming' "$MANUAL" && echo ok || echo fail)"

@@ -662,19 +662,31 @@ AGENTS
 fi
 
 # --- README.md ---
+# Trainee (R-7): trainee operating manual (structure map + launch/review rituals), no
+# provenance — trainee-owned, byte-untouched by sync.
+# Non-trainee (PROJ-039/T-095): operator-facing orientation — resident, sync-managed,
+# rendered from scaffold/home-repo-README.template (same pattern as OPERATING-MANUAL.md),
+# carried in the sync manifest so every non-trainee agent receives updates via
+# TOOLING_UPDATE. Audience is the OPERATOR, not the agent — AGENTS.md (and, for
+# team-lead, OPERATING-MANUAL.md) remain the agent-facing artefacts.
 
 if [[ "$ROLE" == "trainee" ]]; then
-  # R-7: trainee operating manual (structure map + launch/review rituals), no provenance.
   sed -e "s|__TRAINEE__|${TRAINEE_NAME}|g" -e "s|__REPO_NAME__|${REPO_NAME}|g" \
     "${SCAFFOLD_DIR}/trainee/README.template" > "${TARGET_DIR}/README.md"
 else
-cat > "${TARGET_DIR}/README.md" <<README
-# ${REPO_NAME} — ${AGENT_CAP} (${ROLE_TITLE})
-
-Home repo for the ${AGENT_CAP} agent (team: ${TEAM}, role: ${ROLE}).
-
-Open \`${REPO_NAME}.code-workspace\` to start a session.
-README
+  HOME_README_TEMPLATE="${SCAFFOLD_DIR}/home-repo-README.template"
+  if [[ ! -f "$HOME_README_TEMPLATE" ]]; then
+    echo "Error: home-repo README template not found: ${HOME_README_TEMPLATE}"
+    exit 1
+  fi
+  sed -e "s|__AGENT__|${AGENT_CAP}|g" \
+      -e "s|__AGENT_LC__|${AGENT}|g" \
+      -e "s|__TEAM__|${TEAM}|g" \
+      -e "s|__TEAM_REPO__|${TEAM}Team|g" \
+      -e "s|__REPO_NAME__|${REPO_NAME}|g" \
+      -e "s|__ROLE_TITLE__|${ROLE_TITLE}|g" \
+    "$HOME_README_TEMPLATE" > "${TARGET_DIR}/README.md"
+  echo "    rendered: README.md"
 fi
 
 # --- .claude/instructions.md + guardrails.md + output-format.md ---
