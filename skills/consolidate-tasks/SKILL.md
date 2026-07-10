@@ -87,11 +87,24 @@ Mark session `concluded-merged` in `active.md`.
 
 ### 0c — Clone-on-main + local session-branch cleanup (PROJ-039/T-045)
 
-**Serial simple-repo mode (default).** Sessions now run directly in the primary clone
-(`~/workspace/{repo}`) on a session branch — there are no `~/sessions/{sid}/` worktrees
-to reap. The session-end finalise guard already returns each touched clone to `main` and
-deletes its pushed session branch; this step is the belt-and-suspenders sweep for a
-session that crashed before finalise ran (its branch is still checked out).
+**Lifecycle-mode fork (PROJ-039/T-084..T-086, codified T-097).** This step is
+`branch`-mode-only. Read `lifecycle_mode` from the repo's `.claude/tooling-manifest.json`
+(reader: `lib/lifecycle_mode.py`; absent = `branch`, same reader Step 1a and
+`/launch-session` use):
+
+- **`branch` (default)** — the sweep below runs as written.
+- **`trunk`** — **skip this step for that repo.** A trunk-mode session never created a
+  session branch (Step 3 of `/launch-session`'s lifecycle-mode fork ran lock-only), so
+  there is nothing for `session_guard.return-to-main` to return — the clone was on `main`
+  the entire session and the SessionEnd finalise's own commit+`pull --rebase`+push already
+  left it there, clean. Mark the session `cleaned-up` directly; do not run the
+  `return-to-main` call for that repo.
+
+**Serial simple-repo mode (default, `branch`-mode repos).** Sessions run directly in the
+primary clone (`~/workspace/{repo}`) on a session branch — there are no `~/sessions/{sid}/`
+worktrees to reap. The session-end finalise guard already returns each touched clone to
+`main` and deletes its pushed session branch; this step is the belt-and-suspenders sweep
+for a session that crashed before finalise ran (its branch is still checked out).
 
 For each session `concluded-merged` where all task-repo PRs are also merged, return any
 clone still on that session's branch to a fast-forwarded `main` and drop the merged local
@@ -128,12 +141,28 @@ any fissioned-team stub agents (Clio, Alex, Norma, Eben) whose stubs land here.
 Agents listed as `status: migrated` in
 `planning/projects/PROJ-032-agent-home-repos/migrated-agents.md` no longer write
 `team/{agent}/outgoing/` — their session results live in their home repo's `results/`.
-For each migrated agent, scan the home repo instead of (not in addition to) the legacy path:
+For each migrated agent, scan the home repo instead of (not in addition to) the legacy path.
+Mechanically unchanged from `git show origin/main:results/` on down regardless of
+lifecycle mode — the fork is only in *how the result got to `origin/main`*:
+
+**Lifecycle-mode fork (PROJ-039/T-084..T-086, codified T-097).** Read `lifecycle_mode`
+from the agent's home repo `.claude/tooling-manifest.json` (reader: `lib/lifecycle_mode.py`;
+absent = `branch`; same reader `/launch-session` Step 3 and this skill's Step 0c use):
+
+- **`branch` (default)** — results arrive as a **result PR** (a `session/…` branch pushed
+  by the session's SessionEnd finalise); review + merge it per the checks below.
+- **`trunk`** — results arrive as a **direct commit on `origin/main`** — there is no
+  result branch and no result PR to find or merge. `gh pr list` against that repo for a
+  `session:`-titled PR will correctly come back empty; that is expected, not a missing
+  artefact (change-visibility policy, OPERATING-MANUAL §2b — a home-repo session is
+  hook-managed, push-to-default-branch-no-PR by design). Pull and read the result commit
+  directly; the consolidated-marker write in Step 5 is likewise a normal commit straight
+  to that repo's `main`, not a PR.
 
 ```bash
 # per migrated agent, from the home-repo clone (origin/main):
 git -C ~/workspace/{home_repo} show origin/main:results/ 2>/dev/null   # list session results
-# or, if a session PR is open on the home repo:
+# branch-mode only — trunk-mode repos have no session:-titled PR to find:
 gh pr list --repo PodZonePlatformEngineering/{home_repo} --search "session:" --json number,title
 ```
 
@@ -287,6 +316,16 @@ a fissioned repo path in Step 1b), the downstream steps differ from the standard
   fissioned repo (not in podzoneTeam).
 
 ## Step 2b — Structural PR Review
+
+> **Change-visibility policy cross-reference (OPERATING-MANUAL §2b, 2026-07-10).** Not
+> every completed task produces a PR to review here — a home repo's own session (the
+> agent's `results/` commit) and, for `trunk`-mode repos, the session's task-repo work
+> too, can land as a **direct commit on `origin/main`**, no PR, by design. Before treating
+> a listed `PRs Raised` item as missing, check whether the task-repo/home-repo pair is
+> actually a home-or-team-repo-on-itself case the policy routes direct-to-main (§2b
+> "Home repos" / "Team repos" rows) rather than the working-repo PR path it governs
+> ("Working repos" row). "No PR arrived" for such a task is designed behaviour, not a
+> missing artefact — read Step 1a's lifecycle-mode fork before flagging it.
 
 For each PR listed in `## PRs Raised` across all outbox files:
 
