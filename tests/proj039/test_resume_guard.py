@@ -69,6 +69,14 @@ class _ResumeFixture(unittest.TestCase):
         _run("git", "-C", str(self.repo), "add", "README.md")
         _run("git", "-C", str(self.repo), "commit", "-m", "init")
 
+        # T-099: main()'s no-BRIEF_ID paths resolve identity from the repo's
+        # identity YAML before reaching materialise — the fixture needs one.
+        ident = self.repo / "workspaces" / "identity"
+        ident.mkdir(parents=True)
+        (ident / "athena.identity.yaml").write_text(
+            "agent: Athena\nscope: training\n"
+            "role_class: agenticflows/roles/trainer/\n", encoding="utf-8")
+
         self._env = patch.dict(os.environ, clear=False)
         self._env.start()
         os.environ["PODZONE_LOG_DIR"] = str(base / "ledger")
