@@ -104,6 +104,7 @@ WRITE_SET_PREFIXES = (
     ".claude/tools/",
     ".claude/settings.json",
     ".claude/tooling-manifest.json",
+    ".claude/current-agent",  # deleted by the T-099 retired-identity prune
     ".gitignore",
 )
 

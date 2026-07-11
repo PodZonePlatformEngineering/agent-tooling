@@ -28,6 +28,19 @@ _spec.loader.exec_module(sm)  # type: ignore
 from lib import session_substrate, brief_substrate  # noqa: E402
 
 
+def write_identity_yaml(cwd: str, *, agent: str = "someone",
+                        role_class: str = "agenticflows/roles/coder/") -> Path:
+    """A resolvable identity YAML in `cwd` — T-099 single-source resolution
+    means every no-BRIEF_ID main() path needs one (or a patched
+    _resolve_agent_and_role) to get past the identity gate."""
+    ident = Path(cwd) / "workspaces" / "identity"
+    ident.mkdir(parents=True, exist_ok=True)
+    p = ident / f"martin-{agent}.identity.yaml"
+    p.write_text(f"agent: {agent}\nscope: podzone\nrole_class: {role_class}\n",
+                 encoding="utf-8")
+    return p
+
+
 class TestBriefFirstMaterialise(unittest.TestCase):
     """PROJ-039/T-043: BRIEF_ID path — resolve a first-class brief, stand up the
     session point under the RUNTIME sid, append the sid to session_ids[]."""
@@ -166,6 +179,7 @@ class TestMainEmitsContext(unittest.TestCase):
              patch.object(sys, "stdin", io.StringIO(
                  json.dumps({"session_id": "s", "cwd": td}))):
             os.environ.pop("BRIEF_ID", None)
+            write_identity_yaml(td)  # past the T-099 identity gate
             buf = io.StringIO()
             with redirect_stdout(buf):
                 rc = sm.main()
@@ -240,6 +254,103 @@ class TestTeamLeadNoBriefSkip(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertIn("Session materialised from brief", ctx)
             self.assertTrue((Path(td) / ".workspace" / "brief.md").exists())
+
+
+class TestIdentityGate(unittest.TestCase):
+    """T-099 (CC-409): main() resolves identity from the home repo's identity
+    YAML — the single source. Unresolved identity HALTs with its own sentinel
+    (never a decayed ("unknown","unknown") that surfaces as `empty-brief`);
+    a real team-lead YAML fires the F15 skip end-to-end (regression for the
+    2026-07-11 home-podzone-hermes halt)."""
+
+    def _run_main(self, cwd: str):
+        import io
+        from contextlib import redirect_stdout
+
+        with patch.dict(os.environ, clear=False), \
+             patch.object(sys, "stdin", io.StringIO(
+                 json.dumps({"session_id": "s", "cwd": cwd}))):
+            os.environ.pop("BRIEF_ID", None)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = sm.main()
+            return rc, json.loads(buf.getvalue())
+
+    def test_no_identity_yaml_halts_identity_unresolved(self) -> None:
+        """No YAML + no BRIEF_ID → identity-unresolved sentinel + halt that
+        names the YAML path and does NOT misdirect to Qdrant/API-key work."""
+        with tempfile.TemporaryDirectory() as td:
+            rc, out = self._run_main(td)
+            ctx = out["hookSpecificOutput"]["additionalContext"]
+            self.assertEqual(rc, 0)
+            self.assertIn("IDENTITY UNRESOLVED", ctx)
+            self.assertNotIn("MATERIALISE FAILED", ctx)
+            status = json.loads(
+                (Path(td) / ".workspace" / ".materialise-status.json").read_text())
+            self.assertFalse(status["ok"])
+            self.assertTrue(status["reason"].startswith("identity-unresolved:"))
+
+    def test_placeholder_yaml_halts_identity_unresolved(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            write_identity_yaml(td, agent="FILL_IN")
+            rc, out = self._run_main(td)
+            ctx = out["hookSpecificOutput"]["additionalContext"]
+            self.assertEqual(rc, 0)
+            self.assertIn("IDENTITY UNRESOLVED", ctx)
+            status = json.loads(
+                (Path(td) / ".workspace" / ".materialise-status.json").read_text())
+            self.assertIn("placeholder", status["reason"])
+
+    def test_team_lead_yaml_no_brief_id_fires_f15_skip(self) -> None:
+        """The 2026-07-11 regression: a team-lead identity YAML (Hermes's live
+        `team-lead-apex` variant, inline comment included) + no BRIEF_ID must
+        take the F15 skip — resolved from the YAML itself, no monkeypatching."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td) / "home-podzone-hermes"
+            ident = repo / "workspaces" / "identity"
+            ident.mkdir(parents=True)
+            (ident / "martin-hermes.identity.yaml").write_text(
+                "agent: Hermes  # FILL IN — capitalised agent name confirmed\n"
+                "scope: programme\n"
+                "role_class: agenticflows/roles/team-lead-apex/\n",
+                encoding="utf-8")
+            rc, out = self._run_main(str(repo))
+            ctx = out["hookSpecificOutput"]["additionalContext"]
+            self.assertEqual(rc, 0)
+            self.assertIn("no tasking brief expected", ctx)
+            status = json.loads(
+                (repo / ".workspace" / ".materialise-status.json").read_text())
+            self.assertTrue(status["ok"])
+            self.assertEqual(status["reason"], "team-lead-no-brief")
+
+    def test_brief_id_path_bypasses_identity_gate(self) -> None:
+        """A BRIEF_ID session keys its agent off the brief's assignee — a
+        broken/missing identity YAML must NOT block the brief-first path
+        (workers survived the legacy decay for exactly this reason)."""
+        brief = {
+            "brief_id": "podzone/2026-07-11-t099", "body": "Resolver core.",
+            "status": "approved", "assignee": "hephaestus",
+            "work_items": ["PROJ-039/T-099"], "session_ids": [],
+        }
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict(os.environ, {"BRIEF_ID": "podzone/2026-07-11-t099"}), \
+             patch.object(brief_substrate, "get_brief", lambda *a, **k: brief), \
+             patch.object(session_substrate, "get_session_point", lambda *a, **k: None), \
+             patch.object(session_substrate, "create_session_point", lambda **k: {"ok": True}), \
+             patch.object(brief_substrate, "append_session_id", lambda *a, **k: {"ok": True}), \
+             patch.object(brief_substrate, "start_brief", lambda *a, **k: {"ok": True}), \
+             patch.object(session_substrate, "active_work_items", lambda *a, **k: []):
+            import io
+            from contextlib import redirect_stdout
+            with patch.object(sys, "stdin", io.StringIO(
+                    json.dumps({"session_id": "s", "cwd": td}))):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = sm.main()
+            ctx = json.loads(buf.getvalue())["hookSpecificOutput"]["additionalContext"]
+            self.assertEqual(rc, 0)
+            self.assertIn("Session materialised from brief", ctx)
+            self.assertNotIn("IDENTITY UNRESOLVED", ctx)
 
 
 if __name__ == "__main__":

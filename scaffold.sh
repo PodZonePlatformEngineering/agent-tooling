@@ -755,14 +755,14 @@ WORKSPACE_NAME="martin-${AGENT}-${ROLE}"
 cat > "${TARGET_DIR}/workspaces/identity/${WORKSPACE_NAME}.identity.yaml" <<IDENTITY
 operator: Martin
 operator_mode: system-owner
-agent: ${AGENT_CAP}           # FILL IN — capitalised agent name confirmed
-scope: FILL_IN                # FILL IN — session scope label
+agent: ${AGENT_CAP}
+scope: ${TEAM}
 home_repo: ${REPO_NAME}
 role_class: agenticflows/roles/${ROLE}/
 repos:
   - name: agent-tooling
     purpose: canonical sync source for sync-agent-tooling.sh — cloned to .workspace/ on demand; not required at runtime (self-contained)
-  # FILL IN — add task repos here
+  # task repos are added on clone per brief (see docs/workstation-setup.md)
 task_filter: "${TASK_FILTER}"
 workspace: ${REPO_NAME}
 IDENTITY
@@ -840,8 +840,9 @@ if [[ "$ROLE" == "trainee" ]]; then
   echo "  [ ] python3 .claude/hooks/trainee-preflight.py  (expect all OK), then paste the Brief: first prompt"
 else
   echo "FILL IN checklist — complete before opening the workspace:"
-  echo "  [ ] Edit workspaces/identity/${WORKSPACE_NAME}.identity.yaml"
-  echo "        — set scope, add task repos"
+  echo "  [ ] Review workspaces/identity/${WORKSPACE_NAME}.identity.yaml"
+  echo "        — complete at scaffold (T-099: agent/role_class/scope are real values,"
+  echo "         identity resolution reads this file); adjust scope / add task repos if needed"
   echo "  [ ] Edit .claude/instructions.md — fill in role behaviour rules"
   echo "  [ ] Edit .claude/guardrails.md   — fill in role-specific prohibitions"
   echo "  [ ] Create repo '${REPO_NAME}' in PodZonePlatformEngineering and push"

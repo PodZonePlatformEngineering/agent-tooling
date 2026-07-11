@@ -116,8 +116,13 @@ fi
 # Pre/PostToolUse CST writers retired at T-073 (CC-383): 91% of the collection
 # was per-tool-call noise — the writers left the set, RETIRED_HOOKS prunes the
 # resident copies, and the settings unwire step below strips their wiring.
+# session-context.{py,sh} retired at T-099 (CC-409): home-repo identity now
+# single-sources from workspaces/identity/*.identity.yaml (lib/agent_identity);
+# the only resident copies are interim hand-patches (home-podzone-hermes
+# 3335d6b) that must converge away. Keep RETIRED_HOOKS in lockstep with the
+# RETIRED tuple in the settings-unwire python below.
 SUBSTRATE_BASE="session-start.sh session-materialise.py user-prompt-submit.sh post-compact.sh stop.sh stop-telemetry.py append-session-stop.py session-end-finalise.py"
-RETIRED_HOOKS="pre-tool-use.sh post-tool-use.sh"
+RETIRED_HOOKS="pre-tool-use.sh post-tool-use.sh session-context.py session-context.sh"
 role_hooks() {
   case "$1" in
     team-lead)             echo "${SUBSTRATE_BASE}" ;;
@@ -231,7 +236,7 @@ for hook in $RETIRED_HOOKS; do
   dst="${HOOKS_DST}/${hook}"
   if [[ -f "$dst" ]]; then
     rm -f "$dst"
-    echo "  Removed: ${hook} — retired (T-073)"
+    echo "  Removed: ${hook} — retired"
     ((UPDATED++))
   else
     echo "  OK    ${hook} — already absent"
@@ -244,7 +249,8 @@ if [[ -f "$UNWIRE_SETTINGS" ]]; then
   python3 - "$UNWIRE_SETTINGS" <<'UNWIRE_PY' | sed 's/^/  /'
 import json, sys
 
-RETIRED = ("pre-tool-use.sh", "post-tool-use.sh")
+RETIRED = ("pre-tool-use.sh", "post-tool-use.sh",
+           "session-context.py", "session-context.sh")
 path = sys.argv[1]
 with open(path, encoding="utf-8") as fh:
     settings = json.load(fh)
@@ -279,6 +285,22 @@ if changed:
 else:
     print("OK    settings.json — no retired hook wiring")
 UNWIRE_PY
+fi
+
+# --- Retired identity fallback prune (PROJ-039/T-099, CC-409) ---
+# `.claude/current-agent` was step 4 of the legacy resolution chain — a second
+# source of truth next to the identity YAML. Identity now single-sources from
+# workspaces/identity/*.identity.yaml; delete the file where present so
+# interim hand-patches converge away on the next sync/TOOLING_UPDATE.
+
+CURRENT_AGENT_DST="${HOME_REPO}/.claude/current-agent"
+if [[ -f "$CURRENT_AGENT_DST" ]]; then
+  rm -f "$CURRENT_AGENT_DST"
+  echo "  Removed: .claude/current-agent — retired (T-099: identity YAML is the single source)"
+  ((UPDATED++))
+else
+  echo "  OK    .claude/current-agent — already absent"
+  ((UNCHANGED++))
 fi
 
 # --- Resident dependency dirs (primitives/ + lib/) ---
