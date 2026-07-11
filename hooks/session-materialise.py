@@ -315,24 +315,30 @@ def materialise(session_id: str, cwd: str, *, agent: str = "unknown",
     return status
 
 
-def _resolve_agent_and_role(cwd: str) -> tuple[str, str]:
-    """Best-effort (agent, role) via `session-context.py`'s `resolve_agent`.
+IDENTITY_HALT_MESSAGE = (
+    "⛔ IDENTITY UNRESOLVED — this home repo's identity YAML "
+    "(workspaces/identity/*.identity.yaml) did not resolve to an (agent, role). "
+    "Do NOT begin tasking work, and do NOT chase Qdrant reachability / API-key "
+    "propagation — this is a repo-local identity problem (PROJ-039/T-099). "
+    "Fix the YAML (agent + role_class, no placeholders), then re-run "
+    "session-start."
+)
 
-    Split out from `main()` so tests can monkeypatch it directly instead of
-    stubbing the dynamic-import machinery.
+
+def _resolve_agent_and_role(cwd: str) -> tuple[str, str]:
+    """(agent, role) from the home repo's identity YAML — the single source
+    (PROJ-039/T-099, CC-409). Replaces the legacy `session-context.py`
+    spec-load chain, which SUBSTRATE_BASE never shipped to home repos, so every
+    resolution decayed to ("unknown", "unknown") — masking the F15 team-lead
+    skip and misdirecting the 2026-07-11 home-podzone-hermes halt to
+    PROJ-033/T-016.
+
+    Raises `lib.agent_identity.IdentityUnresolved` — fail loud, never
+    "unknown". Split out from `main()` so tests can monkeypatch it directly.
     """
-    try:
-        sys.path.insert(0, str(REPO_ROOT / "hooks"))
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "session_context", str(REPO_ROOT / "hooks" / "session-context.py")
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore
-        agent, role, _scope = mod.resolve_agent(cwd)
-        return agent, role
-    except Exception:
-        return "unknown", "unknown"
+    from lib import agent_identity
+    agent, role, _scope = agent_identity.resolve(cwd)
+    return agent, role
 
 
 def main() -> int:
@@ -355,12 +361,6 @@ def main() -> int:
         _emit_context(_resume_halt_message(halt))
         return 0
 
-    # Best-effort identity (the session point is authoritative for agent/work_item).
-    # Resolved up-front (not just in the legacy branch) because the role drives the
-    # team-lead no-BRIEF_ID skip below (F15).
-    work_item = None
-    agent, role = _resolve_agent_and_role(cwd)
-
     # Brief-first path (PROJ-039/T-043): a BRIEF_ID env var (settings.local.json
     # env block or shell env at launch) selects the decoupled flow — resolve the
     # brief, stand up the session point under the runtime sid, append the reverse
@@ -380,6 +380,29 @@ def main() -> int:
             )
         else:
             _emit_context(f"{HALT_MESSAGE}\n(reason: {status.get('reason')})")
+        return 0
+
+    # Single-source identity (PROJ-039/T-099): resolved AFTER the brief-first
+    # branch — a BRIEF_ID session takes its agent from the brief's assignee and
+    # must never be blocked by a repo-local identity problem. On the no-BRIEF_ID
+    # paths below the role drives the team-lead skip (F15) and the agent keys the
+    # legacy pre-dispatch lookup, so an unresolved identity HALTs loud here with
+    # its own sentinel instead of decaying to ("unknown", "unknown") and then
+    # surfacing as a misleading `empty-brief` (the 2026-07-11 hermes halt).
+    from lib.agent_identity import IdentityUnresolved
+    work_item = None
+    try:
+        agent, role = _resolve_agent_and_role(cwd)
+    except IdentityUnresolved as exc:
+        reason = exc.reason
+    except Exception as exc:  # never break SessionStart — but still fail loud
+        reason = f"identity-unresolved: unexpected error: {exc}"
+    else:
+        reason = None
+    if reason is not None:
+        status = {"ok": False, "reason": reason, "ts": _now()}
+        _write_status(Path(cwd) / ".workspace", status)
+        _emit_context(f"{IDENTITY_HALT_MESSAGE}\n(reason: {reason})")
         return 0
 
     # F15 (PROJ-039/T-078): a team-lead session with no BRIEF_ID is NOT a failure —

@@ -23,6 +23,7 @@
 # lines starting with '#' are ignored.
 
 __init__.py
+agent_identity.py
 jsonl_scrape.py
 qdrant_http.py
 session_metadata.py
