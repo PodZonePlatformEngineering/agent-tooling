@@ -1,10 +1,11 @@
 """Tests for lib/stop_telemetry — the T-071 (CC-381) Stop payload assembly.
 
 Fixture-JSONL unit tests for the three extractors (last_assistant_message,
-background_tasks, session_crons), the bounded tail-read with widen-on-miss, the
-embed-input switch (message text, constant only as empty fallback), the
-deterministic turn-linked point id, and best-effort entrypoint behaviour
-(hooks/stop-telemetry.py must exit 0 with no API key / no Ollama).
+background_tasks, session_crons), the bounded tail-read with widen-on-miss,
+the deterministic turn-linked point id, the payload-only CST write shape
+(PROJ-041/T-002: hooks never embed — ``"vector": {}``, never an omitted key),
+and best-effort entrypoint behaviour (hooks/stop-telemetry.py must exit 0 with
+no API key).
 """
 
 from __future__ import annotations
@@ -298,14 +299,64 @@ class TestPayloadAssembly(unittest.TestCase):
                             stop_telemetry.point_id_for_stop("sess-1"))
 
 
+class TestPayloadOnlyWrite(unittest.TestCase):
+    """PROJ-041/T-002: the hook writes the CST point payload-only — an EMPTY
+    named-vector map (``"vector": {}``; an omitted key is a Qdrant 400, proven
+    live 2026-07-12) and no embed call anywhere on the path."""
+
+    def test_upsert_carries_empty_vector_map_and_never_embeds(self):
+        import importlib.util
+        import io
+        from contextlib import redirect_stderr
+        from unittest.mock import patch
+
+        from lib import qdrant_http, session_substrate
+
+        spec = importlib.util.spec_from_file_location("stop_telemetry_hook", HOOK)
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+
+        captured = {}
+
+        def recorder(method, url, *, payload=None, api_key=None, timeout=None):
+            if method.upper() == "PUT" and url.endswith("/points"):
+                captured["point"] = payload["points"][0]
+            return {"result": {"status": "acknowledged"}}
+
+        def boom(*a, **k):
+            raise AssertionError("the Stop hook must never embed")
+
+        with tempfile.TemporaryDirectory() as td:
+            transcript = write_jsonl(
+                [assistant("done", stop_reason="end_turn")], Path(td) / "t.jsonl"
+            )
+            stdin = io.StringIO(json.dumps({
+                "session_id": "sess-payload-only", "cwd": td,
+                "transcript_path": str(transcript),
+            }))
+            err = io.StringIO()
+            with patch.object(qdrant_http, "request_json", recorder), \
+                 patch.object(qdrant_http, "resolve_api_key", lambda *a, **k: "test-key"), \
+                 patch.object(session_substrate, "embed_text", boom), \
+                 patch.object(sys, "stdin", stdin), \
+                 redirect_stderr(err):
+                rc = hook.main()
+
+        self.assertEqual(rc, 0)
+        point = captured["point"]
+        # the payload-only shape: an EMPTY map, key present
+        self.assertEqual(point["vector"], {})
+        self.assertEqual(point["payload"]["session_id"], "sess-payload-only")
+        self.assertEqual(point["payload"]["last_assistant_message"], "done")
+        self.assertIn("CST Stop point", err.getvalue())
+
+
 class TestEntrypointBestEffort(unittest.TestCase):
     """hooks/stop-telemetry.py must exit 0 in a bare subprocess (no API key)."""
 
     def _run(self, stdin: str):
         env = dict(os.environ)
         env.pop("PODZONE_QDRANT_APIKEY", None)
-        # Point Ollama somewhere unroutable so an embed can't accidentally run.
-        env["OLLAMA_HOST"] = "http://127.0.0.1:9"
         return subprocess.run(
             [sys.executable, str(HOOK)], input=stdin, env=env,
             cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=60,

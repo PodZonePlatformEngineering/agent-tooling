@@ -1,16 +1,22 @@
 """Tests for lib/session_substrate — the PROJ-039 canonical `session` point ops.
 
 The load-bearing property is upsert discipline (SD-3-001 / OT-006): every write
-after creation must use set_payload (POST …/points/payload) or update-vectors
-(PUT …/points/vectors), NEVER a full upsert (PUT …/points), because a full
-upsert nulls the `brief`/`response` named vectors. These tests intercept the
-qdrant_http HTTP layer (``request_json``) and record every (method, path) so the
-discipline can be asserted directly — this is the unit-level realisation of
-OT-006, DT-004b and DT-005.
+after creation must use set_payload (POST …/points/payload), NEVER a full
+upsert (PUT …/points), because a full upsert nulls any named vectors the point
+carries. These tests intercept the qdrant_http HTTP layer (``request_json``)
+and record every (method, path) so the discipline can be asserted directly —
+this is the unit-level realisation of OT-006, DT-004b and DT-005.
+
+PROJ-041/T-002 (operator decision 2026-07-11) layer: lifecycle writes are
+**payload-only** (upsert_response patches no vector), and authoring
+(create_session_point) is **embed-optional** — it embeds the `brief` vector
+only when an embed endpoint is explicitly configured (OLLAMA_HOST env /
+ollama_host argument) and otherwise writes ``"vector": {}`` with a stderr note.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -64,6 +70,20 @@ class RecordingQdrant:
 
 SESSION_ID = "sess-abc-123"
 
+FAKE_OLLAMA = "http://fake-ollama.test:11434"
+
+
+def _with_endpoint():
+    """Context: OLLAMA_HOST explicitly configured (embed_text is patched in
+    tests, so the value is never dialled)."""
+    return patch.dict(os.environ, {"OLLAMA_HOST": FAKE_OLLAMA})
+
+
+def _without_endpoint():
+    """Context: no embed endpoint anywhere — the trainer-workstation shape."""
+    env = {k: v for k, v in os.environ.items() if k != "OLLAMA_HOST"}
+    return patch.dict(os.environ, env, clear=True)
+
 
 class TestPointId(unittest.TestCase):
     def test_matches_sessions_upsert(self) -> None:
@@ -78,7 +98,15 @@ class TestPointId(unittest.TestCase):
 class TestCreateSessionPoint(unittest.TestCase):
     def test_creation_is_the_one_full_upsert_with_brief_vector(self) -> None:
         rec = RecordingQdrant()
-        with patch.object(qdrant_http, "request_json", rec), \
+        captured = {}
+
+        def recorder(method, url, *, payload=None, api_key=None, timeout=None):
+            if method.upper() == "PUT" and url.endswith("/points"):
+                captured["vector"] = payload["points"][0]["vector"]
+            return rec(method, url, payload=payload, api_key=api_key, timeout=timeout)
+
+        with _with_endpoint(), \
+             patch.object(qdrant_http, "request_json", recorder), \
              patch.object(session_substrate, "embed_text", lambda *a, **k: [0.1] * 768):
             session_substrate.create_session_point(
                 session_id=SESSION_ID, agent="hephaestus",
@@ -86,12 +114,69 @@ class TestCreateSessionPoint(unittest.TestCase):
             )
         # exactly one full upsert (creation), targeting /points
         self.assertEqual(len(rec.full_upserts()), 1)
+        # endpoint configured → the brief vector is embedded
+        self.assertEqual(len(captured["vector"]["brief"]), 768)
         # payload shape
         self.assertEqual(rec.payload["point_type"], "session")
         self.assertEqual(rec.payload["session_stop"], [])
         self.assertIsNone(rec.payload["response"])
         self.assertEqual(rec.payload["brief"]["text"], "build the substrate")
         self.assertEqual(rec.payload["brief"]["target_agent"], "hephaestus")
+
+    def test_no_endpoint_writes_vector_less_with_stderr_note(self) -> None:
+        # PROJ-041/T-002 embed-optional authoring: with no embed endpoint the
+        # point is written with an EMPTY named-vector map ({} — an omitted
+        # `vector` key is a Qdrant 400; proven live 2026-07-12), the FULL brief
+        # text still lands in the payload, and the degradation is announced on
+        # stderr rather than silent.
+        import io
+        from contextlib import redirect_stderr
+
+        rec = RecordingQdrant()
+        captured = {}
+
+        def recorder(method, url, *, payload=None, api_key=None, timeout=None):
+            if method.upper() == "PUT" and url.endswith("/points"):
+                captured["vector"] = payload["points"][0]["vector"]
+            return rec(method, url, payload=payload, api_key=api_key, timeout=timeout)
+
+        def boom(*a, **k):
+            raise AssertionError("embed_text must not be called with no endpoint")
+
+        err = io.StringIO()
+        with _without_endpoint(), \
+             patch.object(qdrant_http, "request_json", recorder), \
+             patch.object(session_substrate, "embed_text", boom), \
+             redirect_stderr(err):
+            r = session_substrate.create_session_point(
+                session_id=SESSION_ID, agent="hephaestus",
+                work_item="PROJ-041/T-002", brief_text="build the substrate",
+            )
+        self.assertTrue(r["ok"])
+        self.assertEqual(captured["vector"], {})
+        self.assertEqual(rec.payload["brief"]["text"], "build the substrate")
+        self.assertIn("vector-less", err.getvalue())
+
+    def test_explicit_ollama_host_argument_beats_absent_env(self) -> None:
+        # The ollama_host= argument alone configures embedding (authoring tools
+        # pass it through); env absence must not force vector-less then.
+        rec = RecordingQdrant()
+        captured = {}
+
+        def recorder(method, url, *, payload=None, api_key=None, timeout=None):
+            if method.upper() == "PUT" and url.endswith("/points"):
+                captured["vector"] = payload["points"][0]["vector"]
+            return rec(method, url, payload=payload, api_key=api_key, timeout=timeout)
+
+        with _without_endpoint(), \
+             patch.object(qdrant_http, "request_json", recorder), \
+             patch.object(session_substrate, "embed_text", lambda *a, **k: [0.3] * 768):
+            session_substrate.create_session_point(
+                session_id=SESSION_ID, agent="hephaestus",
+                work_item="PROJ-041/T-002", brief_text="explicit host",
+                ollama_host=FAKE_OLLAMA,
+            )
+        self.assertEqual(len(captured["vector"]["brief"]), 768)
 
 
 class TestAppendSessionStop(unittest.TestCase):
@@ -122,18 +207,26 @@ class TestAppendSessionStop(unittest.TestCase):
 
 
 class TestUpsertResponse(unittest.TestCase):
-    def test_response_uses_set_payload_and_update_vectors_only(self) -> None:
+    def test_response_is_payload_only_set_payload(self) -> None:
+        # PROJ-041/T-002: the response write is set_payload ALONE — no
+        # update-vectors patch (this runs on the SessionEnd hook path, which
+        # never embeds) and, per OT-006, never a full upsert.
         rec = RecordingQdrant()
-        with patch.object(qdrant_http, "request_json", rec), \
-             patch.object(session_substrate, "embed_text", lambda *a, **k: [0.2] * 768):
+
+        def boom(*a, **k):
+            raise AssertionError("upsert_response must never embed")
+
+        with _with_endpoint(), \
+             patch.object(qdrant_http, "request_json", rec), \
+             patch.object(session_substrate, "embed_text", boom):
             session_substrate.upsert_response(
                 SESSION_ID, text="did the thing", status_transition="in_progress->done",
             )
         paths = rec.methods_paths()
         # set_payload for the response object
         self.assertIn(("POST", f"{session_substrate.COLLECTION}/points/payload"), paths)
-        # update-vectors for the response named vector (IMPL-1)
-        self.assertIn(("PUT", f"{session_substrate.COLLECTION}/points/vectors"), paths)
+        # payload-only: no vector patch, even with an embed endpoint configured
+        self.assertNotIn(("PUT", f"{session_substrate.COLLECTION}/points/vectors"), paths)
         # OT-006: never a full upsert
         self.assertEqual(rec.full_upserts(), [])
         self.assertEqual(rec.payload["response"]["text"], "did the thing")
@@ -237,8 +330,10 @@ def _over_limit_brief() -> str:
 
 
 class TestEmbedInputBounding(unittest.TestCase):
-    """T-027 (CC-326): a >2048-token brief/response must author without a 500 —
-    the embed input is bounded, the stored text stays full."""
+    """T-027 (CC-326): a >2048-token brief must author without a 500 — the
+    embed input is bounded, the stored text stays full. Since PROJ-041/T-002
+    this applies only to embed-configured authoring (create_session_point with
+    an endpoint); the response path never embeds."""
 
     def test_large_brief_authors_full_text_stored_embed_bounded(self) -> None:
         import io
@@ -255,7 +350,8 @@ class TestEmbedInputBounding(unittest.TestCase):
             return rec(method, url, payload=payload, api_key=api_key, timeout=timeout)
 
         err = io.StringIO()
-        with patch.object(qdrant_http, "request_json", recorder), \
+        with _with_endpoint(), \
+             patch.object(qdrant_http, "request_json", recorder), \
              patch.object(session_substrate, "embed_text", embed), \
              redirect_stderr(err):
             r = session_substrate.create_session_point(
@@ -276,18 +372,19 @@ class TestEmbedInputBounding(unittest.TestCase):
         # truncation is announced on stderr, not silent
         self.assertIn("head-truncated", err.getvalue())
 
-    def test_response_embed_input_bounded_full_text_stored(self) -> None:
+    def test_large_response_stores_full_text_no_embed(self) -> None:
+        # PROJ-041/T-002: the response path is payload-only — a large response
+        # simply stores its full text; no bounding is exercised because no
+        # embed happens at all.
         big_response = "RESPONSE HEAD. " + ("filler tokens here " * 400)
         self.assertGreater(len(big_response), session_substrate._EMBED_CHAR_BUDGET)
         rec = RecordingQdrant()
         embed = RecordingEmbed()
-        with patch.object(qdrant_http, "request_json", rec), \
+        with _with_endpoint(), \
+             patch.object(qdrant_http, "request_json", rec), \
              patch.object(session_substrate, "embed_text", embed):
             session_substrate.upsert_response(SESSION_ID, text=big_response)
-        self.assertEqual(len(embed.inputs), 1)
-        self.assertLessEqual(
-            len(embed.inputs[0]), session_substrate._EMBED_CHAR_BUDGET
-        )
+        self.assertEqual(embed.inputs, [])
         # full response text stored unchanged
         self.assertEqual(rec.payload["response"]["text"], big_response)
 
@@ -299,7 +396,8 @@ class TestEmbedInputBounding(unittest.TestCase):
         rec = RecordingQdrant()
         embed = RecordingEmbed()
         err = io.StringIO()
-        with patch.object(qdrant_http, "request_json", rec), \
+        with _with_endpoint(), \
+             patch.object(qdrant_http, "request_json", rec), \
              patch.object(session_substrate, "embed_text", embed), \
              redirect_stderr(err):
             session_substrate.create_session_point(
