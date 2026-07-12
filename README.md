@@ -28,11 +28,11 @@ Licence: **MIT** (see [LICENSE](LICENSE)).
 | `python3` ≥ 3.10 | hooks, tools | 3.9 still works but Google libs warn |
 | `curl`, `jq` | primitives | `jq` only used by a few tools |
 | **Qdrant** | semantic memory | self-hosted or cloud; collections listed below |
-| **Ollama** | local embeddings | `nomic-embed-text` is the default model |
+| **Ollama** | optional — local embeddings | authoring/enrichment only (PROJ-041/T-002: hooks never embed); `nomic-embed-text` is the default model |
 | Telegram bot token | optional — notifications | only if you enable `telegram-notify` |
 | Gmail OAuth credentials | optional — drafts | only if you use `create-gmail-draft.sh` |
 
-The repo assumes Qdrant + Ollama are reachable; everything else is optional.
+The repo assumes Qdrant is reachable; everything else — including Ollama — is optional.
 
 ---
 
@@ -123,7 +123,7 @@ A home repo's `.claude/settings.json` references them via repo-relative paths.
 |---|---|---|
 | `session-context.{py,sh}` | SessionStart | Inject agent identity + active tasks |
 | `startup.sh` | SessionStart | Role-aware startup (resolved from identity file) |
-| `ingest-transcript.{py,sh}` | SessionEnd | Embed user turns → Qdrant `prompt_logs` |
+| `ingest-transcript.{py,sh}` | SessionEnd | Ingest user turns → Qdrant `prompt_logs` (payload-only; PROJ-042 embeds in retrospect) |
 | `stop-heartbeat.{py,sh}` | Stop | Record session heartbeat |
 | `stop.sh` | Stop | Roll up the stop event (calls heartbeat + sync) |
 | `session-end.sh` | SessionEnd | Final session summary write |

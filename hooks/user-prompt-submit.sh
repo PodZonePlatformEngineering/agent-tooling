@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# UserPromptSubmit hook — embed and store user intent.
+# UserPromptSubmit hook — store user intent (payload-only, PROJ-041/T-002).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,8 +21,10 @@ OS_USER="${USER:-$(id -un)}"
 PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
 POINT_ID="$(python3 -c "import uuid; print(str(uuid.uuid4()))")"
 
-EMBEDDING="$("${PRIMITIVES}/ollama/embed-text.sh" "${PROMPT}")"
-VECTOR_JSON="{\"intent_vector\": ${EMBEDDING}}"
+# Payload-only (PROJ-041/T-002): hooks never embed — an EMPTY named-vector map
+# (an omitted `vector` field is a Qdrant 400); the PROJ-042 enrichment job
+# embeds in retrospect.
+VECTOR_JSON="{}"
 
 PAYLOAD="$(python3 -c "
 import json, sys

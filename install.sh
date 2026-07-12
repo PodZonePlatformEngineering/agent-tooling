@@ -61,9 +61,9 @@ python3 -c "
 import urllib.request
 try:
     urllib.request.urlopen('http://localhost:11434/api/tags', timeout=5)
-    print('  Ollama: ok')
+    print('  Ollama: ok (optional — authoring/enrichment only)')
 except Exception as e:
-    print(f'  Ollama: NOT REACHABLE ({e})')
+    print(f'  Ollama: NOT REACHABLE ({e}) — fine unless you author with embeddings (PROJ-041/T-002)')
 import os
 print('  PODZONE_QDRANT_APIKEY:', 'set' if os.getenv('PODZONE_QDRANT_APIKEY') else 'NOT SET')
 print('  PODZONE_TELEGRAM_TEST_BOT:', 'set' if os.getenv('PODZONE_TELEGRAM_TEST_BOT') else 'NOT SET')

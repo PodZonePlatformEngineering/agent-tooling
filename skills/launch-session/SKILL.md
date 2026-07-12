@@ -148,8 +148,9 @@ brief-first is the same launch without `-p`.) **Verify (Step 9)** by simulating 
   - `uuidgen` (pin the `--session-id`) and `python3`
   - `PODZONE_QDRANT_APIKEY` reachable — via the secrets MCP
     (`mcp__secrets__secret_run -k podzone_qdrant_apikey -- …`) or already in the env block
-  - Ollama running locally (the `nomic-embed-text` embed for the brief vector; token-safe
-    since PROJ-039/T-027)
+  - *(Optional)* an embed endpoint via the `OLLAMA_HOST` env var — authoring embeds the
+    brief vector only when explicitly configured (PROJ-041/T-002); with no endpoint the
+    brief point is written vector-less and the PROJ-042 enrichment job embeds in retrospect
   - `agent-tooling` cloned at `~/workspace/agent-tooling` (source of `create-session-point.py`
     + `session-materialise.py`)
 
@@ -662,8 +663,10 @@ record if you need to recover it later (e.g. for a manual finalise).
 Create the canonical `session_substrate` **session point** carrying the committed brief,
 keyed to the pinned UUID, so SessionStart materialise can resolve it. Use the committed
 brief file confirmed in Step 2 (`team-lead/briefs/{date}-{task-slug}.md` on the home repo).
-The embed input is token-safe since T-027 (the full brief is always stored in the payload;
-only the embed input is head-truncated):
+Embedding is optional (PROJ-041/T-002): the brief vector is set only when `OLLAMA_HOST`
+is configured, else the point is written vector-less (a stderr note says so). When
+embedding, the embed input is token-safe since T-027 (the full brief is always stored in
+the payload; only the embed input is head-truncated):
 
 ```bash
 mcp__secrets__secret_run -k podzone_qdrant_apikey -- \
@@ -688,7 +691,7 @@ print('ok' if p and p.get('brief',{}).get('text') else 'MISSING')"
 
 If this prints anything other than `ok`, **stop** — the agent would HALT at SessionStart
 (materialise refuses to fabricate `.workspace/` from a stale team-repo read, SD-3-002).
-Re-check Qdrant reachability / API key / Ollama embed and re-run Step 5.
+Re-check Qdrant reachability / API key and re-run Step 5.
 
 ## Step 6 — Generate session workspace file / wire materialise (mode-split)
 
@@ -855,7 +858,7 @@ cd ~/workspace/{home_repo} && claude --session-id {pinned-uuid} \
 ## Step 9 — Verify the materialise resolves (migrated home-repo mode; recommended)
 
 Before handing off, simulate the SessionStart hook against the worktree and assert the
-sentinel reports success — this catches a mis-keyed point or an auth/embed gap *before* the
+sentinel reports success — this catches a mis-keyed point or an auth gap *before* the
 agent hits the HALT:
 
 ```bash
@@ -868,7 +871,7 @@ mcp__secrets__secret_run -k podzone_qdrant_apikey -- bash -c \
 ```
 
 Expect `materialise OK {'brief': 1, 'tasks': ...}`. If it reports `FAILED`, resolve before
-launching (re-check Step 5 read-back, Qdrant reachability, API-key propagation, Ollama).
+launching (re-check Step 5 read-back, Qdrant reachability, API-key propagation).
 This is a dry run; the real launch in Step 8 re-materialises at SessionStart.
 
 ## Output

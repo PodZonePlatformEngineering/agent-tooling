@@ -2,6 +2,12 @@
 """
 SessionEnd hook — ingest JSONL transcript to Qdrant prompt_logs collection.
 PROJ-031/T-002. Non-blocking: always exits 0.
+
+Payload-only (PROJ-041/T-002): hooks never embed. `prompt_logs` is an
+unnamed-single-vector collection, so a point cannot be written vector-LESS —
+turns carry a zero vector instead, and the PROJ-042 enrichment job patches
+real vectors in retrospect. (Previously an embed-less host ingested 0 turns:
+every turn was skipped when the embed failed.)
 """
 import json
 import os
@@ -14,10 +20,9 @@ CLOUD_QDRANT_URL = "https://2dd1f0b8-5cf1-4caf-bc96-2b4811251f4c.eu-west-2-0.aws
 AGENTSONLY_QDRANT_URL = "http://qdrant.agenticflows.co.uk:8080"
 CLOUD_COLLECTIONS = {"sessions", "tasks", "task_events", "prompt_logs", "one_shots"}
 
-OLLAMA_URL = "http://localhost:11434"
-EMBED_MODEL = "nomic-embed-text"
 COLLECTION_PROMPT_LOGS = "prompt_logs"
 COLLECTION_SESSIONS = "sessions"
+VECTOR_SIZE = 768
 
 
 def _load_qdrant_http():
@@ -54,29 +59,6 @@ qdrant_http = _load_qdrant_http()
 
 def get_qdrant_url(collection: str) -> str:
     return CLOUD_QDRANT_URL if collection in CLOUD_COLLECTIONS else AGENTSONLY_QDRANT_URL
-
-
-def embed(text: str) -> list[float] | None:
-    # urllib, not requests: the self-contained home-repo runtime is requests-free
-    # (qdrant_http uses urllib; session-start.sh embeds via the curl primitive). A
-    # resident archivist hook must run on the same base python3 with no third-party
-    # deps — PROJ-039/T-011 C2b surfaced that `import requests` here ingested 0 turns
-    # in a self-contained repo where requests is absent.
-    import urllib.request
-    import urllib.error
-    try:
-        data = json.dumps({"model": EMBED_MODEL, "prompt": text[:2000]}).encode("utf-8")
-        req = urllib.request.Request(
-            f"{OLLAMA_URL}/api/embeddings",
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read().decode("utf-8"))["embedding"]
-    except Exception as e:
-        print(f"[ingest-transcript] embed error: {e}", file=sys.stderr)
-        return None
 
 
 def upsert_point(collection: str, point_id: str, vector: list[float], payload: dict) -> bool:
@@ -238,12 +220,12 @@ def main():
         print(f"[ingest-transcript] failed to read transcript: {e}", file=sys.stderr)
         sys.exit(0)
 
-    # Ingest each turn
+    # Ingest each turn. Payload-only (PROJ-041/T-002): a zero vector — the
+    # unnamed-vector collection requires SOME vector — patched in retrospect
+    # by the PROJ-042 enrichment job.
     ingested = 0
     for turn in turns:
-        vector = embed(turn["text"])
-        if vector is None:
-            continue
+        vector = [0.0] * VECTOR_SIZE
         point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{session_id}:{turn['turn_number']}"))
         payload = {
             "session_id": session_id,

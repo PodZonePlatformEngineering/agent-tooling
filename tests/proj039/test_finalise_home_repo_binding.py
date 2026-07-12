@@ -208,6 +208,40 @@ class TestFinaliseHomeRepoBinding(unittest.TestCase):
         self.assertEqual(self._drive(str(self.home)), 0)
         self._assert_clean_home_finalise()
 
+    def test_response_step_done_with_no_embed_endpoint_anywhere(self) -> None:
+        """PROJ-041/T-002: the response step reports `done` on the payload write
+        alone — the REAL ``upsert_response`` runs (only the HTTP layer is faked),
+        with no embed endpoint configured anywhere, and no vector patch happens.
+        Regression target: the former response-vector patch failing on an
+        embed-less host used to mark the step `failed` though nothing
+        lifecycle-relevant had failed."""
+        from lib import finalise_ledger, qdrant_http
+
+        real_upsert_response = next(
+            orig for mod, name, orig in self._patches
+            if mod is session_substrate and name == "upsert_response"
+        )
+        calls: list[tuple[str, str]] = []
+
+        def recorder(method, url, *, payload=None, api_key=None, timeout=None):
+            calls.append((method.upper(), url))
+            return {"result": {"status": "acknowledged"}}
+
+        steps: dict[str, str] = {}
+        self._patch(session_substrate, "upsert_response", real_upsert_response)
+        self._patch(qdrant_http, "request_json", recorder)
+        self._patch(finalise_ledger, "record_step",
+                    lambda sid, name, status: steps.__setitem__(name, status))
+        os.environ.pop("OLLAMA_HOST", None)
+        os.environ.setdefault("PODZONE_QDRANT_APIKEY", "test-key")
+
+        self.assertEqual(self._drive(str(self.home)), 0)
+        self.assertEqual(steps.get("response"), "done")
+        # payload-only: the set_payload landed, no vector patch anywhere
+        self.assertTrue(any(u.endswith("/points/payload") for _, u in calls))
+        self.assertFalse(any(u.endswith("/points/vectors") for _, u in calls))
+        self._assert_clean_home_finalise()
+
 
 if __name__ == "__main__":
     unittest.main()

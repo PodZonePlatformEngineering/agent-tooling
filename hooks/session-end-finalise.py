@@ -247,7 +247,9 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
         _log(f"lib import failed: {exc}", session_id=session_id, level="ERROR")
         return 0
 
-    # 1. Response upsert (set_payload) + response-vector patch (update-vectors).
+    # 1. Response upsert (set_payload) — payload-only (PROJ-041/T-002): no
+    #    vector patch on the hook path; the PROJ-042 enrichment job embeds in
+    #    retrospect. The step is `done` on the payload write alone.
     response_text = _last_assistant_text(transcript_path) or f"session {session_id} ended"
     response_text = response_text[:20000]  # generous cap; payload has no hard limit
     try:
@@ -256,9 +258,8 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
             text=response_text,
             status_transition=None,  # MVP: enriched post-MVP from session-finalise
             event_refs=[],
-            ollama_host=None,
         )
-        _log("response upserted + vector patched", session_id=session_id)
+        _log("response upserted", session_id=session_id)
         _step("response", "done")
     except Exception as exc:
         _log(f"response upsert skipped: {exc}", session_id=session_id, level="WARN")
@@ -635,8 +636,9 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
 
     # 8. Archivist transcript ingest (PROJ-039/T-053). FOLDED INTO the finalise as the
     #    LAST step so the archivist runs a SINGLE SessionEnd hook, not two. Two heavy
-    #    SessionEnd hooks (this finalise + ingest-transcript.py, which does N sequential
-    #    Ollama embeds + a Telegram notify) overran the CLI's teardown budget and the
+    #    SessionEnd hooks (this finalise + ingest-transcript.py, which at the time did
+    #    N sequential embeds + a Telegram notify — hooks no longer embed at all per
+    #    PROJ-041/T-002) overran the CLI's teardown budget and the
     #    finalise was "Hook cancelled" mid-run — BEFORE telemetry/result/return-to-main
     #    (Thoth T-022 sid 9035370d, T-023 sid 38ae63e3; Hephaestus, single SessionEnd
     #    hook, is 4/4 clean). Ordered LAST + ledger-tracked + time-bounded: every

@@ -17,8 +17,10 @@ enrich-or-create): an existing live point matching ``session_id`` + ±5 s
 timestamp gets ONLY ``last_assistant_message`` written via set_payload (never a
 full upsert — SD-3-001); an unmatched stop event becomes a new point with
 deterministic id ``uuid5("stop-backfill/{sessionId}/{record-uuid}")``,
-``data_source: stop_backfill``, repository/branch from the record, and a
-``response_vector`` embed of the head-truncated message (T-027 bounding).
+``data_source: stop_backfill``, repository/branch from the record, and an
+embed-optional ``response_vector`` (PROJ-041/T-002: embedded from the
+head-truncated message, T-027 bounding, only when ``OLLAMA_HOST`` is
+configured; vector-less otherwise).
 
 Idempotent: re-runs converge — already-enriched matches and already-existing
 backfill ids are skipped, so an immediate re-run enriches nothing and creates
@@ -319,13 +321,14 @@ def backfill(projects_dir: Path = DEFAULT_PROJECTS_DIR,
                     entry["already"] += 1
                     totals["already"] += 1
                     continue
-                vector = session_substrate.embed_text(
-                    session_substrate._bound_embed_input(
-                        event["text"], label="stop-backfill"
-                    )
+                vector = session_substrate.maybe_embed(
+                    event["text"], label="stop-backfill"
+                )
+                vector_map = (
+                    {"response_vector": vector} if vector is not None else {}
                 )
                 qdrant_http.upsert_points(
-                    [{"id": pid, "vector": {"response_vector": vector},
+                    [{"id": pid, "vector": vector_map,
                       "payload": _created_point(event)}],
                     collection=COLLECTION,
                 )

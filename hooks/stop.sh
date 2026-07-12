@@ -3,7 +3,7 @@
 #   (a) observability: enriched CST Stop point via hooks/stop-telemetry.py
 #       (payload assembly lives fixture-tested in lib/stop_telemetry.py —
 #       T-071, CC-381: last_assistant_message + background_tasks +
-#       session_crons, embed input = head-truncated message text).
+#       session_crons; payload-only per PROJ-041/T-002 — hooks never embed).
 #   (b) tasking: append a session_stop[] entry to the canonical `session` point
 #       in session_substrate via set_payload (R-009, § 2.3) — never a full upsert.
 # Best-effort throughout: a Stop hook must never break the session.
@@ -20,8 +20,8 @@ STOP_REASON="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('s
 TIMESTAMP="$(python3 -c "from datetime import datetime,timezone; print(datetime.now(timezone.utc).isoformat())")"
 TRANSCRIPT_PATH="$(python3 -c "import json,sys; print(json.loads(sys.argv[1]).get('transcript_path',''))" "${STDIN}")"
 
-# (a) observability — enriched CST Stop point (R-008 / T-071). Payload assembly,
-#     embed and write all live in the python entry; best-effort.
+# (a) observability — enriched CST Stop point (R-008 / T-071). Payload assembly
+#     and the payload-only write live in the python entry; best-effort.
 printf '%s' "${STDIN}" | python3 "${SCRIPT_DIR}/stop-telemetry.py" || true
 
 # (b) tasking — append session_stop[] to the session_substrate `session` point

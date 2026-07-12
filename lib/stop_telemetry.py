@@ -41,8 +41,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-# Stored-message cap (~16 KB, plan §T-071). Caps the payload field only — the
-# embed input is bounded separately (T-027) by the hook entry.
+# Stored-message cap (~16 KB, plan §T-071) on the payload field.
 MESSAGE_CAP_CHARS = 16 * 1024
 
 # Bounded backwards tail-read of the transcript (Stop-hook latency budget):
@@ -415,20 +414,6 @@ def build_payload(hook_input: dict, *, now_iso: Optional[str] = None,
         "background_tasks": background_tasks,
         "session_crons": session_crons,
     }
-
-
-def embed_input_for(payload: dict) -> str:
-    """The embed input for the Stop point's ``response_vector``.
-
-    T-071 embed switch (operator-confirmed): the head-truncated message text
-    replaces the constant ``"Stop: end_turn"``; the constant survives only as
-    the fallback when no message could be extracted, so the vector is never
-    empty. Head-truncation (T-027 bounding) is applied by the hook entry.
-    """
-    message = payload.get("last_assistant_message") or ""
-    if message:
-        return message
-    return f"Stop: {payload.get('stop_reason', 'end_turn')}"
 
 
 def point_id_for_stop(session_id: str, turn_uuid: str = "") -> str:

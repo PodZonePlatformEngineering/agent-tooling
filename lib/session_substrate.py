@@ -11,8 +11,21 @@ Upsert discipline (the load-bearing invariant, repeated at every call site):
   - **Creation only** → full upsert (:func:`create_session_point`). This is the
     one legitimate ``PUT …/points`` on a `session` point (R-007, Team-Lead side).
   - **Every later write** → ``set_payload`` (per-Stop append, response, rollups,
-    event_refs) or ``update-vectors`` (the `response` vector). A full upsert on an
-    existing point would null the `brief`/`response` named vectors (F-2-008).
+    event_refs). A full upsert on an existing point would null any named vectors
+    the point carries (F-2-008).
+
+Vector policy (PROJ-041/T-002, operator decision 2026-07-11): hooks and the
+session-end lifecycle write **payload-only** points — no embedding anywhere on a
+hook path (hook hosts generally have no embed endpoint). Qdrant accepts a
+vector-less point in a named-vector collection when the upsert carries
+``"vector": {}`` (an empty named-vector map — omitting the key entirely is a
+400; proven live against cloud Qdrant 2026-07-12). Vectors are added in
+retrospect by the PROJ-042 enrichment batch job where a semantic-search
+requirement arises. Authoring paths (:func:`create_session_point`, brief
+authoring) are **embed-optional**: they embed only when an embed endpoint is
+explicitly configured (the ``OLLAMA_HOST`` env var, or an explicit
+``ollama_host=`` argument) and otherwise write vector-less points, saying so on
+stderr.
 
 The point ID is ``uuid5(NAMESPACE_DNS, session_id)`` — identical to
 ``lib/sessions_upsert.point_id_for`` — so the per-Stop / session-end target is
@@ -93,14 +106,31 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def embed_endpoint() -> Optional[str]:
+    """The explicitly configured embed endpoint (``OLLAMA_HOST`` env), or None.
+
+    No default host (PROJ-041/T-002): embedding is opt-in. Absent env means the
+    authoring paths write vector-less points (:func:`maybe_embed`); nothing on a
+    hook path calls an embed at all.
+    """
+    return os.environ.get("OLLAMA_HOST") or None
+
+
 def embed_text(text: str, *, ollama_host: Optional[str] = None,
                timeout: float = 30.0) -> list[float]:
-    """Embed ``text`` with nomic-embed-text via Ollama; returns a 768-dim vector.
+    """Embed ``text`` with nomic-embed-text; returns a 768-dim vector.
 
-    Stdlib-only (urllib) to match qdrant_http — no `requests` dependency. Raises
-    on transport/decoding failure; callers in best-effort hooks should catch.
+    Requires an explicitly configured endpoint — ``ollama_host`` argument or the
+    ``OLLAMA_HOST`` env var (:func:`embed_endpoint`); raises RuntimeError when
+    neither is set (no localhost default since PROJ-041/T-002). Stdlib-only
+    (urllib) to match qdrant_http — no `requests` dependency. Raises on
+    transport/decoding failure.
     """
-    host = ollama_host or os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    host = ollama_host or embed_endpoint()
+    if not host:
+        raise RuntimeError(
+            "no embed endpoint configured (set OLLAMA_HOST or pass ollama_host)"
+        )
     body = json.dumps({"model": EMBED_MODEL, "prompt": text}).encode("utf-8")
     req = urllib.request.Request(
         url=f"{host}/api/embeddings",
@@ -112,8 +142,31 @@ def embed_text(text: str, *, ollama_host: Optional[str] = None,
         parsed = json.loads(resp.read().decode("utf-8"))
     vec = parsed.get("embedding")
     if not isinstance(vec, list) or not vec:
-        raise ValueError("Ollama returned no embedding")
+        raise ValueError("embed endpoint returned no embedding")
     return vec
+
+
+def maybe_embed(text: str, *, label: str = "embed",
+                ollama_host: Optional[str] = None) -> Optional[list[float]]:
+    """Embed ``text`` when an endpoint is configured; else None, noted on stderr.
+
+    The embed-optional authoring primitive (PROJ-041/T-002): with an endpoint
+    (``ollama_host`` argument or ``OLLAMA_HOST`` env) the input is bounded
+    (:func:`_bound_embed_input`) and embedded — an embed failure still raises,
+    loud, because a configured endpoint that fails is a real fault. With no
+    endpoint the point is written vector-less and this says so on stderr so the
+    degradation is visible; the PROJ-042 enrichment job embeds in retrospect.
+    """
+    host = ollama_host or embed_endpoint()
+    if not host:
+        print(
+            f"[session_substrate] {label}: no embed endpoint configured "
+            f"(OLLAMA_HOST unset) — writing vector-less; the PROJ-042 "
+            f"enrichment job embeds in retrospect.",
+            file=sys.stderr,
+        )
+        return None
+    return embed_text(_bound_embed_input(text, label=label), ollama_host=host)
 
 
 # --------------------------------------------------------------------------- #
@@ -134,9 +187,12 @@ def create_session_point(
 ) -> dict:
     """Create the canonical `session` point carrying the brief (Team-Lead, dispatch).
 
-    Full-point upsert — creation only. Sets the `brief` named vector from
-    ``brief_text``; the `response` vector is added later at session-end via
-    update-vectors. Returns ``{"point_id", "ok"}``.
+    Full-point upsert — creation only. **Embed-optional** (PROJ-041/T-002): the
+    `brief` named vector is set from ``brief_text`` only when an embed endpoint
+    is explicitly configured (``ollama_host`` argument or ``OLLAMA_HOST`` env);
+    otherwise the point is written vector-less (``"vector": {}``) with a stderr
+    note — team leads on trainer workstations author briefs too. Returns
+    ``{"point_id", "ok"}``.
 
     ``brief_id`` is the optional reverse link to a first-class `briefs`-collection
     point (PROJ-039/T-043): set on the **brief-first** materialise path so a
@@ -144,16 +200,14 @@ def create_session_point(
     stamp that brief complete). Absent on the legacy pinned-sid path
     (backwards-compatible — the field is simply omitted).
 
-    The *embed input* is head-truncated to a safe token budget
+    When embedding, the *embed input* is head-truncated to a safe token budget
     (:func:`_bound_embed_input`) so a large brief cannot 500 nomic-embed-text and
     lose its `brief` vector; the **full** ``brief_text`` is always stored in the
     payload unchanged.
     """
     pid = point_id_for(session_id)
     dispatch_ts = dispatch_ts or _now_iso()
-    brief_vector = embed_text(
-        _bound_embed_input(brief_text, label="brief"), ollama_host=ollama_host
-    )
+    brief_vector = maybe_embed(brief_text, label="brief", ollama_host=ollama_host)
     payload = {
         "point_type": "session",
         "session_id": session_id,
@@ -170,8 +224,11 @@ def create_session_point(
     }
     if brief_id is not None:
         payload["brief_id"] = brief_id
+    # Vector-less shape: an EMPTY named-vector map, not an omitted key — Qdrant
+    # 400s on a missing `vector` field (proven live 2026-07-12).
+    vector = {"brief": brief_vector} if brief_vector is not None else {}
     qdrant_http.upsert_points(
-        [{"id": pid, "vector": {"brief": brief_vector}, "payload": payload}],
+        [{"id": pid, "vector": vector, "payload": payload}],
         collection=COLLECTION,
         api_key=api_key,
     )
@@ -277,7 +334,7 @@ def append_session_stop(
 
 
 # --------------------------------------------------------------------------- #
-# session-end writes (set_payload + update-vectors — R-010..014 / SD-3-001)
+# session-end writes (set_payload — R-010..014 / SD-3-001)
 # --------------------------------------------------------------------------- #
 
 def upsert_response(
@@ -288,14 +345,13 @@ def upsert_response(
     event_refs: Optional[list] = None,
     end_ts: Optional[str] = None,
     api_key: Optional[str] = None,
-    ollama_host: Optional[str] = None,
 ) -> dict:
-    """Write the `response` object (set_payload) + patch the `response` vector
-    (update-vectors). Two partial writes — never a full upsert (§ 2.4 step 1).
+    """Write the `response` object via set_payload — never a full upsert
+    (§ 2.4 step 1).
 
-    Like the brief path, the *embed input* for the `response` vector is bounded
-    (:func:`_bound_embed_input`) so a large response cannot 500 nomic-embed-text;
-    the **full** ``text`` is always stored in the payload unchanged."""
+    Payload-only (PROJ-041/T-002): the former `response` vector patch is gone —
+    this runs on the SessionEnd hook path, which never embeds. The full ``text``
+    is stored unchanged; the PROJ-042 enrichment job embeds in retrospect."""
     pid = point_id_for(session_id)
     response = {
         "text": text,
@@ -305,14 +361,6 @@ def upsert_response(
     }
     qdrant_http.set_payload(
         {"response": response}, [pid], collection=COLLECTION, api_key=api_key
-    )
-    response_vector = embed_text(
-        _bound_embed_input(text, label="response"), ollama_host=ollama_host
-    )
-    qdrant_http.update_vectors(
-        [{"id": pid, "vector": {"response": response_vector}}],
-        collection=COLLECTION,
-        api_key=api_key,
     )
     return {"point_id": pid, "ok": True}
 

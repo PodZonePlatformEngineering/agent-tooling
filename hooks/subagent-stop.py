@@ -23,8 +23,6 @@ CLOUD_COLLECTIONS = {"sessions", "tasks", "task_events", "prompt_logs", "one_sho
 
 SESSIONS_COLLECTION = "sessions"
 EVENTS_COLLECTION = "task_events"
-OLLAMA_URL = "http://localhost:11434/api/embeddings"
-EMBED_MODEL = "nomic-embed-text"
 VECTOR_SIZE = 768
 
 
@@ -74,22 +72,6 @@ def event_point_id(session_id: str, timestamp: str) -> int:
     return int(hashlib.md5(str(uid).encode()).hexdigest()[:16], 16)
 
 
-def get_embedding(text: str) -> List[float]:
-    """Embed text via Ollama. Returns zero vector on failure."""
-    try:
-        import requests
-        r = requests.post(
-            OLLAMA_URL,
-            json={"model": EMBED_MODEL, "prompt": text},
-            timeout=15,
-        )
-        r.raise_for_status()
-        return r.json().get("embedding", [0.0] * VECTOR_SIZE)
-    except Exception as exc:
-        log(f"Ollama unavailable ({exc}); using zero vector")
-        return [0.0] * VECTOR_SIZE
-
-
 def read_transcript_summary(transcript_path: str) -> str:
     """
     Read the subagent's transcript JSONL.
@@ -134,7 +116,10 @@ def upsert_event(session_id: str, parent_session_id: Optional[str], detail: str,
         return
 
     point_id = event_point_id(session_id, timestamp)
-    vector = get_embedding(detail) if detail else [0.0] * VECTOR_SIZE
+    # Payload-only (PROJ-041/T-002): hooks never embed. `task_events` is an
+    # unnamed-single-vector collection, so the point carries a zero vector;
+    # the PROJ-042 enrichment job patches real vectors in retrospect.
+    vector = [0.0] * VECTOR_SIZE
 
     payload = {
         "event_type": "subagent_complete",
