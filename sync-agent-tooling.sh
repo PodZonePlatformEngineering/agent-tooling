@@ -173,6 +173,41 @@ SKILLS_SRC="${AGENT_TOOLING_DIR}/skills"
 # skill-free. PROJ-039/T-038.
 TEAM_LEAD_SKILLS_MANIFEST="${AGENT_TOOLING_DIR}/scaffold/team-lead-skills.manifest"
 
+# --- Atomic write helpers (PROJ-039/T-098, CC-408) ---
+# SessionStart hooks run concurrently with a TOOLING_UPDATE-driven sync: a
+# plain `cp src dst` rewrites dst's EXISTING inode, so a bash interpreter
+# mid-read of that file sees the bytes shift under it (live incident,
+# home-podzone-hermes 2026-07-11: the resident 1.7.0 session-start.sh was
+# executing while the v1.12.0 sync copied over it — 7813→8993 bytes mid-read
+# → `syntax error near unexpected token '('` at a statically-valid line).
+# Every sync write therefore stages a temp file IN THE SAME DIRECTORY and
+# atomically renames it into place: the rename swaps in a NEW inode, and any
+# in-flight reader keeps its old inode to EOF, unharmed.
+
+atomic_install() {  # atomic_install <src> <dst> [+x|<mode>]
+  local src="$1" dst="$2" mode="${3:-}"
+  local tmp="${dst}.sync-tmp.$$"
+  cp -p "$src" "$tmp"
+  if [[ -n "$mode" ]]; then
+    chmod "$mode" "$tmp"
+  fi
+  mv -f "$tmp" "$dst"
+}
+
+# Directory variant: stage the whole copy next to the destination, then swap.
+# The dir swap itself (rm -rf + mv) cannot be one atomic rename, but every
+# file inside arrives as a new inode — an in-flight reader of any OLD file
+# keeps its unlinked inode to EOF, the same guarantee as atomic_install.
+atomic_install_dir() {  # atomic_install_dir <src> <dst>
+  local src="$1" dst="$2"
+  local tmp="${dst}.sync-tmp.$$"
+  rm -rf "$tmp"
+  cp -R "$src" "$tmp"
+  find "$tmp" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+  rm -rf "$dst"
+  mv "$tmp" "$dst"
+}
+
 # --- Sync ---
 
 UPDATED=0
@@ -216,8 +251,7 @@ for hook in $(role_hooks "$ROLE"); do
     fi
   fi
 
-  cp "$src" "$dst"
-  chmod +x "$dst"
+  atomic_install "$src" "$dst" +x
   echo "  Updated: ${hook}"
   ((UPDATED++))
 done
@@ -247,7 +281,7 @@ done
 UNWIRE_SETTINGS="${HOME_REPO}/.claude/settings.json"
 if [[ -f "$UNWIRE_SETTINGS" ]]; then
   python3 - "$UNWIRE_SETTINGS" <<'UNWIRE_PY' | sed 's/^/  /'
-import json, sys
+import json, os, sys
 
 RETIRED = ("pre-tool-use.sh", "post-tool-use.sh",
            "session-context.py", "session-context.sh")
@@ -279,8 +313,12 @@ for event in list(hooks):
         changed = True
 
 if changed:
-    with open(path, "w", encoding="utf-8") as fh:
+    # Temp-in-same-dir + atomic rename (T-098): settings.json has concurrent
+    # readers (the harness) — never rewrite its inode in place.
+    tmp = path + ".sync-tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(json.dumps(settings, indent=2) + "\n")
+    os.replace(tmp, path)
     print("Unwired retired hook entries from settings.json")
 else:
     print("OK    settings.json — no retired hook wiring")
@@ -342,9 +380,7 @@ for dep in $DEP_DIRS; do
     fi
   fi
 
-  rm -rf "$dst"
-  cp -R "$src" "$dst"
-  find "$dst" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+  atomic_install_dir "$src" "$dst"
   echo "  Updated: ${dep}/"
   ((UPDATED++))
 done
@@ -389,8 +425,7 @@ for tool in $TOOLS_FILES; do
     fi
   fi
 
-  cp "$src" "$dst"
-  chmod +x "$dst"
+  atomic_install "$src" "$dst" +x
   echo "  Updated: tools/${tool}"
   ((UPDATED++))
 done
@@ -422,12 +457,12 @@ else
       echo "  Skipped."
       ((SKIPPED++))
     else
-      cp "$GITIGNORE_SRC" "$GITIGNORE_DST"
+      atomic_install "$GITIGNORE_SRC" "$GITIGNORE_DST"
       echo "  Updated: .gitignore"
       ((UPDATED++))
     fi
   else
-    cp "$GITIGNORE_SRC" "$GITIGNORE_DST"
+    atomic_install "$GITIGNORE_SRC" "$GITIGNORE_DST"
     echo "  Updated: .gitignore"
     ((UPDATED++))
   fi
@@ -502,7 +537,7 @@ else
       fi
     fi
     mkdir -p "$(dirname "$dst")"
-    cp "$src" "$dst"
+    atomic_install "$src" "$dst"
     echo "  Updated: lib/${entry}"
     ((UPDATED++))
   done < "$LIB_MANIFEST"
@@ -572,9 +607,7 @@ if [[ "$ROLE" == "team-lead" ]]; then
           echo "  Skipped."; ((SKIPPED++)); continue
         fi
       fi
-      rm -rf "$dst"
-      cp -R "$src" "$dst"
-      find "$dst" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+      atomic_install_dir "$src" "$dst"
       echo "  Updated: skills/${entry}"
       ((UPDATED++))
     done < "$TEAM_LEAD_SKILLS_MANIFEST"
@@ -680,7 +713,8 @@ if [[ "$ROLE" == "team-lead" ]]; then
           fi
         fi
         if [[ $APPLY -eq 1 ]]; then
-          cp "$MANUAL_RENDERED" "$MANUAL_DST"
+          # 644, not cp -p: the rendered source is a 600 mktemp file.
+          atomic_install "$MANUAL_RENDERED" "$MANUAL_DST" 644
           echo "  Updated: OPERATING-MANUAL.md"
           ((UPDATED++))
         fi
@@ -762,7 +796,8 @@ if [[ "$ROLE" != "trainee" ]]; then
           fi
         fi
         if [[ $APPLY -eq 1 ]]; then
-          cp "$README_RENDERED" "$README_DST"
+          # 644, not cp -p: the rendered source is a 600 mktemp file.
+          atomic_install "$README_RENDERED" "$README_DST" 644
           echo "  Updated: README.md"
           ((UPDATED++))
         fi
@@ -965,8 +1000,12 @@ if existing_path.is_file():
     except ValueError:
         pass
 claude_dir.mkdir(parents=True, exist_ok=True)
-(claude_dir / "tooling-manifest.json").write_text(
+# Temp-in-same-dir + atomic rename (T-098): concurrent SessionStart readers
+# (drift report, T-069 guard) must never see a half-written manifest.
+tmp = claude_dir / "tooling-manifest.json.sync-tmp"
+tmp.write_text(
     json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+os.replace(tmp, claude_dir / "tooling-manifest.json")
 print(f"  Wrote {claude_dir / 'tooling-manifest.json'} ({len(files)} files, "
       f"version={manifest['version']}, source_commit={manifest['source_commit'][:8]})")
 PYEOF
