@@ -210,6 +210,14 @@ atomic_install_dir() {  # atomic_install_dir <src> <dst>
 
 # --- Sync ---
 
+# Sweep stale atomic-write staging debris (T-098): a sync killed between the
+# temp cp and the rename leaves *.sync-tmp* files behind that the next sync
+# commit would otherwise pick up (the T-091 post-commit dirt class). Also
+# covered by the synced .gitignore as a second line of defence.
+while IFS= read -r stale; do
+  rm -rf "$stale"
+done < <(find "$HOME_REPO" -name .git -prune -o -name '*.sync-tmp*' -print 2>/dev/null)
+
 UPDATED=0
 UNCHANGED=0
 SKIPPED=0
