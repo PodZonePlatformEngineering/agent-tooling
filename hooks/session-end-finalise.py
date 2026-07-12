@@ -247,7 +247,9 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
         _log(f"lib import failed: {exc}", session_id=session_id, level="ERROR")
         return 0
 
-    # 1. Response upsert (set_payload) + response-vector patch (update-vectors).
+    # 1. Response upsert (set_payload) — payload-only (PROJ-041/T-002): no
+    #    vector patch on the hook path; the PROJ-042 enrichment job embeds in
+    #    retrospect. The step is `done` on the payload write alone.
     response_text = _last_assistant_text(transcript_path) or f"session {session_id} ended"
     response_text = response_text[:20000]  # generous cap; payload has no hard limit
     try:
@@ -256,9 +258,8 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
             text=response_text,
             status_transition=None,  # MVP: enriched post-MVP from session-finalise
             event_refs=[],
-            ollama_host=None,
         )
-        _log("response upserted + vector patched", session_id=session_id)
+        _log("response upserted", session_id=session_id)
         _step("response", "done")
     except Exception as exc:
         _log(f"response upsert skipped: {exc}", session_id=session_id, level="WARN")

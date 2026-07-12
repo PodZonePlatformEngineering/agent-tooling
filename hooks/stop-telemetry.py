@@ -5,14 +5,16 @@ stop-telemetry.py — enriched CST Stop observability point (PROJ-039/T-071, CC-
 The thin hook entry for the Stop dual-write's observability half (R-008):
 reads the hook stdin JSON, assembles the enriched payload via
 ``lib/stop_telemetry.py`` (last_assistant_message + background_tasks +
-session_crons — the extractors are fixture-tested there), embeds the
-head-truncated message text (T-027 bounding; the embed switch away from the
-constant ``"Stop: end_turn"`` was operator-confirmed 2026-07-07) and writes the
-CST point. Replaces the inline bash→python payload assembly that lived in
-``stop.sh``, which now just pipes stdin here.
+session_crons — the extractors are fixture-tested there) and writes the CST
+point **payload-only** (PROJ-041/T-002, operator decision 2026-07-11): hooks
+never embed — hook hosts generally have no embed endpoint — so the point
+carries an empty named-vector map (``"vector": {}``, accepted by Qdrant;
+proven live against cloud Qdrant 2026-07-12) and the PROJ-042 enrichment job
+adds vectors in retrospect. Replaces the inline bash→python payload assembly
+that lived in ``stop.sh``, which now just pipes stdin here.
 
 Best-effort: never raises out (a Stop hook must not break the session). On a
-missing API key / unreachable Ollama or Qdrant it logs to stderr and exits 0.
+missing API key / unreachable Qdrant it logs to stderr and exits 0.
 """
 
 from __future__ import annotations
@@ -50,19 +52,15 @@ def main() -> int:
         return 0
 
     try:
-        from lib import qdrant_http, session_substrate
+        from lib import qdrant_http
 
-        vector = session_substrate.embed_text(
-            session_substrate._bound_embed_input(
-                stop_telemetry.embed_input_for(payload), label="stop-message"
-            )
-        )
         point_id = stop_telemetry.point_id_for_stop(
             payload["session_id"], payload.get("turn_uuid", "")
         )
+        # Payload-only (PROJ-041/T-002): an EMPTY named-vector map, never an
+        # omitted `vector` key — Qdrant 400s on the missing field.
         qdrant_http.upsert_points(
-            [{"id": point_id, "vector": {"response_vector": vector},
-              "payload": payload}],
+            [{"id": point_id, "vector": {}, "payload": payload}],
             collection=COLLECTION,
         )
         print(
@@ -74,8 +72,8 @@ def main() -> int:
             file=sys.stderr,
         )
     except Exception as exc:
-        # Most common benign cases: PODZONE_QDRANT_APIKEY absent in a bare
-        # subprocess, or Ollama not running on this host.
+        # Most common benign case: PODZONE_QDRANT_APIKEY absent in a bare
+        # subprocess.
         print(f"[stop-telemetry] CST write skipped: {exc}", file=sys.stderr)
     return 0
 
