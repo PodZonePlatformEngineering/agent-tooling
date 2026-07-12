@@ -12,8 +12,9 @@
 #   2. Real sync path, hook file: a reader holding an fd across a full
 #      `sync-agent-tooling.sh --yes` run sees the OLD content to EOF while
 #      the path serves the NEW content, and the inode has changed.
-#   3. Real sync path, dependency-dir file (lib/): same guarantee through
-#      the directory-swap variant.
+#   3. Same guarantee for the two other write shapes: a lib-manifest file
+#      (per-file atomic_install) and a file inside a DEP_DIRS directory
+#      (atomic_install_dir's staged directory swap).
 set -euo pipefail
 
 AGENT_TOOLING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -109,16 +110,24 @@ echo "# DRIFTED — resident old version an interpreter is executing" >> "$HOOK"
 cp "$HOOK" "${WORK}/hook-old-snapshot"
 INODE_BEFORE="$(ls -i "$HOOK" | awk '{print $1}')"
 
-# Also drift a lib dependency file for part 3 — same sync run covers both.
+# Also drift a lib-manifest file (per-file atomic_install) and a primitives
+# file (DEP_DIRS → atomic_install_dir) — one sync run covers all three shapes.
 LIBMOD="${TARGET}/.claude/lib/qdrant_http.py"
 echo "# DRIFTED LIB — resident old version with a reader mid-stream" >> "$LIBMOD"
 cp "$LIBMOD" "${WORK}/lib-old-snapshot"
 LIB_INODE_BEFORE="$(ls -i "$LIBMOD" | awk '{print $1}')"
 
+PRIM="${TARGET}/.claude/primitives/log_primitive.sh"
+echo "# DRIFTED PRIMITIVE — resident old version with a reader mid-stream" >> "$PRIM"
+cp "$PRIM" "${WORK}/prim-old-snapshot"
+PRIM_INODE_BEFORE="$(ls -i "$PRIM" | awk '{print $1}')"
+
 run_reader "$HOOK" hook
 HOOK_GO="$GO"; HOOK_OUT="$OUT"; HOOK_PID="$READER_PID"
 run_reader "$LIBMOD" lib
 LIB_GO="$GO"; LIB_OUT="$OUT"; LIB_PID="$READER_PID"
+run_reader "$PRIM" prim
+PRIM_GO="$GO"; PRIM_OUT="$OUT"; PRIM_PID="$READER_PID"
 
 SYNC_RC=0
 bash "${AGENT_TOOLING_DIR}/sync-agent-tooling.sh" \
@@ -130,6 +139,7 @@ assert "sync run over held-open files exits 0" "$([ "$SYNC_RC" -eq 0 ] && echo o
 
 touch "$HOOK_GO"; wait "$HOOK_PID"
 touch "$LIB_GO";  wait "$LIB_PID"
+touch "$PRIM_GO"; wait "$PRIM_PID"
 
 assert "in-flight reader saw the OLD hook content to EOF, byte-identical" \
   "$(diff -q "${WORK}/hook-old-snapshot" "$HOOK_OUT" > /dev/null 2>&1 && echo ok || echo fail)"
@@ -140,14 +150,23 @@ assert "hook inode changed (rename swapped in a new inode)" \
 assert "renamed hook is executable (mode preserved through the temp)" \
   "$([ -x "$HOOK" ] && echo ok || echo fail)"
 
-# --- 3. Real sync path: dependency dir (atomic_install_dir) ---
+# --- 3a. Real sync path: lib-manifest file (per-file atomic_install) ---
 
 assert "in-flight reader saw the OLD lib content to EOF, byte-identical" \
   "$(diff -q "${WORK}/lib-old-snapshot" "$LIB_OUT" > /dev/null 2>&1 && echo ok || echo fail)"
 assert "lib path now serves the NEW (source) content" \
   "$(diff -q "${AGENT_TOOLING_DIR}/lib/qdrant_http.py" "$LIBMOD" > /dev/null 2>&1 && echo ok || echo fail)"
-assert "lib inode changed (dir swap delivered a new inode)" \
+assert "lib inode changed (rename swapped in a new inode)" \
   "$([ "$(ls -i "$LIBMOD" | awk '{print $1}')" != "$LIB_INODE_BEFORE" ] && echo ok || echo fail)"
+
+# --- 3b. Real sync path: DEP_DIRS file (atomic_install_dir staged swap) ---
+
+assert "in-flight reader saw the OLD primitives content to EOF, byte-identical" \
+  "$(diff -q "${WORK}/prim-old-snapshot" "$PRIM_OUT" > /dev/null 2>&1 && echo ok || echo fail)"
+assert "primitives path now serves the NEW (source) content" \
+  "$(diff -q "${AGENT_TOOLING_DIR}/primitives/log_primitive.sh" "$PRIM" > /dev/null 2>&1 && echo ok || echo fail)"
+assert "primitives file inode changed (dir swap delivered a new inode)" \
+  "$([ "$(ls -i "$PRIM" | awk '{print $1}')" != "$PRIM_INODE_BEFORE" ] && echo ok || echo fail)"
 
 # --- 4. Stale staging debris swept + gitignored (T-098 hardening) ---
 
