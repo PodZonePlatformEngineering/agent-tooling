@@ -18,16 +18,21 @@ both without a context switch):
   * Built on :mod:`lib.qdrant_http` (stdlib-only write path, PROJ-033/T-016) so
     there is no third-party dependency and a missing API key is loud, never a
     silent zero-write.
-  * The one `brief` named vector (768-dim nomic-embed-text over ``body``) is set
-    at **creation only** (a full upsert). Every later write —
-    :func:`append_session_id`, :func:`set_status`, :func:`complete_brief` — uses
-    ``set_payload`` so the named vector survives (F-2-008 / SD-3-001). The embed
-    *input* is bounded (T-027) so a large brief body cannot 500 nomic-embed-text
-    and lose its vector; the full ``body`` is always stored unchanged.
+  * The one `brief` named vector is **embed-optional** (PROJ-041/T-002) and set
+    at **creation only** (a full upsert): it is embedded from ``body`` only when
+    an embed endpoint is explicitly configured (``OLLAMA_HOST`` env /
+    ``ollama_host`` argument — team leads on trainer workstations author briefs
+    too); otherwise the point is written vector-less (``"vector": {}``) with a
+    stderr note, and the PROJ-042 enrichment job embeds in retrospect. Every
+    later write — :func:`append_session_id`, :func:`set_status`,
+    :func:`complete_brief` — uses ``set_payload`` so a named vector survives
+    (F-2-008 / SD-3-001). When embedding, the embed *input* is bounded (T-027)
+    so a large brief body cannot 500 the embed model and lose its vector; the
+    full ``body`` is always stored unchanged.
 
-The embed helpers (:func:`~lib.session_substrate.embed_text`,
-``_bound_embed_input``) and ``_now_iso`` are reused from ``session_substrate`` so
-the token-safety strategy is defined in exactly one place.
+The embed-optional helper (:func:`~lib.session_substrate.maybe_embed`) and
+``_now_iso`` are reused from ``session_substrate`` so the embed policy is
+defined in exactly one place.
 """
 
 from __future__ import annotations
@@ -99,9 +104,11 @@ def create_brief(
 ) -> dict:
     """Create (or re-converge) the canonical `brief` point.
 
-    Full-point upsert — creation only. Sets the `brief` named vector from
-    ``body``; re-running with the same ``brief_id`` converges on the same point
-    (idempotent authoring). ``session_ids`` and ``completed_at`` start empty/None
+    Full-point upsert — creation only. **Embed-optional** (PROJ-041/T-002): the
+    `brief` named vector is set from ``body`` only when an embed endpoint is
+    explicitly configured (``ollama_host`` argument or ``OLLAMA_HOST`` env),
+    else the point is written vector-less with a stderr note. Re-running with
+    the same ``brief_id`` converges on the same point (idempotent authoring). ``session_ids`` and ``completed_at`` start empty/None
     and are only ever written later via the partial-write helpers, so a re-author
     of an in-flight brief does NOT clobber accumulated session links unless the
     caller passes them — this function deliberately does not accept them.
@@ -128,9 +135,8 @@ def create_brief(
 
     pid = point_id_for(brief_id)
     created_at = created_at or session_substrate._now_iso()
-    brief_vector = session_substrate.embed_text(
-        session_substrate._bound_embed_input(body, label="brief_body"),
-        ollama_host=ollama_host,
+    brief_vector = session_substrate.maybe_embed(
+        body, label="brief_body", ollama_host=ollama_host
     )
     payload = {
         "point_type": "brief",
@@ -149,8 +155,11 @@ def create_brief(
         "origin_path": origin_path or "",
         "tooling_update": tooling_update,
     }
+    # Vector-less shape: an EMPTY named-vector map, not an omitted key — Qdrant
+    # 400s on a missing `vector` field (proven live 2026-07-12).
+    vector = {"brief": brief_vector} if brief_vector is not None else {}
     qdrant_http.upsert_points(
-        [{"id": pid, "vector": {"brief": brief_vector}, "payload": payload}],
+        [{"id": pid, "vector": vector, "payload": payload}],
         collection=COLLECTION,
         api_key=api_key,
     )

@@ -3,9 +3,12 @@
 create-session-point.py — Team-Lead brief authoring (PROJ-039 R-007, § 2.6).
 
 At dispatch the Team Lead creates the canonical `session` point in
-`session_substrate`, carrying the brief (text + dispatch_ts + target_agent) with
-the `brief` named vector. The agent then retrieves its brief from this point at
-session start (no `team/{agent}/incoming/` read — DT-002/AC-001).
+`session_substrate`, carrying the brief (text + dispatch_ts + target_agent).
+Embedding is OPTIONAL (PROJ-041/T-002): the `brief` named vector is set only
+when an embed endpoint is explicitly configured via the ``OLLAMA_HOST`` env
+var — otherwise the point is written vector-less with a stderr note. The agent
+then retrieves its brief from this point at session start (no
+`team/{agent}/incoming/` read — DT-002/AC-001).
 
 This is the one legitimate full-point upsert on a `session` point (creation only,
 SD-3-001).

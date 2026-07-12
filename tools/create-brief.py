@@ -9,9 +9,12 @@ committed brief file; sessions later reference it by ``brief_id`` and the runtim
 sid is appended to ``session_ids[]`` at SessionStart (SessionStart materialise).
 
 The point id is ``uuid5(NAMESPACE_DNS, brief_id)`` so re-authoring the same
-``brief_id`` converges on the same point (idempotent). The `brief` named vector is
-embedded from the brief body (token-safe per T-027; the full body is stored
-unchanged).
+``brief_id`` converges on the same point (idempotent). Embedding is OPTIONAL
+(PROJ-041/T-002): the `brief` named vector is embedded from the brief body
+(token-safe per T-027; the full body is stored unchanged) only when an embed
+endpoint is explicitly configured via the ``OLLAMA_HOST`` env var — otherwise
+the point is written vector-less with a stderr note and the PROJ-042
+enrichment job embeds in retrospect.
 
 `approved` is the ADR-008 D5 execution gate — a brief must be `approved` before a
 session can be materialised for it. Author with `--status draft` (default) and

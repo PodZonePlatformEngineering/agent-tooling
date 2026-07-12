@@ -1,15 +1,18 @@
 """Tests for lib/brief_substrate — the PROJ-039/T-043 `briefs` collection ops.
 
 The same load-bearing property as session_substrate: creation is the ONE full
-upsert (sets the `brief` named vector); every later write — append_session_id,
-set_status, start_brief, complete_brief — must use set_payload (POST …/points/
-payload), NEVER a full upsert, so the named vector survives (F-2-008 / SD-3-001).
-These tests intercept qdrant_http.request_json and record (method, path-suffix)
-so the discipline is asserted directly, mirroring test_session_substrate.
+upsert (embed-optional `brief` named vector since PROJ-041/T-002 — embedded
+only when OLLAMA_HOST / ollama_host is configured, vector-less ``{}``
+otherwise); every later write — append_session_id, set_status, start_brief,
+complete_brief — must use set_payload (POST …/points/payload), NEVER a full
+upsert, so a named vector survives (F-2-008 / SD-3-001). These tests intercept
+qdrant_http.request_json and record (method, path-suffix) so the discipline is
+asserted directly, mirroring test_session_substrate.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -75,9 +78,19 @@ class TestPointId(unittest.TestCase):
 
 
 class TestCreateBrief(unittest.TestCase):
+    def _vector_recorder(self, rec, captured):
+        def recorder(method, url, *, payload=None, api_key=None, timeout=None):
+            if method.upper() == "PUT" and url.endswith("/points"):
+                captured["vector"] = payload["points"][0]["vector"]
+            return rec(method, url, payload=payload, api_key=api_key, timeout=timeout)
+        return recorder
+
     def test_creation_is_one_full_upsert_with_brief_vector(self) -> None:
+        # Embed-configured mode: OLLAMA_HOST set (embed_text patched, never dialled).
         rec = RecordingQdrant()
-        with patch.object(qdrant_http, "request_json", rec), \
+        captured: dict = {}
+        with patch.dict(os.environ, {"OLLAMA_HOST": "http://fake-ollama.test:11434"}), \
+             patch.object(qdrant_http, "request_json", self._vector_recorder(rec, captured)), \
              patch.object(session_substrate, "embed_text", lambda *a, **k: [0.1] * 768):
             res = brief_substrate.create_brief(
                 brief_id=BRIEF_ID, team="training", author="athena",
@@ -86,6 +99,7 @@ class TestCreateBrief(unittest.TestCase):
             )
         self.assertTrue(res["ok"])
         self.assertEqual(len(rec.full_upserts()), 1)  # the ONE creation upsert
+        self.assertEqual(len(captured["vector"]["brief"]), 768)
         self.assertEqual(rec.payload["point_type"], "brief")
         self.assertEqual(rec.payload["brief_id"], BRIEF_ID)
         self.assertEqual(rec.payload["assignee_type"], "trainee")
@@ -93,6 +107,36 @@ class TestCreateBrief(unittest.TestCase):
         self.assertEqual(rec.payload["session_ids"], [])
         self.assertIsNone(rec.payload["completed_at"])
         self.assertEqual(rec.payload["body"], "Learn prompt basics.")
+
+    def test_no_embed_endpoint_writes_vector_less_with_stderr_note(self) -> None:
+        # PROJ-041/T-002 embed-optional authoring: no endpoint anywhere → the
+        # point is written with an EMPTY named-vector map ({} — an omitted
+        # `vector` key is a Qdrant 400; proven live 2026-07-12), the full body
+        # still lands in the payload, and the degradation is announced on stderr.
+        import io
+        from contextlib import redirect_stderr
+
+        rec = RecordingQdrant()
+        captured: dict = {}
+
+        def boom(*a, **k):
+            raise AssertionError("embed_text must not be called with no endpoint")
+
+        env = {k: v for k, v in os.environ.items() if k != "OLLAMA_HOST"}
+        err = io.StringIO()
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(qdrant_http, "request_json", self._vector_recorder(rec, captured)), \
+             patch.object(session_substrate, "embed_text", boom), \
+             redirect_stderr(err):
+            res = brief_substrate.create_brief(
+                brief_id=BRIEF_ID, team="training", author="athena",
+                assignee="alex", assignee_type="trainee", body="Learn prompt basics.",
+                status="approved",
+            )
+        self.assertTrue(res["ok"])
+        self.assertEqual(captured["vector"], {})
+        self.assertEqual(rec.payload["body"], "Learn prompt basics.")
+        self.assertIn("vector-less", err.getvalue())
 
     def test_tooling_update_field_default_none_and_settable(self) -> None:
         rec = RecordingQdrant()
