@@ -334,8 +334,13 @@ def write_sentinel(home_repo: str, payload: dict) -> None:
         ws.mkdir(parents=True, exist_ok=True)
         payload = dict(payload)
         payload.setdefault("written_at", datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-        (ws / ".tooling-update-status.json").write_text(
+        # Temp-in-same-dir + atomic rename (T-098): SessionStart hooks run
+        # concurrently — a session-start.sh mid-read of the sentinel must
+        # never see a truncated/half-written JSON.
+        tmp = ws / f".tooling-update-status.json.sync-tmp.{os.getpid()}"
+        tmp.write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, ws / ".tooling-update-status.json")
     except Exception as exc:  # sentinel failure must never break startup
         print(f"update-tooling: sentinel write failed: {exc}", file=sys.stderr)
 

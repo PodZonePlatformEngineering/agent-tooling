@@ -21,6 +21,11 @@ __pycache__/
 logs/
 .env
 
+# Atomic-write staging files (sync-agent-tooling, PROJ-039/T-098) — present
+# only if a sync crashed between the temp cp and the rename; the next sync
+# sweeps them, this keeps any survivor out of commits meanwhile.
+*.sync-tmp*
+
 # Per-home-repo scoped env block (plaintext secrets until PROJ-003) — NEVER commit.
 # Lives only on the workstation; carries PODZONE_QDRANT_APIKEY / SECRETCTL_PASSWORD.
 # The committed .claude/settings.json carries hooks only; primitives/ + lib/ are
