@@ -117,7 +117,13 @@ role_hooks() {
     curriculum-developer)  echo "${SUBSTRATE_BASE}" ;;
     historian)             echo "${SUBSTRATE_BASE}" ;;
     strategist)            echo "${SUBSTRATE_BASE}" ;;
-    trainee)               echo "${SUBSTRATE_BASE} first-prompt-brief.py trainee-session-branch.py trainee-preflight.py trainee-read-guard.py" ;;
+    # trainee (PROJ-011/T-030 v3): NO fleet substrate hook ships at all — the
+    # trainee set routes exclusively to the training_* collections via the
+    # committed training-config.yaml (R2-3), so no fleet-collection URL can be
+    # produced by construction. first-prompt-brief.py is v2-retired for this
+    # role: the operational brief id lives in the config file, not the first
+    # prompt, and the personalised brief is the in-repo trainee-brief.md (R2-4).
+    trainee)               echo "trainee-preflight.py trainee-session-branch.py trainee-read-guard.py trainee-materialise.py trainee-telemetry.py trainee-finalise.py" ;;
   esac
 }
 
@@ -169,13 +175,18 @@ role_task_filter() {
 role_settings_json() {
   local role="$1"
 
-  # trainee: a deliberately SLIM env (PROJ-011/T-025 R-14). No PODZONE_TELEMETRY_REMOTE
-  # (pushing every student workstation's logs to a fleet telemetry repo will not scale —
-  # the finalise copies the session log into logs/ before the session commit instead,
-  # riding the R-3 session PR) and no PODZONETEAM_REPO (no apex clone in trainee
-  # context). Only TRAINEE_RUNTIME=1 remains. SessionStart also runs the fail-soft
-  # preflight (R-13) + branch hook; UserPromptSubmit the brief parser (R-1); PreToolUse
-  # the context-containment read guard (R-9).
+  # trainee (PROJ-011/T-030 v3): NO fleet substrate hook is wired — every wired
+  # hook routes to the training_* collections via the committed
+  # training-config.yaml (R2-3), or touches only the local clone. The env stays
+  # deliberately SLIM: no PODZONE_TELEMETRY_REMOTE and no log pushes of any kind
+  # (R2-5 — trainee observability is training_session_telemetry points only),
+  # no PODZONETEAM_REPO (no apex clone in trainee context), no fleet Qdrant key
+  # (the credential lives in training-config.yaml). Only TRAINEE_RUNTIME=1
+  # remains, as the defence-in-depth selector for any legacy fleet code path.
+  # SessionStart order matters: preflight (report) → finalise --guard (recover
+  # a truncated close) → session branch → update-tooling (after the branch
+  # switch so a self-update commit lands on the session branch) → operational-
+  # brief materialise → telemetry baseline.
   if [[ "$role" == "trainee" ]]; then
     cat <<'TRAINEE_SETTINGS'
 {
@@ -184,22 +195,22 @@ role_settings_json() {
   },
   "hooks": {
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-preflight.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-session-branch.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py", "timeout": 300 } ] }
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-preflight.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-finalise.py --guard" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-session-branch.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py", "timeout": 300 }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-materialise.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-telemetry.py" } ] }
     ],
     "UserPromptSubmit": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/user-prompt-submit.sh" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/first-prompt-brief.py" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-telemetry.py" } ] }
     ],
     "PreToolUse": [
       { "matcher": "*", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-read-guard.py" } ] }
     ],
     "PostCompact": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-compact.sh" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-telemetry.py" } ] }
     ],
     "Stop": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop.sh" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-telemetry.py" } ] }
     ],
     "SessionEnd": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end-finalise.py", "timeout": 600 } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-finalise.py", "timeout": 600 } ] }
     ]
   }
 }
