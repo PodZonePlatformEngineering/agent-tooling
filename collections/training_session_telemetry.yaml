@@ -1,0 +1,70 @@
+# training_session_telemetry — Qdrant collection schema (PROJ-011/T-031)
+#
+# Trainee session telemetry. The training-substrate sibling of
+# `claude_session_telemetry` (CST): trainee repos route ALL telemetry here —
+# never to CST — so trainee JWTs isolate trainees from the fleet substrate by
+# construction (R2-3). Trainee observability is these points ONLY: no git
+# push of local logs, no agent-telemetry repo push from trainee machines
+# (R2-5).
+#
+# Point shape deliberately MIRRORS CST so the PROJ-042 enrichment job (and
+# any CST reader) works over both collections unchanged:
+#   - same three named vectors (intent/action/response, 768 cosine);
+#   - writes are PAYLOAD-ONLY per the fleet-wide T-002 hooks-never-embed
+#     convention ("vector": {} — empty named-vector map, never an omitted
+#     key; trainee hosts have no embed endpoint at all). PROJ-042 vectorises
+#     in retrospect.
+#   - payload = the CST event payload (e.g. the enriched Stop payload built
+#     by lib/stop_telemetry.build_payload) PLUS the additive `trainee` field.
+#
+# Point ID: same construction as the CST writer for the event class — e.g.
+# Stop points use uuid5("stop/{session_id}/{turn_uuid}") — so retried hooks
+# converge.
+#
+# Spec: podzoneTeam/planning/projects/PROJ-011-academy/trainee-repo-takeon-flow.md (R2-3/R2-5)
+# Setup: agent-tooling/hooks/setup-training-collections.sh (indexes-before-ingest)
+# Docs:  agent-tooling/docs/training-collections-schema.md
+
+collection: training_session_telemetry
+scope: training-programme
+
+vectors:
+  intent_vector:
+    size: 768
+    distance: Cosine
+  action_vector:
+    size: 768
+    distance: Cosine
+  response_vector:
+    size: 768
+    distance: Cosine
+
+payload_fields:
+  # --- Indexed filters (superset of CST's: session_id, event_type,
+  #     timestamp; + trainee for per-trainee fan-out) ---
+  - name: session_id
+    type: keyword
+    index: true
+    description: Runtime session id of the trainee session.
+
+  - name: event_type
+    type: keyword
+    index: true
+    description: Hook event class (SessionStart | Stop | SessionEnd | ...).
+
+  - name: trainee
+    type: keyword
+    index: true
+    description: Trainee id (e.g. norma) — stamped by the trainee repo's hooks from its config.
+
+  - name: timestamp
+    type: datetime
+    index: true
+    description: ISO-8601 event time (order_by for session reports).
+
+  # --- Body: the CST event payload, unchanged ---
+  # Remaining fields follow the CST writer for the event class verbatim
+  # (docs/sessions-schema.md siblings; e.g. Stop = lib/stop_telemetry
+  # payload: stop_reason, last_assistant_message, message_source, turn_uuid,
+  # background_tasks, session_crons, repository, environment). Additive per
+  # the CST convention — readers must tolerate new fields.
