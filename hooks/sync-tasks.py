@@ -55,8 +55,6 @@ def get_client(collection: str) -> QdrantClient:
             timeout=30,
         )
     return QdrantClient(url=AGENTSONLY_QDRANT_URL, timeout=30)
-OLLAMA_URL = "http://localhost:11434/api/embeddings"
-EMBED_MODEL = "nomic-embed-text"
 VECTOR_SIZE = 768
 
 # Map display strings back to canonical status values
@@ -171,22 +169,6 @@ def update_task_status(client: QdrantClient, point_id: str, new_status: str) -> 
     )
 
 
-def get_embedding(text: str) -> List[float]:
-    """Embed text via Ollama. Returns zero vector on failure."""
-    try:
-        import requests
-        r = requests.post(
-            OLLAMA_URL,
-            json={"model": EMBED_MODEL, "prompt": text},
-            timeout=15,
-        )
-        r.raise_for_status()
-        return r.json().get("embedding", [0.0] * VECTOR_SIZE)
-    except Exception as exc:
-        log(f"Ollama unavailable ({exc}); using zero vector for embedding")
-        return [0.0] * VECTOR_SIZE
-
-
 def event_point_id(session_id: str, task_id: str, timestamp: str) -> int:
     """Deterministic integer point ID for a task_events point."""
     uid = uuid.uuid5(uuid.NAMESPACE_DNS, f"{session_id}:{task_id}:{timestamp}")
@@ -205,7 +187,10 @@ def write_event(
     now = datetime.now(timezone.utc).isoformat()
     detail = f"{old_status} → {new_status}"
     point_id = event_point_id(session_id, task_id, now)
-    vector = get_embedding(detail)
+    # Payload-only (PROJ-041/T-002): hooks never embed. `task_events` is an
+    # unnamed-single-vector collection, so the point carries a zero vector;
+    # the PROJ-042 enrichment job patches real vectors in retrospect.
+    vector = [0.0] * VECTOR_SIZE
 
     point = PointStruct(
         id=point_id,

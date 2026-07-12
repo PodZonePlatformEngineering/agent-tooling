@@ -276,19 +276,6 @@ class TestPayloadAssembly(unittest.TestCase):
         self.assertEqual(payload["background_tasks"], [])
         self.assertEqual(payload["session_crons"], [])
 
-    def test_embed_input_is_message_with_constant_fallback(self):
-        self.assertEqual(
-            stop_telemetry.embed_input_for(
-                {"last_assistant_message": "the message",
-                 "stop_reason": "end_turn"}),
-            "the message",
-        )
-        self.assertEqual(
-            stop_telemetry.embed_input_for(
-                {"last_assistant_message": "", "stop_reason": "end_turn"}),
-            "Stop: end_turn",
-        )
-
     def test_point_id_turn_linked_deterministic_with_uuid4_fallback(self):
         a = stop_telemetry.point_id_for_stop("sess-1", "u-1")
         b = stop_telemetry.point_id_for_stop("sess-1", "u-1")

@@ -136,17 +136,18 @@ COMMIT_SHA="$(git -C "${CWD}" rev-parse --short HEAD 2>/dev/null || echo 'unknow
 OS_USER="${USER:-$(id -un)}"
 PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
-EMBED_TEXT="SessionStart: ${REPO_NAME} ${GIT_BRANCH} ${COMMIT_SHA}"
-
 # Session telemetry is best-effort and MUST NOT wall the session (PROJ-011/T-025 R-13):
-# an unconfigured workstation (no PODZONE_QDRANT_APIKEY / no ollama) degrades to
-# "no telemetry recorded" rather than a session-blocking hook error. The trainee
-# preflight hook owns the single "not configured yet — see the setup guide" pointer;
-# this hook stays silent on skip so it is never a wall of errors for any role.
-if EMBEDDING="$("${PRIMITIVES}/ollama/embed-text.sh" "${EMBED_TEXT}" 2>/dev/null)"; then
-  VECTOR_JSON="{\"intent_vector\": ${EMBEDDING}}"
+# an unconfigured workstation (no PODZONE_QDRANT_APIKEY) degrades to "no telemetry
+# recorded" rather than a session-blocking hook error. The trainee preflight hook
+# owns the single "not configured yet — see the setup guide" pointer; this hook
+# stays silent on skip so it is never a wall of errors for any role.
+#
+# Payload-only (PROJ-041/T-002): hooks never embed — an EMPTY named-vector map
+# (an omitted `vector` field is a Qdrant 400); the PROJ-042 enrichment job
+# embeds in retrospect.
+VECTOR_JSON="{}"
 
-  PAYLOAD="$(python3 -c "
+PAYLOAD="$(python3 -c "
 import json, sys
 print(json.dumps({
   'event_type': 'SessionStart',
@@ -157,9 +158,6 @@ print(json.dumps({
   'transcript_path': sys.argv[8],
 }))" "${SESSION_ID}" "${TIMESTAMP}" "${REPO_NAME}" "${GIT_BRANCH}" "${COMMIT_SHA}" "${OS_USER}" "${PLATFORM}" "${TRANSCRIPT_PATH}")"
 
-  "${PRIMITIVES}/qdrant/add-qdrant-point.sh" "${COLLECTION}" "${SESSION_ID}" "${VECTOR_JSON}" "${PAYLOAD}" >/dev/null 2>&1 \
-    || log_primitive "session-start.sh" "telemetry upsert skipped (substrate unreachable / unconfigured)"
-else
-  log_primitive "session-start.sh" "telemetry skipped (embedding unavailable / unconfigured)"
-fi
+"${PRIMITIVES}/qdrant/add-qdrant-point.sh" "${COLLECTION}" "${SESSION_ID}" "${VECTOR_JSON}" "${PAYLOAD}" >/dev/null 2>&1 \
+  || log_primitive "session-start.sh" "telemetry upsert skipped (substrate unreachable / unconfigured)"
 exit 0

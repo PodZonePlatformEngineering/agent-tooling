@@ -636,8 +636,9 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
 
     # 8. Archivist transcript ingest (PROJ-039/T-053). FOLDED INTO the finalise as the
     #    LAST step so the archivist runs a SINGLE SessionEnd hook, not two. Two heavy
-    #    SessionEnd hooks (this finalise + ingest-transcript.py, which does N sequential
-    #    Ollama embeds + a Telegram notify) overran the CLI's teardown budget and the
+    #    SessionEnd hooks (this finalise + ingest-transcript.py, which at the time did
+    #    N sequential embeds + a Telegram notify — hooks no longer embed at all per
+    #    PROJ-041/T-002) overran the CLI's teardown budget and the
     #    finalise was "Hook cancelled" mid-run — BEFORE telemetry/result/return-to-main
     #    (Thoth T-022 sid 9035370d, T-023 sid 38ae63e3; Hephaestus, single SessionEnd
     #    hook, is 4/4 clean). Ordered LAST + ledger-tracked + time-bounded: every

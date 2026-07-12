@@ -92,14 +92,14 @@ echo "==> Scaffolding ${REPO_NAME} (role: ${ROLE}) → ${TARGET_DIR}"
 # lifecycle — telemetry push → rollup → CST prune → session-finalise — and is
 # universal (every role finalises). PROJ-039/T-011 C2-v2.1c.
 # archivist additionally carries the resident ingest-transcript SessionEnd hook
-# (embed user turns → Qdrant prompt_logs): a role nuance surfaced by C2b — it must
+# (ingest user turns → Qdrant prompt_logs): a role nuance surfaced by C2b — it must
 # be home-repo-resident, not workstation-global. PROJ-039/T-011 C2b.
 # curriculum-developer / historian / strategist are the fissioned-team BUILD agents
 # (hestia / clio / kronos) migrated under C2c (PROJ-039/T-037). They are producers
 # that do not spawn subagents and carry no automatic transcript-ingest, so they take
 # the universal substrate base — same shape as team-lead/trainer. (The historian's
 # log/memory ingestion is explicit, agent-invoked toolchain work in its task repo,
-# NOT a SessionEnd transcript-embed hook like the archivist's — so no ingest hook.)
+# NOT a SessionEnd transcript-ingest hook like the archivist's — so no ingest hook.)
 # session-materialise.py is in the universal base (PROJ-039/T-052): it is committed
 # resident like every other hook — NEVER hand-copied + settings.local.json-wired.
 # The hand-copy gotcha bit Thoth's first serial launch (T-022): the copy was omitted,

@@ -101,7 +101,7 @@ fi
 # lifecycle — telemetry push → rollup → CST prune → session-finalise — and is
 # universal (every role finalises). PROJ-039/T-011 C2-v2.1c.
 # archivist additionally carries the resident ingest-transcript SessionEnd hook
-# (embed user turns → Qdrant prompt_logs) — home-repo-resident, not workstation
+# (ingest user turns → Qdrant prompt_logs) — home-repo-resident, not workstation
 # -global (PROJ-039/T-011 C2b). Kept byte-identical with scaffold.sh's role_hooks
 # + role_settings_json.
 # curriculum-developer / historian / strategist are the C2c fissioned-team build
