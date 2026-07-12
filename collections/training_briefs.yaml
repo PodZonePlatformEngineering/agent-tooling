@@ -1,0 +1,167 @@
+# training_briefs — Qdrant collection schema (PROJ-011/T-031)
+#
+# The trainee-facing brief substrate AND the return communication channel, in
+# one collection. Trainee JWTs grant rw on this collection and
+# `training_session_telemetry` ONLY — never the fleet substrate
+# (`briefs`/`session_substrate`/`claude_session_telemetry`). Schema is
+# TRAINING-requirements-driven and deliberately diverges from the
+# agenticflows `briefs` shape (operator-explicit, R2-3).
+#
+# Two point classes share the collection, discriminated by `point_type` +
+# `direction` (point-type/direction fields, not separate collections — R2-3
+# extensibility to training inter-agent communication):
+#
+#   brief    (direction to_trainee)  — trainer-authored, RECURRING/REUSABLE.
+#            The trainer re-authors the SAME brief_id → the point converges
+#            (uuid5 id) with a bumped `revision`; the trainee's next session
+#            materialises the latest body. A training brief is never
+#            "complete" mid-programme: lifecycle is active|paused|retired
+#            (no draft→approved→complete pipeline — that is the agenticflows
+#            Brief-Status model, which does not apply here).
+#   message  (direction from_trainee) — written back by the trainee's agent:
+#            progress, questions, raised issues, and operational-brief acks.
+#            Append-only, one point per message, deterministic idempotent id.
+#
+# Channels (`channel` field, both point classes):
+#   training     — the personalised per-trainee curriculum brief + its thread.
+#   operational  — the per-repo tools/repo-update channel: trainer writes
+#                  instructions, trainee agent applies, trainee approves
+#                  in-session (R2-1); the ack rides back as a message point
+#                  (message_type=ack, ack_of_revision=N).
+#
+# Write ownership (convention, not enforced by the JWT — a trainee token has
+# collection-wide rw): trainers own `brief` points, trainee agents own
+# `message` points. Registry points for token revocation do NOT live here —
+# they live in `training_token_registry`, which trainee tokens cannot touch
+# (see docs/training-jwt-runbook.md).
+#
+# Spec: podzoneTeam/planning/projects/PROJ-011-academy/trainee-repo-takeon-flow.md (R2-2/R2-3)
+# Setup: agent-tooling/hooks/setup-training-collections.sh (indexes-before-ingest)
+# Docs:  agent-tooling/docs/training-collections-schema.md
+
+collection: training_briefs
+scope: training-programme
+
+# Named `brief` vector — 768-dim nomic-embed-text over `body`. TRAINER-side
+# authoring tools embed (workstation ollama); TRAINEE-side hook writes are
+# payload-only per the fleet-wide T-002 hooks-never-embed convention
+# ("vector": {} — empty named-vector map, never an omitted key). The PROJ-042
+# enrichment job vectorises payload-only points in retrospect.
+vectors:
+  brief:
+    size: 768
+    distance: Cosine
+    embed_field: body
+    embed_model: nomic-embed-text
+    embed_via: ollama-workstation (trainer side only; trainee writes payload-only)
+
+# Point IDs — deterministic uuid5(NAMESPACE_DNS, key):
+#   brief:   key = brief_id                  (re-author converges on the point)
+#   message: key = "{brief_id}/msg/{session_id}/{seq}"   (retry-idempotent)
+#
+# brief_id human key:
+#   training/{trainee}/{curriculum-slug}   personalised training brief
+#   training/{trainee}/operational         the repo's operational brief
+# (No date component — recurring briefs are re-authored under the SAME id;
+# dating the id would fork the thread. Messages carry the brief_id of the
+# thread they belong to.)
+
+payload_fields:
+  # --- Identity / discrimination ---
+  - name: point_type
+    type: keyword
+    index: true
+    description: brief | message (point-class discriminator; future classes additive).
+
+  - name: direction
+    type: keyword
+    index: true
+    description: to_trainee | from_trainee. Extensible (e.g. agent_to_agent) for training inter-agent communication.
+
+  - name: brief_id
+    type: keyword
+    index: true
+    description: Thread key. On a brief, its own id; on a message, the brief/thread it belongs to.
+
+  - name: trainee
+    type: keyword
+    index: true
+    description: Trainee id (e.g. norma). On every point — the per-trainee fan-out filter.
+
+  - name: channel
+    type: keyword
+    index: true
+    description: training | operational.
+
+  - name: status
+    type: keyword
+    index: true
+    description: >
+      Lifecycle. Briefs: active | paused | retired (recurring — never
+      "complete" mid-programme; retired = end of programme/superseded).
+      Messages: open | seen | resolved (trainer-side triage).
+
+  # --- Brief lifecycle ---
+  - name: revision
+    type: integer
+    index: false
+    description: Monotonic re-author counter on brief points (1 on first author). Acks reference it.
+
+  - name: author
+    type: keyword
+    index: false
+    description: Who authored/last re-authored the point (trainer name, or the trainee agent for messages).
+
+  # --- Message fields (null/absent on briefs) ---
+  - name: message_type
+    type: keyword
+    index: true
+    description: progress | question | issue | ack.
+
+  - name: ack_of_revision
+    type: integer
+    index: false
+    description: On ack messages — the operational-brief revision the trainee approved in-session.
+
+  - name: sender
+    type: keyword
+    index: false
+    description: Originating identity (trainee agent id). Extensibility for inter-agent comms.
+
+  - name: recipient
+    type: keyword
+    index: false
+    description: Target identity (default trainer). Extensibility for inter-agent comms.
+
+  - name: session_id
+    type: keyword
+    index: false
+    description: Runtime sid of the trainee session that wrote a message point.
+
+  # --- Temporal ---
+  - name: created_at
+    type: datetime
+    index: true
+    description: ISO-8601 first-author time (order_by for trainer message sweeps).
+
+  - name: updated_at
+    type: datetime
+    index: true
+    description: ISO-8601 last re-author/status-change time; materialise reads the latest body as-of this.
+
+  # --- Links ---
+  - name: session_ids
+    type: keyword
+    index: false
+    description: On briefs — JSON array of runtime sids appended at each trainee SessionStart (reverse link, many sessions per recurring brief).
+
+  # --- Content ---
+  - name: summary
+    type: string
+    index: false
+    description: Short one-line summary.
+
+  - name: body
+    type: string
+    index: false
+    description: Full markdown body (brief text, or message text); embed source for the `brief` vector.
