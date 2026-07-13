@@ -49,8 +49,15 @@ def _is_template_named(base: str) -> bool:
     if low.endswith(".identity.yaml") and "template" in low:
         return True
     return False
-# Surviving fill-in placeholders (R-8).
-_FILL_IN = re.compile(r"FILL[ _-]?IN|\(fill in", re.IGNORECASE)
+# Surviving fill-in placeholders (R-8). Word-bounded so prose like "filling in
+# training-config.yaml" (a legitimate take-on instruction) is not a hit.
+_FILL_IN = re.compile(r"\bFILL[ _-]?IN\b|\(fill in\b", re.IGNORECASE)
+# Byte-copied runtime (synced from agent-tooling, never rendered): its internals
+# (docstrings mentioning FILL_IN etc.) are not generation artifacts — skip in the
+# placeholder scan. Rendered .claude files (instructions/guardrails/output-format/
+# settings.json) sit at .claude/ top level and stay in scope.
+_RUNTIME_PREFIXES = (".claude/lib/", ".claude/hooks/", ".claude/primitives/",
+                     ".claude/tools/")
 # Provenance text that must not appear in a trainee's README/AGENTS (R-7): task/req
 # numbers, scaffold history, cohort/handoff discussion.
 _PROVENANCE = re.compile(
@@ -83,6 +90,9 @@ def hygiene_violations(source: str) -> list[str]:
     allowed_root = {
         "README.md", "AGENTS.md", ".gitignore", "memory", "results",
         "session-reports", "logs", "docs", "workspaces", ".claude",
+        # v3 (PROJ-011/T-030): the CLAUDE.md pointer, the offline-first in-repo
+        # brief, and the committed single configuration surface.
+        "CLAUDE.md", "trainee-brief.md", "training-config.yaml",
     }
     for entry in os.listdir(root):
         if entry == ".git":
@@ -95,9 +105,11 @@ def hygiene_violations(source: str) -> list[str]:
             continue  # the {Trainee}/ dir — content lives here, correct
         v.append(f"unexpected file at repo root (session work must live in the trainee dir): {entry}")
 
-    # 3. FILL-IN placeholders anywhere text-readable.
+    # 3. FILL-IN placeholders in any rendered text file (runtime code skipped).
     for path in _iter_files(root):
         rel = os.path.relpath(path, root)
+        if rel.startswith(_RUNTIME_PREFIXES):
+            continue
         try:
             text = open(path, encoding="utf-8").read()
         except (UnicodeDecodeError, OSError):

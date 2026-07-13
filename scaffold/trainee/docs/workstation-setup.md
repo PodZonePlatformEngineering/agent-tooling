@@ -27,7 +27,7 @@ If `gh` cannot be installed, the trainee can still work — the finalise commits
 pushes the session branch and prints the branch to open a PR from manually. `git` and
 `python3` are **required**.
 
-## 2. Fill in `training-config.yaml`
+## 2. Complete `training-config.yaml`
 
 The repo root carries a **committed** `training-config.yaml` — the single
 configuration surface for this repo's hooks. Replace its `{{PLACEHOLDERS}}`:

@@ -67,7 +67,9 @@ The single configuration surface is the committed **`training-config.yaml`**
 at the repo root: the trainee's scoped database key, the operational brief
 id, and the training collection names. Telemetry leaves this machine **only**
 as `training_session_telemetry` points — never as log pushes to any other
-repo.
+repo. If the workstation is not set up yet ("not configured yet" pointer at
+session start), the trainee works through `docs/workstation-setup.md` with
+their trainer — sessions still run fully in the meantime.
 
 ### The operational brief channel
 

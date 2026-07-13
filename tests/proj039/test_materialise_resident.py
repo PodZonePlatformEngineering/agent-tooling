@@ -9,9 +9,11 @@ pointed at a missing file and skipped **silently** → no brief-first session po
 
 Two guards here:
   * **Resident + committed-wired** — ``session-materialise.py`` is in the synced hook
-    set for every migrated role, and its SessionStart wiring is in the committed
+    set for every migrated fleet role, and its SessionStart wiring is in the committed
     ``settings.json`` (``$CLAUDE_PROJECT_DIR``-anchored) for all non-trainee roles.
-    The trainee wires it via UserPromptSubmit (first-prompt-brief), not SessionStart.
+    The trainee (PROJ-011/T-030 v3) ships NO fleet materialise at all — its own
+    ``trainee-materialise.py`` is committed-wired on SessionStart instead, reading the
+    operational brief id from the committed training-config.yaml.
   * **Loud fail** — ``session-start.sh`` (always resident) HALTs loudly (ok:false
     sentinel + stderr) when ``BRIEF_ID`` is set but the materialise hook file is
     missing, so an incomplete sync can never fail silently again.
@@ -58,22 +60,25 @@ class TestResidentWiring(unittest.TestCase):
             for role in MIGRATED_ROLES:
                 dest = Path(td) / role
                 _scaffold(role, dest)
-                # The hook file is resident for every role (committed, synced).
-                self.assertTrue(
-                    (dest / ".claude" / "hooks" / "session-materialise.py").exists(),
-                    f"{role}: session-materialise.py not resident")
                 settings = json.loads(
                     (dest / ".claude" / "settings.json").read_text())
                 ss = _session_start_hooks(settings)
                 if role == "trainee":
-                    # The trainee wires materialise via UserPromptSubmit, not SessionStart.
+                    # v3 (PROJ-011/T-030): the fleet materialise neither ships nor
+                    # wires for the trainee — trainee-materialise.py (SessionStart,
+                    # training-config-routed) owns the operational brief instead.
+                    self.assertFalse(
+                        (dest / ".claude" / "hooks" / "session-materialise.py").exists(),
+                        "trainee must not ship the fleet session-materialise.py")
                     self.assertNotIn("session-materialise.py", ss,
-                                     "trainee must not wire materialise on SessionStart")
-                    ups = [h["command"].split("/")[-1]
-                           for e in settings["hooks"]["UserPromptSubmit"]
-                           for h in e["hooks"]]
-                    self.assertIn("first-prompt-brief.py", ups)
+                                     "trainee must not wire fleet materialise on SessionStart")
+                    self.assertIn("trainee-materialise.py", ss,
+                                  "trainee: trainee-materialise.py not wired on SessionStart")
                 else:
+                    # The hook file is resident for every fleet role (committed, synced).
+                    self.assertTrue(
+                        (dest / ".claude" / "hooks" / "session-materialise.py").exists(),
+                        f"{role}: session-materialise.py not resident")
                     self.assertIn("session-materialise.py", ss,
                                   f"{role}: materialise not wired on SessionStart")
                 # Every wired SessionStart command is $CLAUDE_PROJECT_DIR-anchored (T-050).

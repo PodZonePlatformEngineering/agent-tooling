@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Test: scaffold.sh — trainee role (PROJ-011/T-025 R-5..R-14)
+# Test: scaffold.sh — trainee role (PROJ-011/T-025 R-5..R-14 + T-030 v3 R2-2..R2-5)
 # Asserts the trainee-repo structure + artifact hygiene + env slimming produced by the
-# trainee-conditional scaffold path, and the R-11 hygiene gate + R-8 personalisation.
+# trainee-conditional scaffold path, the R-11 hygiene gate, R-8 personalisation, and
+# the v3 additions: committed training-config.yaml, offline-first briefing set
+# (CLAUDE.md pointer + trainee-brief.md), training-routed hook set (no fleet
+# substrate hooks), and deterministic regeneration.
 set -euo pipefail
 
 AGENT_TOOLING_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -78,6 +81,37 @@ assert "R-14 TRAINEE_RUNTIME set"         "$(grep_q 'TRAINEE_RUNTIME' "${TARGET}
 
 # settings.json valid JSON
 assert "settings.json valid JSON"         "$(python3 -c "import json;json.load(open('${TARGET}/.claude/settings.json'))" 2>/dev/null && echo ok || echo fail)"
+
+# --- T-030 v3: committed config + offline-first briefing set (R2-2/R2-4) ---
+assert "v3 training-config.yaml"          "$(has "${TARGET}/training-config.yaml")"
+assert "v3 config loads via lib"          "$(python3 -c "
+import sys; sys.path.insert(0, '${AGENT_TOOLING_DIR}')
+from lib import training_config as TC
+cfg = TC.load('${TARGET}')
+assert not TC.is_configured(cfg)  # placeholders until take-on Phase A
+" 2>/dev/null && echo ok || echo fail)"
+assert "v3 CLAUDE.md pointer"             "$(grep_q 'AGENTS.md' "${TARGET}/CLAUDE.md")"
+assert "v3 trainee-brief.md skeleton"     "$(has "${TARGET}/trainee-brief.md")"
+assert "v3 brief points at config"        "$(grep_q 'training-config.yaml' "${TARGET}/trainee-brief.md")"
+assert "v3 AGENTS is the tutor briefing"  "$(grep_q 'Persona Definition' "${TARGET}/AGENTS.md")"
+assert "v3 profile path is docs/ (R-10)"  "$(grep_q 'docs/trainee-profile-template.md' "${TARGET}/AGENTS.md")"
+
+# --- T-030 v3: training-routed hook set — NO fleet substrate hook ships (R2-3/R2-5) ---
+for h in trainee-materialise.py trainee-telemetry.py trainee-finalise.py; do
+  assert "v3 hook ${h}"                   "$(has "${TARGET}/.claude/hooks/${h}")"
+done
+for h in session-start.sh session-materialise.py user-prompt-submit.sh post-compact.sh stop.sh stop-telemetry.py append-session-stop.py session-end-finalise.py first-prompt-brief.py; do
+  assert "v3 no fleet hook ${h}"          "$(hasnt "${TARGET}/.claude/hooks/${h}")"
+done
+assert "v3 settings no fleet hook refs"   "$(grep_absent 'session-end-finalise\|session-start.sh\|first-prompt-brief' "${TARGET}/.claude/settings.json")"
+assert "v3 lib training_config resident"  "$(has "${TARGET}/.claude/lib/training_config.py")"
+assert "v3 lib training_substrate resident" "$(has "${TARGET}/.claude/lib/training_substrate.py")"
+
+# --- T-030 v3: regeneration is deterministic (same inputs -> byte-identical tree) ---
+TARGET2="/tmp/test-trainee-template-2-$$"
+bash "${AGENT_TOOLING_DIR}/scaffold.sh" training template trainee --target-dir "$TARGET2" > /dev/null
+assert "v3 deterministic regeneration"    "$(diff -r "$TARGET" "$TARGET2" >/dev/null 2>&1 && echo ok || echo fail)"
+rm -rf "$TARGET2"
 
 # R-11: artifact-hygiene gate passes on the clean generation
 assert "R-11 hygiene gate PASS" "$(python3 "${AGENT_TOOLING_DIR}/tools/qa-snapshot.py" --source "$TARGET" --check-only >/dev/null 2>&1 && echo ok || echo fail)"
