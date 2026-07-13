@@ -1,0 +1,14 @@
+# training-config.yaml — the single configuration surface for this repo's hooks.
+#
+# COMMITTED by design: the API key below is a granular Database API Key scoped
+# read-write to exactly the two training collections named here — it can touch
+# nothing else. Take-on Phase A replaces the {{PLACEHOLDERS}}; after that, only
+# the operational-brief update channel edits this file.
+#
+# Format is deliberately flat `key: value` — nothing nested, no other keys.
+qdrant_url: __QDRANT_URL__
+qdrant_api_key: "{{TRAINING_DB_API_KEY}}"
+trainee: {{TRAINEE_HANDLE}}
+operational_brief_id: training/{{TRAINEE_HANDLE}}/operational
+briefs_collection: training_briefs
+telemetry_collection: training_session_telemetry

@@ -113,9 +113,9 @@ def closure_from_hooks(hook_py_files: list[Path]) -> set[str]:
     return seen
 
 
-def _scaffold(target: Path) -> None:
+def _scaffold(target: Path, role: str = "coder") -> None:
     subprocess.run(
-        ["bash", str(SCAFFOLD), "podzone", "closuretest", "coder",
+        ["bash", str(SCAFFOLD), "podzone", "closuretest", role,
          "--target-dir", str(target), "--force"],
         cwd=str(REPO_ROOT), check=True, capture_output=True, text=True,
     )
@@ -133,12 +133,17 @@ class TestHomeRuntimeLibClosure(unittest.TestCase):
 
     def test_manifest_matches_closure(self):
         """The manifest must equal the closure of the hooks scaffold actually
-        ships (coder = maximal hook set) plus the lib package __init__.py.
-        Mismatch in either direction fails: re-bloat or a missing dependency."""
+        ships — coder (maximal fleet hook set) UNION trainee (the disjoint
+        training-routed set, PROJ-011/T-030) — plus the lib package
+        __init__.py. The one manifest serves every role, so both entry-point
+        sets must be covered. Mismatch in either direction fails: re-bloat or
+        a missing dependency."""
+        hook_py: list[Path] = []
         with tempfile.TemporaryDirectory() as td:
-            target = Path(td) / "home"
-            _scaffold(target)
-            hook_py = sorted((target / ".claude" / "hooks").glob("*.py"))
+            for role in ("coder", "trainee"):
+                target = Path(td) / role
+                _scaffold(target, role)
+                hook_py += sorted((target / ".claude" / "hooks").glob("*.py"))
             self.assertTrue(hook_py, "scaffold shipped no python hooks")
             closure = closure_from_hooks(hook_py)
 

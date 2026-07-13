@@ -119,10 +119,15 @@ fi
 # session-context.{py,sh} retired at T-099 (CC-409): home-repo identity now
 # single-sources from workspaces/identity/*.identity.yaml (lib/agent_identity);
 # the only resident copies are interim hand-patches (home-podzone-hermes
-# 3335d6b) that must converge away. Keep RETIRED_HOOKS in lockstep with the
+# 3335d6b) that must converge away.
+# first-prompt-brief.py retired at T-030 (PROJ-011, CC-415): the v3 trainee
+# runtime reads the operational brief id from the committed training-config.yaml
+# on SessionStart (trainee-materialise.py) — no brief id in the first prompt.
+# The hook only ever shipped to trainee repos, so a global prune is a no-op
+# everywhere else. Keep RETIRED_HOOKS in lockstep with the
 # RETIRED tuple in the settings-unwire python below.
 SUBSTRATE_BASE="session-start.sh session-materialise.py user-prompt-submit.sh post-compact.sh stop.sh stop-telemetry.py append-session-stop.py session-end-finalise.py"
-RETIRED_HOOKS="pre-tool-use.sh post-tool-use.sh session-context.py session-context.sh"
+RETIRED_HOOKS="pre-tool-use.sh post-tool-use.sh session-context.py session-context.sh first-prompt-brief.py"
 role_hooks() {
   case "$1" in
     team-lead)             echo "${SUBSTRATE_BASE}" ;;
@@ -133,7 +138,13 @@ role_hooks() {
     curriculum-developer)  echo "${SUBSTRATE_BASE}" ;;
     historian)             echo "${SUBSTRATE_BASE}" ;;
     strategist)            echo "${SUBSTRATE_BASE}" ;;
-    trainee)               echo "${SUBSTRATE_BASE} first-prompt-brief.py trainee-session-branch.py trainee-preflight.py trainee-read-guard.py" ;;
+    # trainee (PROJ-011/T-030 v3): NO fleet substrate hook ships at all — the
+    # trainee set routes exclusively to the training_* collections via the
+    # committed training-config.yaml (R2-3), so no fleet-collection URL can be
+    # produced by construction. first-prompt-brief.py is v2-retired for this
+    # role: the operational brief id lives in the config file, not the first
+    # prompt, and the personalised brief is the in-repo trainee-brief.md (R2-4).
+    trainee)               echo "trainee-preflight.py trainee-session-branch.py trainee-read-guard.py trainee-materialise.py trainee-telemetry.py trainee-finalise.py" ;;
   esac
 }
 
@@ -292,7 +303,8 @@ if [[ -f "$UNWIRE_SETTINGS" ]]; then
 import json, os, sys
 
 RETIRED = ("pre-tool-use.sh", "post-tool-use.sh",
-           "session-context.py", "session-context.sh")
+           "session-context.py", "session-context.sh",
+           "first-prompt-brief.py")
 path = sys.argv[1]
 with open(path, encoding="utf-8") as fh:
     settings = json.load(fh)
@@ -480,8 +492,9 @@ fi
 # The committed .claude/settings.json can never join the byte-copy set (its env
 # block is per-repo), so the updater WIRING joins the sync set structurally
 # instead: wire-update-tooling.py patches the hooks block in place — updater as
-# the FIRST SessionStart command (trainee: last, after trainee-session-branch.py)
-# — leaving env and every other hook untouched. This closes the T-065 F1
+# the FIRST SessionStart command (trainee: immediately after
+# trainee-session-branch.py, PROJ-011/T-030) — leaving env and every other hook
+# untouched. This closes the T-065 F1
 # chicken-and-egg: the release that ships the updater now also wires it.
 
 echo ""

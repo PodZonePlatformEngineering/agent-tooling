@@ -16,10 +16,10 @@ rationale is in `docs/dependency-analysis.md`; the trainer-assisted fix is
 """
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 SETUP_GUIDE = "docs/workstation-setup.md"
 DEP_DOC = "docs/dependency-analysis.md"
@@ -42,10 +42,19 @@ def _gh_authed() -> bool:
         return False
 
 
-def _key_present() -> bool:
-    # The single trainee secret. Present in the launch env (settings.local.json env
-    # block or secrets MCP binding) is all we can check offline — never read its value.
-    return bool(os.environ.get("PODZONE_QDRANT_APIKEY", "").strip())
+def _config_filled() -> bool:
+    # The single trainee credential lives in the COMMITTED training-config.yaml
+    # (T-030 R2-2) — the granular Database API Key scoped to the two training
+    # collections. "Filled" (no {{PLACEHOLDER}} left) is all we check offline;
+    # we never print its value.
+    try:
+        lib_root = Path(__file__).resolve().parents[1]  # .claude/ in a home repo
+        sys.path.insert(0, str(lib_root))
+        from lib import training_config
+        repo_root = lib_root.parent if lib_root.name == ".claude" else lib_root
+        return training_config.is_configured(training_config.load(str(repo_root)))
+    except Exception:
+        return False
 
 
 def checks() -> list[tuple[str, bool, str, bool]]:
@@ -58,8 +67,9 @@ def checks() -> list[tuple[str, bool, str, bool]]:
         ("gh (authenticated)", _gh_authed(),
          "brew install gh && gh auth login  (optional — without it, open the session PR by hand)",
          False),
-        ("PODZONE_QDRANT_APIKEY", _key_present(),
-         f"set it in .claude/settings.local.json env block — see {SETUP_GUIDE}", True),
+        ("training-config.yaml (Database API Key)", _config_filled(),
+         "fill qdrant_api_key (and your handle) in training-config.yaml — "
+         f"take-on Phase A, see {SETUP_GUIDE}", True),
     ]
 
 
