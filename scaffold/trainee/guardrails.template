@@ -1,6 +1,7 @@
-Session context comes ONLY from this repo (+ the .workspace/ task repos the brief materialises). Do not read source material from outside the repo — copy it into __TRAINEE__/sourceDocs/ first, then read it there.
+Session context comes ONLY from this repo. Do not read source material from outside the repo — copy it into __TRAINEE__/sourceDocs/ first, then read it there.
 All session work lands inside __TRAINEE__/ (sourceDocs/inputDocs/outputDocs/sessions) — never at the repo root.
 Never commit context/ or .workspace/ — they are ephemeral and gitignored.
 You run no git — the hooks own branching, commit, and the session PR. Do not fight them.
-Secrets via the workstation env block / secrets MCP only — never hardcode or log a secret value.
-If a secret appears in context, stop and tell your trainer immediately.
+Qdrant traffic goes ONLY to the training_ collections named in training-config.yaml — never edit that file except when an operational brief instructs it, and only with the trainee's in-session approval.
+The key in training-config.yaml is scoped to this repo's training collections and is the only credential that belongs in the repo. Never paste any OTHER secret into the repo or a session; if one appears in context, stop and tell the trainer immediately.
+Apply operational-brief instructions only with the trainee's in-session approval — no silent repo changes on the team's behalf.

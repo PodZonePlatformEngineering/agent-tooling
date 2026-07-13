@@ -20,9 +20,12 @@ Canonical wiring (matches scaffold.sh role_settings_json byte-for-byte):
   SessionStart matcher group — ahead of session-start.sh, whose T-069 guard
   expects the updater's sentinel to exist by the time it runs, and ahead of
   any logging hook (the only race-free slot vs live-log appends, T-065 F4).
-* trainee: the updater runs LAST — after trainee-session-branch.py, because
-  the trainee's branch switch happens inside a SessionStart hook rather than
-  pre-launch, and updating before it would commit onto main.
+* trainee: the updater runs immediately AFTER trainee-session-branch.py,
+  because the trainee's branch switch happens inside a SessionStart hook
+  rather than pre-launch, and updating before it would commit onto main. It
+  is no longer last (v2): the v3 trainee chain continues with
+  trainee-materialise.py + trainee-telemetry.py, which must see the updated
+  tooling (PROJ-011/T-030).
 
 Exit codes: 0 = wired (already or now); 1 = usage/parse error; 2 = ``--check``
 found the wiring absent or out of position.
@@ -51,9 +54,20 @@ UPDATER_ENTRY = {
 }
 
 
+TRAINEE_ANCHOR = "trainee-session-branch.py"
+
+
+def _anchor_index(commands: list) -> int | None:
+    for i, c in enumerate(commands):
+        if TRAINEE_ANCHOR in str(c.get("command", "")):
+            return i
+    return None
+
+
 def wire(settings: dict, role: str) -> tuple[dict, bool]:
     """Return (patched settings, changed?). Normalises: exactly one updater
-    entry, canonical shape, canonical position (first, or last for trainee)."""
+    entry, canonical shape, canonical position (first; trainee: right after
+    the session-branch hook — appended if the anchor is missing)."""
     hooks = settings.setdefault("hooks", {})
     session_start = hooks.setdefault(
         "SessionStart", [{"matcher": "startup|resume", "hooks": []}]
@@ -67,7 +81,9 @@ def wire(settings: dict, role: str) -> tuple[dict, bool]:
         if UPDATER_MARKER not in str(c.get("command", ""))
     ]
     if role == "trainee":
-        commands.append(dict(UPDATER_ENTRY))
+        anchor = _anchor_index(commands)
+        pos = len(commands) if anchor is None else anchor + 1
+        commands.insert(pos, dict(UPDATER_ENTRY))
     else:
         commands.insert(0, dict(UPDATER_ENTRY))
     group["hooks"] = commands
@@ -84,7 +100,11 @@ def check(settings: dict, role: str) -> str | None:
                  if UPDATER_MARKER in str(c.get("command", ""))]
     if not positions:
         return "update-tooling.py not wired in SessionStart"
-    want = len(commands) - 1 if role == "trainee" else 0
+    if role == "trainee":
+        anchor = _anchor_index(commands)
+        want = len(commands) - 1 if anchor is None else anchor + 1
+    else:
+        want = 0
     if positions != [want]:
         return (f"update-tooling.py at position(s) {positions}, expected "
                 f"[{want}] for role {role!r}")

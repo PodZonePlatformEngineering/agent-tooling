@@ -1,0 +1,49 @@
+# Trainee Brief — __TRAINEE__
+
+**Generated:** {{GENERATED_DATE}}
+**Template version:** {{TEMPLATE_VERSION}}
+
+This is the trainee-personalised in-repo brief. It is **offline-first**: it
+lets Alex operate this repo with hooks disabled or Qdrant unavailable. It may
+reference the operational-brief channel but never depends on it.
+
+## Trainee
+
+| Field | Value |
+|-------|-------|
+| Name | __TRAINEE__ |
+| Handle | {{TRAINEE_HANDLE}} |
+| Curriculum | {{CURRICULUM_ID}} — {{CURRICULUM_TITLE}} |
+| Track/tier | {{TRACK_LABEL}} |
+| Start date | {{START_DATE}} |
+| Coordinator contact | {{COORDINATOR_CONTACT}} |
+
+## Profile pointers
+
+| What | Where |
+|------|-------|
+| Trainee profile | `__TRAINEE__/trainee-profile.md` (created in first session if absent) |
+| Profile template | `docs/trainee-profile-template.md` |
+| Training state | `__TRAINEE__/training-state.md` |
+| Session records | `__TRAINEE__/sessions/` |
+| Source documents | `__TRAINEE__/sourceDocs/` |
+| Trainee-authored documents | `__TRAINEE__/inputDocs/` |
+| Agent-produced documents | `__TRAINEE__/outputDocs/` |
+
+## Programme
+
+{{PROGRAMME_SUMMARY}}
+
+**Current position:** authoritative record is
+`__TRAINEE__/training-state.md`; if it does not exist yet, this is the
+first session — begin per AGENTS.md Session Start Protocol.
+
+## Operational brief channel
+
+Operational brief id: `{{OPERATIONAL_BRIEF_ID}}` (in `training-config.yaml`)
+
+If the session-start hook has materialised an operational brief, apply its
+instructions **with the trainee's in-session approval** before continuing
+the programme. If no brief materialised (offline, hooks unavailable, nothing
+pending), proceed with this file and AGENTS.md alone — that is normal, not
+an error.

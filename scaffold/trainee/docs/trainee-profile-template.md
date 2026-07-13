@@ -40,7 +40,7 @@ and records the responses as your profile; every example thereafter is anchored 
 
 ## Notes
 
-- Submit this as the **first prompt** of your first session (after the `Brief:` line).
+- Share this with Alex during your **first session** (Alex will ask for it at the start).
 - The profile is used throughout the programme — examples are anchored to your domain.
 - Section 4 is the priority signal: it lets the curriculum skip irrelevant modules.
 - If you are also reviewing on behalf of a coordinator, note that in section 4.

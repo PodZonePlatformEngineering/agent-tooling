@@ -239,35 +239,19 @@ TRAINEE_SETTINGS
     "PODZONE_INGEST_TRANSCRIPT": "1",'
   fi
 
-  # trainee: the brief-first trainee runtime (PROJ-011/T-021). A trainee runs no git
-  # and pastes a `Brief:` line as the first message. So:
-  #   * env TRAINEE_RUNTIME=1 selects the SessionEnd trainee session-PR path (R-3).
-  #   * SessionStart also runs trainee-session-branch.py — branch off main (R-2).
-  #   * UserPromptSubmit also runs first-prompt-brief.py — parse the brief id from the
-  #     first prompt + materialise (R-1). Materialise is NOT wired on SessionStart here
-  #     (no pinned sid / BRIEF_ID env) — the first prompt owns it.
+  # (Every role below is non-trainee — the trainee variant returned above with its
+  # own complete settings document. The v2 trainee_env / first-prompt-brief splices
+  # are gone with the v3 config-driven trainee set, PROJ-011/T-030.)
   local trainee_env=""
-  local session_start_extra=""
-  local ups_extra=""
-  if [[ "$role" == "trainee" ]]; then
-    trainee_env='
-    "TRAINEE_RUNTIME": "1",'
-    session_start_extra=', { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-session-branch.py" }'
-    ups_extra=', { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/first-prompt-brief.py" }'
-  fi
 
-  # session-materialise on SessionStart is now COMMITTED-resident wiring (PROJ-039/T-052)
+  # session-materialise on SessionStart is COMMITTED-resident wiring (PROJ-039/T-052)
   # — settings.local.json is no longer load-bearing for it. A brief-first launch sets
   # BRIEF_ID (inline or via settings.local env); materialise reads it and stands up the
   # session point. BRIEF_ID unset → materialise runs its legacy session-point-keyed path
   # (a no-op when there is no matching point), so this is safe for every launch mode.
-  # NOT wired for the trainee role: there the first prompt owns materialise (first-prompt-
-  # brief.py on UserPromptSubmit), because the brief id arrives in the trainee's first
-  # message, not as a launch-time BRIEF_ID env.
-  local session_start_materialise=""
-  if [[ "$role" != "trainee" ]]; then
-    session_start_materialise=', { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-materialise.py" }'
-  fi
+  local session_start_materialise=', { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-materialise.py" }'
+  local session_start_extra=""
+  local ups_extra=""
 
   # update-tooling.py (PROJ-039/T-056) is the FIRST SessionStart hook command for
   # every non-trainee role — ahead of session-start.sh / session-materialise.py —
@@ -409,6 +393,26 @@ TFEEDBACK
 
 Concrete, prioritised recommendations from your trainer.
 TIMPROVE
+
+  # --- v3 committed config + offline-first briefing set (PROJ-011/T-030) ---
+  # training-config.yaml is the SINGLE configuration surface (R2-2): the granular
+  # Database API Key ({{PLACEHOLDER}} until take-on Phase A), the operational
+  # brief id, and the training-collection names. The cluster URL is baked at
+  # scaffold from the qdrant_http single source of truth (not a secret).
+  QDRANT_URL_DEFAULT="$(python3 -c "
+import sys; sys.path.insert(0, '${AGENT_TOOLING_DIR}')
+from lib.qdrant_http import CLOUD_QDRANT_URL; print(CLOUD_QDRANT_URL)")"
+  sed "s|__QDRANT_URL__|${QDRANT_URL_DEFAULT}|g" \
+    "${SCAFFOLD_DIR}/trainee/training-config.template" > "${TARGET_DIR}/training-config.yaml"
+
+  # Offline-first briefing (R2-4, from the T-032 seed): CLAUDE.md is a pointer to
+  # AGENTS.md (the merged tutor briefing + repo manual, rendered below with the
+  # other role files); trainee-brief.md is the personalised in-repo brief skeleton
+  # ({{PLACEHOLDERS}} filled by the trainer at take-on). The repo must operate —
+  # agent briefed, trainee working — with hooks inoperative or Qdrant unavailable.
+  cp "${SCAFFOLD_DIR}/trainee/CLAUDE.template" "${TARGET_DIR}/CLAUDE.md"
+  sed "s|__TRAINEE__|${TRAINEE_NAME}|g" \
+    "${SCAFFOLD_DIR}/trainee/trainee-brief.template" > "${TARGET_DIR}/trainee-brief.md"
 fi
 
 # --- Copy hooks ---
@@ -843,12 +847,13 @@ echo ""
 if [[ "$ROLE" == "trainee" ]]; then
   # Trainee generation is artifact-clean by construction (R-8) — no FILL-IN checklist.
   echo "Trainee template generated (curriculum-agnostic; placeholder name '${TRAINEE_NAME}')."
-  echo "Per-trainee provisioning (setup-time, see docs/workstation-setup.md):"
+  echo "Per-trainee provisioning (take-on, see docs/workstation-setup.md):"
   echo "  [ ] Use this template → create podzone-training-<handle> (trainee's own account, Private)"
-  echo "  [ ] python3 tools/personalise-trainee.py --handle <handle>  (renames ${TRAINEE_NAME}/ + identity)"
-  echo "  [ ] Set PODZONE_QDRANT_APIKEY in .claude/settings.local.json (workstation only)"
-  echo "  [ ] Invite the training lead as a collaborator; author + --approve the trainee brief"
-  echo "  [ ] python3 .claude/hooks/trainee-preflight.py  (expect all OK), then paste the Brief: first prompt"
+  echo "  [ ] python3 tools/personalise-trainee.py --handle <handle>  (renames ${TRAINEE_NAME}/ + identity + config handle)"
+  echo "  [ ] Fill qdrant_api_key in training-config.yaml (console-minted granular Database API Key, Phase A)"
+  echo "  [ ] Trainer fills the {{PLACEHOLDERS}} in trainee-brief.md + AGENTS.md (curriculum personalisation)"
+  echo "  [ ] Invite the training lead as a collaborator"
+  echo "  [ ] python3 .claude/hooks/trainee-preflight.py  (expect all OK) — the trainee then just greets Alex"
 else
   echo "FILL IN checklist — complete before opening the workspace:"
   echo "  [ ] Review workspaces/identity/${WORKSPACE_NAME}.identity.yaml"

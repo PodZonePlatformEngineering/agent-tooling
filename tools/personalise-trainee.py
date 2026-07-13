@@ -72,8 +72,9 @@ def personalise(repo_dir: str, handle: str) -> list[str]:
                 os.rename(p, os.path.join(id_dir, target_fn))
                 changes.append(f"identity file -> {target_fn}")
 
-    # 3. README/AGENTS + .claude md: swap the placeholder token for the trainee name.
-    for rel in ("README.md", "AGENTS.md",
+    # 3. README/AGENTS + briefing + .claude md: swap the placeholder token for
+    #    the trainee name (trainee-brief.md is the v3 offline-first in-repo brief).
+    for rel in ("README.md", "AGENTS.md", "trainee-brief.md",
                 ".claude/instructions.md", ".claude/guardrails.md",
                 ".claude/output-format.md"):
         p = os.path.join(repo_dir, rel)
@@ -84,6 +85,19 @@ def personalise(repo_dir: str, handle: str) -> list[str]:
         if new != text:
             open(p, "w", encoding="utf-8").write(new)
             changes.append(f"{rel}: {PLACEHOLDER} -> {name}")
+
+    # 4. Handle fields ({{TRAINEE_HANDLE}}) in the committed config + brief
+    #    skeleton (PROJ-011/T-030 R2-2). The Database API Key placeholder is
+    #    deliberately left — filling it is take-on Phase A, a human step.
+    for rel in ("training-config.yaml", "trainee-brief.md"):
+        p = os.path.join(repo_dir, rel)
+        if not os.path.isfile(p):
+            continue
+        text = open(p, encoding="utf-8").read()
+        new = text.replace("{{TRAINEE_HANDLE}}", handle)
+        if new != text:
+            open(p, "w", encoding="utf-8").write(new)
+            changes.append(f"{rel}: {{{{TRAINEE_HANDLE}}}} -> {handle}")
     return changes
 
 
