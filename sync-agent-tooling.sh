@@ -28,6 +28,7 @@ usage() {
   echo "Usage: bash sync-agent-tooling.sh --role {role-class} [--home-repo /path] [--agent-tooling /path] [--yes]"
   echo ""
   echo "Valid role classes: ${VALID_ROLES}"
+  echo "Role-class variants: team-lead-apex (aliased to the team-lead file set)"
   exit 1
 }
 
@@ -66,6 +67,18 @@ fi
 if [[ -z "$ROLE" ]]; then
   echo "Error: --role is required (or provide a workspaces/identity/*.identity.yaml with role_class)"
   usage
+fi
+
+# Role-class variant alias (PROJ-039/T-101, CC-420): `team-lead-apex` is the
+# apex team-lead variant carried in the identity YAML (Hermes's live
+# role_class), a variant, not a tenth role. Alias it to the team-lead file
+# set here — mirroring lib/agent_identity.py's token match — so a
+# TOOLING_UPDATE dispatch to the apex home repo needs no TOOLING_UPDATE_ROLE
+# override; apex-ness stays expressed solely in the identity YAML (which
+# sync never edits).
+if [[ "$ROLE" == "team-lead-apex" ]]; then
+  echo "==> Role-class variant 'team-lead-apex' → applying the 'team-lead' file set"
+  ROLE="team-lead"
 fi
 
 if ! echo "$VALID_ROLES" | grep -qw "$ROLE"; then
