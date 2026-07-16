@@ -235,6 +235,19 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
         if finalise_ledger is not None:
             finalise_ledger.record_step(session_id, name, status)
 
+    # T-100 double-fire no-op: a manual `/session-end` (sidebar wrapper) followed by
+    # the harness SessionEnd at window close re-delivers the same session end. Skip
+    # ONLY when the prior finalise completed AND the transcript hasn't grown since —
+    # an F14 re-armed continuation grows the transcript and must re-run (idempotent
+    # steps bank the new work).
+    if finalise_ledger is not None and finalise_ledger.unchanged_since_complete(session_id):
+        _log(
+            "finalise no-op: sid already complete and transcript unchanged "
+            "(duplicate SessionEnd fire)",
+            session_id=session_id,
+        )
+        return 0
+
     if finalise_ledger is not None:
         # Persist the RESOLVED home repo as the ledger cwd (T-054): the SessionStart
         # guard re-runs a partial against this repo, so it must be the home repo — not

@@ -168,7 +168,11 @@ def attempts(session_id: str) -> int:
 
 
 def complete(session_id: str) -> None:
-    """Mark the session's finalise as fully reached (no partial)."""
+    """Mark the session's finalise as fully reached (no partial).
+
+    Also snapshots the transcript byte-size at completion (T-100): the double-fire
+    no-op guard compares against it — a later fire with an unchanged transcript is
+    a repeat delivery of the same session end, not new work to bank."""
     if not session_id:
         return
     try:
@@ -176,6 +180,11 @@ def complete(session_id: str) -> None:
         entry = ledger.get(session_id) or {"steps": {}}
         entry["complete"] = True
         entry["updated_ts"] = _utc()
+        tp = entry.get("transcript_path") or ""
+        try:
+            entry["transcript_bytes"] = Path(tp).stat().st_size if tp else None
+        except Exception:
+            entry["transcript_bytes"] = None
         ledger[session_id] = entry
         _save(ledger)
     except Exception:
@@ -185,6 +194,27 @@ def complete(session_id: str) -> None:
 def is_complete(session_id: str) -> bool:
     try:
         return bool(load().get(session_id, {}).get("complete"))
+    except Exception:
+        return False
+
+
+def unchanged_since_complete(session_id: str) -> bool:
+    """True only when the sid's finalise completed AND its transcript has not
+    grown since — the safe no-op condition for a duplicate SessionEnd fire
+    (T-100: manual `/session-end` wrapper followed by the harness fire at window
+    close). A transcript that changed means new turns landed (e.g. an F14
+    re-armed continuation): NEVER no-op those — the re-run banks the new work,
+    relying on the finalise's existing step-level idempotency. Missing snapshot
+    or unreadable transcript → False (fail open: re-run rather than skip)."""
+    try:
+        entry = load().get(session_id) or {}
+        if not entry.get("complete"):
+            return False
+        snap = entry.get("transcript_bytes")
+        tp = entry.get("transcript_path") or ""
+        if snap is None or not tp:
+            return False
+        return Path(tp).stat().st_size == snap
     except Exception:
         return False
 
