@@ -12,9 +12,10 @@ writes ``ok:false`` with a reason and emits an explicit HALT, and it never
 fabricates a `.workspace` from a stale team-repo read (SD-3-002).
 
 The halt is a two-part contract: this hook writes the sentinel; the agent's
-orientation procedure (session-start skill / READMEFIRST) MUST read
-``.materialise-status.json`` first and refuse to proceed when it is absent or
-``ok:false``. A SessionStart hook cannot itself block the agent.
+orientation procedure (OPERATING-MANUAL §3 / READMEFIRST — the session-start
+skill was retired at T-100) MUST read ``.materialise-status.json`` first and
+refuse to proceed when it is absent or ``ok:false``. A SessionStart hook cannot
+itself block the agent.
 
 Tested by DT-010 (success) and DT-011 (failure-halt). A team-lead session with no
 `BRIEF_ID` is a distinct third case (F15, PROJ-039/T-078): not a failure, since team
@@ -417,7 +418,9 @@ def main() -> int:
         _write_status(Path(cwd) / ".workspace", status)
         _emit_context(
             "ℹ️ No BRIEF_ID set for this team-lead session — no tasking brief "
-            "expected. Run orientation via the `session-start` skill."
+            "expected. Orient per OPERATING-MANUAL.md §3 (identity, board/STATUS "
+            "scan, repo health) and detect pending inter-team-lead briefs (§10 — "
+            "`team-lead-brief` Detect, apex-resident)."
         )
         return 0
 

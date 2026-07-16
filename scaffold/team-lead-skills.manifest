@@ -10,7 +10,7 @@
 # identical + NO out-of-subset skill, e.g. session ceremony stays hook-driven).
 #
 # Subset = the skills a fissioned team lead invokes to LEAD (not for its own
-# session-end — result authoring stays with the SessionEnd finalise hook, T-035):
+# session ceremony — result authoring stays with the SessionEnd finalise hook, T-035):
 #
 #   consolidate-tasks   local-mode consolidation of the lead's team repo
 #   launch-session      launching the lead's team agents
@@ -18,11 +18,15 @@
 #   usage-report        7-day usage digest, output resolved via team_repo (D-2, T-076;
 #                        de-apexed — no hardcoded podzoneTeam/team/hermes path, no
 #                        hardcoded ~/workspace/agent-tooling tool path)
+#   session-end         manual-finalise wrapper (T-100): the /exit equivalent for
+#                        session surfaces without one (IDE sidebar) — a THIN trigger
+#                        for the resident finalise hook, which still owns the result.
 #
-# DELIBERATELY EXCLUDED (kept hook-driven / out of the parity-enforced subset):
-#   session-start / session-end   — agent ceremony is hook-driven in every home repo;
-#                                    the finalise hook owns the result (T-035). A team
-#                                    lead does not need them as skills.
+# DELIBERATELY EXCLUDED:
+#   session-start   — RETIRED at T-100 (CC-418): orientation is the OPERATING-MANUAL
+#                     §3 procedure + team-lead-brief Detect (§10); the skill's one
+#                     unique piece (### Martin freshness check) moved into
+#                     consolidate-tasks Step 3b. Ceremony stays hook-driven.
 #
 # Format: one canonical skill name per line (must exist as agent-tooling/skills/<name>/).
 # Blank lines and lines starting with '#' are ignored.
@@ -31,3 +35,4 @@ consolidate-tasks
 launch-session
 create-task
 usage-report
+session-end
