@@ -88,9 +88,11 @@ Session ceremony is **hook-driven**, identical to a build agent's:
 | Stop | enriched telemetry point + tasking append |
 | SessionEnd | `session-end-finalise.py` — telemetry push → rollup → **authors your session result** in `results/` and lands it per lifecycle mode below |
 
-There is no `/session-start` or `/session-end` skill in a fissioned lead's repo — the
-finalise hook owns the result. At session start, check for inter-team-lead briefs
-addressed to you (§10).
+There is no `/session-start` skill (retired at T-100 — this §3 orientation IS the
+procedure; at session start, check for inter-team-lead briefs addressed to you, §10).
+`/session-end` exists only as a **manual-finalise wrapper** for session surfaces
+without an `/exit` built-in (IDE sidebar): it triggers the resident finalise hook,
+which still owns the result. Post-wrapper turns trip the F14 resume guard.
 
 ### Lifecycle modes — `lifecycle_mode: branch | trunk`
 
@@ -227,12 +229,13 @@ byte-identical + no out-of-subset skill):
 | `/create-task` | task-board entry creation, identity-routed |
 | `/usage-report` | 7-day usage digest, output into the resolved team repo |
 
-The apex home repo carries **additional, apex-resident extras** (interactive
-`session-start`/`session-end` orientation ritual, `onboard-agent`, `stand-up-team`,
-`team-lead-brief`, and others). Copying any extra into a non-apex lead repo is a
-deliberate per-skill decision — consult the D-2 disposition table in
-`podzoneTeam/planning/projects/PROJ-039-unified-session-substrate/hermes-apex-migration-plan.md`
-first; it is never a default.
+Further team-management skills (`team-lead-brief`, `onboard-agent`, `stand-up-team`,
+and others) live in **podzoneTeam `.claude/skills/`** — NOT in home repos: the sync
+prunes out-of-manifest skills from a home repo (the D-2 "apex-resident extras"
+mechanism was superseded this way at v1.12.0; podzoneTeam residence is the accepted
+durable home, T-100). Invoke them from the podzoneTeam checkout when needed. Copying
+one into a lead home repo requires adding it to the parity manifest — a deliberate
+canonicalisation decision, never a default.
 
 ## 8. Tooling updates — TOOLING_UPDATE, versions, drift
 

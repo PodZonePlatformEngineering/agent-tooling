@@ -326,9 +326,12 @@ role_hook_rows() {
 #   * TEAM-LEAD home repo is a clean superset: the same hooks-only base PLUS the
 #     coordination skill subset (team-lead-skills.manifest) under .claude/skills/, so
 #     a fissioned lead can /consolidate-tasks + /launch-session for its team. Result
-#     authoring still rides the SessionEnd finalise hook (T-035) — session-end is NOT
-#     added as a skill.
-# (The Hermes apex repo stays fully skill-based — a separate, deliberately different layout.)
+#     authoring still rides the SessionEnd finalise hook (T-035); the `session-end`
+#     SKILL in the subset is only the T-100 manual-finalise wrapper (sidebar /exit
+#     equivalent) — it triggers that same hook, never replaces it.
+# (The apex repo is the same team-lead layout — apex-ness lives in the identity YAML
+#  [role_class team-lead-apex] and the extra podzoneTeam-resident management skills,
+#  not in a different scaffold; T-066/T-100.)
 mkdir -p \
   "${TARGET_DIR}/.claude/hooks" \
   "${TARGET_DIR}/workspaces/identity" \
@@ -578,10 +581,15 @@ under \`.claude/skills/\` and are kept byte-identical to the canonical
 |---|---|
 | \`/consolidate-tasks\` | Local-mode consolidation of this lead's **team repo** (\`${TEAM}Team\`) — outbox/results scan, tasklist + STATUS, session-PR review |
 | \`/launch-session\` | Launch this lead's team agents |
+| \`/create-task\` | Guided task-board entry creation (identity-routed) |
+| \`/usage-report\` | 7-day usage digest into the resolved team repo |
+| \`/session-end\` | Manual finalise — the /exit equivalent for sidebar sessions (T-100 wrapper over the finalise hook) |
 
 Result authoring is NOT a skill — the SessionEnd finalise hook owns the session
 result (PROJ-039/T-035), exactly as for a build agent. Session ceremony stays
-hook-driven; \`/session-start\` and \`/session-end\` are deliberately not present.
+hook-driven; \`/session-start\` is deliberately not present (orientation = the
+OPERATING-MANUAL §3 procedure). \`/session-end\` is only the manual-finalise
+wrapper for sessions without an /exit built-in (T-100) — it fires the same hook.
 
 **home_repo ≠ team_repo:** this home repo (\`${REPO_NAME}\`) is NOT the team repo. The
 coordination skills resolve the team repo from identity (\`home-<team>-<agent>\` →

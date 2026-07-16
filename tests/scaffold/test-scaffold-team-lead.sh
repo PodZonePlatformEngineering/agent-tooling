@@ -35,8 +35,8 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   assert "skills/${entry} present + byte-identical" \
     "$(diff -rq -x '__pycache__' -x '*.pyc' "${AGENT_TOOLING_DIR}/skills/${entry}" "${TARGET}/.claude/skills/${entry}" > /dev/null 2>&1 && echo ok || echo fail)"
 done < "${AGENT_TOOLING_DIR}/scaffold/team-lead-skills.manifest"
-assert "no out-of-subset skill (session-end absent)" \
-  "$([ ! -d "${TARGET}/.claude/skills/session-end" ] && echo ok || echo fail)"
+assert "no out-of-subset skill (session-start absent — retired at T-100)" \
+  "$([ ! -d "${TARGET}/.claude/skills/session-start" ] && echo ok || echo fail)"
 
 # 2. Operating manual (PROJ-039/T-081) rendered at repo root
 MANUAL="${TARGET}/OPERATING-MANUAL.md"

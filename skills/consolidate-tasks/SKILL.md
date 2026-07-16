@@ -471,6 +471,12 @@ Apply this table:
 "not found" as a strip-and-log condition (the PR ref was likely typo'd or the repo
 was renamed; either way the item is no longer actionable).
 
+**Open-item ageing (T-100 salvage from the retired session-start skill):** items
+that verify as still OPEN are kept but rendered with an `(OPEN since YYYY-MM-DD)`
+suffix (PR `createdAt`, best-effort) so waiting-on-Martin age is visible at every
+consolidation without re-reading history. Offline / `gh` unavailable → render
+lines as-is; never block the consolidation on verification.
+
 **Verbosity:** Make the reaper output verbose for the first 3 consolidation runs
 so misfires are visible. Surface every strip in the Step 7 report with the
 artefact age (e.g. "merged 41 d ago"). Silence after the protocol is stable.
