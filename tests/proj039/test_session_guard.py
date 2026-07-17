@@ -695,6 +695,240 @@ class TestEndGuardAllClones(_TwoCloneFixture):
         self.assertEqual(list(session_guard.LOCK_DIR.glob("*.lock")), [])
 
 
+class TestAgentSessionBranch(unittest.TestCase):
+    """T-003 — the agent-scoped matcher must be a strict subset of
+    is_session_branch: only THIS agent's two branch forms, nobody else's."""
+
+    def test_matches_both_agent_forms(self) -> None:
+        self.assertTrue(session_guard.is_agent_session_branch(
+            "hephaestus/2026-07-17-proj043-t002-fusion-sweep", "hephaestus"))
+        self.assertTrue(session_guard.is_agent_session_branch(
+            "session/hephaestus-2026-07-17-t003", "hephaestus"))
+
+    def test_agent_case_insensitive(self) -> None:
+        self.assertTrue(session_guard.is_agent_session_branch(
+            "hephaestus/2026-07-17-x", "Hephaestus"))
+
+    def test_foreign_agent_never_matches(self) -> None:
+        self.assertFalse(session_guard.is_agent_session_branch(
+            "athena/2026-07-17-x", "hephaestus"))
+        self.assertFalse(session_guard.is_agent_session_branch(
+            "session/athena-2026-07-17-x", "hephaestus"))
+
+    def test_prefix_agent_does_not_leak(self) -> None:
+        # "hermes2" must not match agent "hermes" via a loose prefix.
+        self.assertFalse(session_guard.is_agent_session_branch(
+            "hermes2/2026-07-17-x", "hermes"))
+        self.assertFalse(session_guard.is_agent_session_branch(
+            "session/hermes2-2026-07-17-x", "hermes"))
+
+    def test_non_session_shapes_rejected(self) -> None:
+        for name in ("main", "hephaestus/no-date-here", "feature/foo", ""):
+            self.assertFalse(
+                session_guard.is_agent_session_branch(name, "hephaestus"), name)
+
+    def test_empty_agent_matches_nothing(self) -> None:
+        self.assertFalse(session_guard.is_agent_session_branch(
+            "hephaestus/2026-07-17-x", ""))
+
+
+class TestStrandedAgentClones(_TwoCloneFixture):
+    """T-003 — the workspace-roots scan: depth-1 repos and {team}/{repo}
+    grandchildren, agent-scoped, never descending into a repo or a hidden dir."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.ws = Path(self._tmp.name) / "workspace"
+        self.ws.mkdir()
+
+    def _clone_into(self, parent: Path, name: str, branch: str = "") -> Path:
+        dest = parent / name
+        _run("git", "clone", str(self.task_origin), str(dest))
+        for k, v in (("user.email", "t@t"), ("user.name", "T"),
+                     ("commit.gpgsign", "false")):
+            _git(dest, "config", k, v)
+        if branch:
+            _git(dest, "checkout", "-b", branch)
+        return dest
+
+    def test_finds_depth1_and_team_nested_clones(self) -> None:
+        self._clone_into(self.ws, "agent-tooling",
+                         "hephaestus/2026-07-17-proj043-t002-fusion-sweep")
+        team = self.ws / "podzoneTeam-repos"
+        team.mkdir()
+        self._clone_into(team, "nested", "session/hephaestus-2026-07-17-t003")
+        found = session_guard.stranded_agent_clones(
+            "hephaestus", workspace_root=self.ws)
+        self.assertEqual(
+            sorted(os.path.basename(p) for p in found),
+            ["agent-tooling", "nested"])
+
+    def test_skips_main_foreign_and_hidden(self) -> None:
+        self._clone_into(self.ws, "on-main")  # stays on main
+        self._clone_into(self.ws, "foreign", "athena/2026-07-17-her-work")
+        hidden = self.ws / ".hidden"
+        hidden.mkdir()
+        self._clone_into(hidden, "in-hidden", "hephaestus/2026-07-17-x")
+        (self.ws / "loose-file.txt").write_text("not a dir\n")
+        self.assertEqual(session_guard.stranded_agent_clones(
+            "hephaestus", workspace_root=self.ws), [])
+
+    def test_never_descends_into_a_repo(self) -> None:
+        # A stood-up subrepo INSIDE a depth-1 repo (the .workspace/ shape) must
+        # be invisible — that repo's own lifecycle owns it (T-054 boundary).
+        outer = self._clone_into(self.ws, "home-like")  # on main → not matched
+        inner_parent = outer / ".workspace"
+        inner_parent.mkdir()
+        self._clone_into(inner_parent, "stood-up", "hephaestus/2026-07-17-inner")
+        self.assertEqual(session_guard.stranded_agent_clones(
+            "hephaestus", workspace_root=self.ws), [])
+
+    def test_empty_agent_or_missing_root_is_empty(self) -> None:
+        self.assertEqual(session_guard.stranded_agent_clones(
+            "", workspace_root=self.ws), [])
+        self.assertEqual(session_guard.stranded_agent_clones(
+            "hephaestus", workspace_root=self.ws / "nope"), [])
+
+
+class TestResolveScanAgent(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self._tmp.name) / "home-podzone-hephaestus"
+        self.home.mkdir()
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_identity_yaml_wins(self) -> None:
+        ident = self.home / "workspaces" / "identity"
+        ident.mkdir(parents=True)
+        (ident / "hephaestus.identity.yaml").write_text(
+            "agent: Hephaestus\nrole_class: coder\nscope: podzone\n")
+        self.assertEqual(session_guard.resolve_scan_agent(str(self.home)),
+                         "hephaestus")
+
+    def test_basename_fallback_without_yaml(self) -> None:
+        self.assertEqual(session_guard.resolve_scan_agent(str(self.home)),
+                         "hephaestus")
+
+    def test_unresolvable_returns_empty(self) -> None:
+        other = Path(self._tmp.name) / "just-a-clone"
+        other.mkdir()
+        self.assertEqual(session_guard.resolve_scan_agent(str(other)), "")
+        self.assertEqual(session_guard.resolve_scan_agent(""), "")
+
+
+class TestEndGuardScanPhase(_TwoCloneFixture):
+    """T-003 — the t002/e29fed8b regression shape at the guard level: the task
+    clone was branched MID-SESSION (no lock), so the F13 lock set cannot see
+    it; the agent-scoped scan must return it. Foreign locks and foreign
+    branches stay untouched; scan hits deduplicate against the lock set."""
+
+    SID = "e29fed8b-0000-0000-0000-000000000000"
+    BRIEF = "podzone/2026-07-17-proj043-t002-fusion-sweep"
+
+    def setUp(self) -> None:
+        super().setUp()
+        # The scan is pointed at the fixture base, where task_clone lives.
+        self._orig_ws_root = session_guard.WORKSPACE_ROOT
+        session_guard.WORKSPACE_ROOT = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        session_guard.WORKSPACE_ROOT = self._orig_ws_root
+        super().tearDown()
+
+    def test_unlocked_mid_session_branch_is_returned_by_scan(self) -> None:
+        """The live t002 failure: home locked+branched, task clone branched by
+        a bare `git checkout -b` with NO lock. Both must end on main with the
+        pushed branches gone."""
+        session_guard.SessionLock(str(self.clone), f"brief:{self.BRIEF}").acquire()
+        home_branch = "session/hephaestus-2026-07-17-t002"
+        self._branch(home_branch)
+        self._commit()
+        _git(self.clone, "push", "origin", home_branch)
+        task_branch = "hephaestus/2026-07-17-proj043-t002-fusion-sweep"
+        self._task_branch_commit_push(task_branch)
+
+        results = session_guard.end_guard_all_clones(
+            str(self.clone), session_id=self.SID, brief_id=self.BRIEF,
+            agent="hephaestus")
+
+        self.assertEqual([(e["kind"], e["via"]) for e in results],
+                         [("home", "home"), ("task", "scan")])
+        for entry in results:
+            self.assertTrue(entry["return"]["ok"], entry)
+            self.assertEqual(entry["return"]["disposition"],
+                             "returned-branch-deleted", entry)
+        self.assertEqual(session_guard.current_branch(self.clone), "main")
+        self.assertEqual(session_guard.current_branch(self.task_clone), "main")
+        branches = _git(self.task_clone, "branch",
+                        "--format=%(refname:short)").stdout.split()
+        self.assertNotIn(task_branch, branches)
+        self.assertEqual(list(session_guard.LOCK_DIR.glob("*.lock")), [])
+
+    def test_scan_dedupes_against_lock_set(self) -> None:
+        """A clone that is BOTH locked and on the agent's branch shows up once,
+        via the lock set — the scan never double-processes."""
+        session_guard.SessionLock(str(self.clone), f"brief:{self.BRIEF}").acquire()
+        session_guard.SessionLock(str(self.task_clone), f"brief:{self.BRIEF}").acquire()
+        self._task_branch_commit_push("hephaestus/2026-07-17-locked-too")
+
+        results = session_guard.end_guard_all_clones(
+            str(self.clone), session_id=self.SID, brief_id=self.BRIEF,
+            agent="hephaestus")
+
+        task_entries = [e for e in results if e["kind"] == "task"]
+        self.assertEqual([e["via"] for e in task_entries], ["lock"])
+        self.assertEqual(session_guard.current_branch(self.task_clone), "main")
+
+    def test_scanned_clone_with_foreign_lock_is_skipped(self) -> None:
+        """Agent-named branch but a FOREIGN live lock (another session owns the
+        clone right now): skip outright, touch nothing."""
+        branch = "hephaestus/2026-07-17-someone-holds-lock"
+        self._task_branch_commit_push(branch)
+        session_guard.SessionLock(str(self.task_clone), "foreign-live-sid").acquire()
+
+        results = session_guard.end_guard_all_clones(
+            str(self.clone), session_id=self.SID, brief_id=self.BRIEF,
+            agent="hephaestus")
+
+        task = [e for e in results if e["kind"] == "task"][0]
+        self.assertEqual(task["via"], "scan")
+        self.assertEqual(task["return"]["disposition"], "skipped-foreign-lock")
+        self.assertFalse(task["lock_released"])
+        self.assertEqual(session_guard.current_branch(self.task_clone), branch)
+        remaining = list(session_guard.LOCK_DIR.glob("*.lock"))
+        self.assertEqual(len(remaining), 1)
+        self.assertIn("foreign-live-sid", remaining[0].read_text())
+
+    def test_scanned_unpushed_branch_is_kept_and_surfaced(self) -> None:
+        """Never discard commits: an unpushed mid-session branch is returned to
+        main but the branch survives, surfaced as kept-unpushed."""
+        branch = "hephaestus/2026-07-17-unpushed-work"
+        self._task_branch_commit_push(branch, push=False)
+
+        results = session_guard.end_guard_all_clones(
+            str(self.clone), session_id=self.SID, brief_id=self.BRIEF,
+            agent="hephaestus")
+
+        task = [e for e in results if e["kind"] == "task"][0]
+        self.assertEqual(task["return"]["disposition"],
+                         "returned-branch-kept-unpushed")
+        self.assertEqual(session_guard.current_branch(self.task_clone), "main")
+        branches = _git(self.task_clone, "branch", "--list", branch).stdout
+        self.assertIn(branch, branches, "unpushed branch must survive")
+
+    def test_unresolvable_agent_disables_scan(self) -> None:
+        """No explicit agent + a home repo with no identity signal ⇒ the scan
+        contributes nothing (never guesses an agent)."""
+        self._task_branch_commit_push("hephaestus/2026-07-17-invisible")
+        results = session_guard.end_guard_all_clones(
+            str(self.clone), session_id=self.SID, brief_id=self.BRIEF)
+        self.assertEqual([e["kind"] for e in results], ["home"])
+        self.assertEqual(session_guard.current_branch(self.task_clone),
+                         "hephaestus/2026-07-17-invisible")
+
+
 class TestResolveHomeRepo(unittest.TestCase):
     """T-054 — the finalise must bind to the agent's own home repo, never the bare
     wandered cwd (the operator-clone hijack: shell ended in `.workspace/academy-admin`)."""
