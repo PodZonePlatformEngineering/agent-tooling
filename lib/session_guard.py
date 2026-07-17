@@ -20,7 +20,8 @@ safety — these three guards do, at the two lifecycle edges plus a lock:
 Strict where it guards correctness (:func:`preflight` HALTs rather than branch off an
 unsafe clone); best-effort where it must not break teardown (:func:`return_to_main`
 and the linked-worktree escape hatch for the legacy path). Stdlib-only; the only
-``lib/`` import is :mod:`finalise_ledger` (itself a closure leaf).
+``lib/`` imports are :mod:`finalise_ledger` and :mod:`agent_identity` (both closure
+leaves already in the home-runtime manifest).
 """
 
 from __future__ import annotations
@@ -50,6 +51,16 @@ try:  # closure-leaf import; both live in .claude/lib/ in a home repo
     from lib import finalise_ledger
 except Exception:  # pragma: no cover - direct-run / relocated
     import finalise_ledger  # type: ignore
+
+# Identity feeds only the T-003 end-guard scan's agent scoping — a missing module
+# must degrade to "scan disabled", never break the guards (teardown ethos).
+try:
+    from lib import agent_identity
+except Exception:  # pragma: no cover - direct-run / relocated
+    try:
+        import agent_identity  # type: ignore
+    except Exception:
+        agent_identity = None  # type: ignore
 
 
 # A session branch is either the home/PAT form ``session/{agent}-{date}-{slug}``
@@ -636,7 +647,7 @@ class SessionLock:
 
 
 # ---------------------------------------------------------------------------
-# All-clones end-guard (PROJ-039/T-075 F13, plan D-4)
+# All-clones end-guard (PROJ-039/T-075 F13, plan D-4; PROJ-043/T-003)
 # ---------------------------------------------------------------------------
 #
 # The finalise end-guard used to return ONLY the home repo — every additional
@@ -646,8 +657,106 @@ class SessionLock:
 # lock set is already on disk (`~/.claude/session-locks/*.lock`, written by
 # `session_guard.py lock` per clone), so finalise can enumerate exactly the clones
 # THIS session locked and end-guard each one.
+#
+# PROJ-043/T-003 closed the second half of the class: the lock set only covers
+# clones the LAUNCH locked. A clone the agent branches MID-SESSION with a bare
+# `git checkout -b` (the standard serial dispatch against a task repo the launcher
+# didn't know about) has no lock and was invisible to the F13 enumeration — the
+# t002 live hit (sid e29fed8b): the home repo returned clean, but
+# `~/workspace/agent-tooling` stayed stranded on its merged session branch and
+# Hermes's next `git pull` failed on the deleted remote ref. The fix layers an
+# agent-scoped SCAN of the known workspace roots over the lock set: any primary
+# clone under `~/workspace/{repo}` or `~/workspace/{team}/{repo}` left on one of
+# THIS agent's session branches is end-guarded too. Agent-scoping is the safety
+# boundary — under the serial one-session-per-agent model, a clone on
+# `{agent}/…`/`session/{agent}-…` at this agent's finalise time is this session's
+# (or a crashed predecessor's, whose return is equally safe: return_to_main never
+# deletes unpushed work). Other agents' branches are never matched, and a clone
+# whose lock is held by a foreign live session is skipped outright.
+
+WORKSPACE_ROOT = Path.home() / "workspace"
 
 _BRIEF_SID_PREFIX = "brief:"
+
+
+def is_agent_session_branch(name: str, agent: str) -> bool:
+    """True if ``name`` is one of AGENT's own session branches — the task-repo
+    form ``{agent}/{YYYY-MM-DD}-{slug}`` or the home/PAT form
+    ``session/{agent}-{YYYY-MM-DD}-{slug}``. A strict agent-scoped subset of
+    :func:`is_session_branch`: the end-guard scan must never match another
+    agent's work, so the agent segment is anchored, not a wildcard."""
+    if not name or not agent:
+        return False
+    a = re.escape(agent.strip().lower())
+    return bool(re.match(
+        rf"^(?:{a}/\d{{4}}-\d{{2}}-\d{{2}}-.+|session/{a}-\d{{4}}-\d{{2}}-\d{{2}}-.+)$",
+        name.strip().lower(),
+    ))
+
+
+def stranded_agent_clones(agent: str, *, workspace_root: Optional[Path] = None) -> list:
+    """Primary clones under the workspace roots currently on one of AGENT's
+    session branches — the T-003 scan set.
+
+    Walks ``{root}/{repo}`` and ``{root}/{team}/{repo}`` (one level under a
+    non-repo dir), where ``root`` is :data:`WORKSPACE_ROOT` unless overridden.
+    A dir that IS a git repo is never descended into — its subdirectories
+    (``.workspace/*`` stood-up subrepos included) belong to that repo's own
+    session lifecycle, never this scan (the T-054 hijack boundary). Hidden
+    dirs are skipped. Best-effort: any error skips the entry, never raises."""
+    out: list = []
+    if not agent:
+        return out
+    try:
+        root = Path(workspace_root or WORKSPACE_ROOT)
+        if not root.is_dir():
+            return out
+        candidates: list = []
+        for child in sorted(root.iterdir()):
+            try:
+                if not child.is_dir() or child.name.startswith("."):
+                    continue
+                if (child / ".git").exists():
+                    candidates.append(child)
+                    continue
+                for grand in sorted(child.iterdir()):
+                    if (grand.is_dir() and not grand.name.startswith(".")
+                            and (grand / ".git").exists()):
+                        candidates.append(grand)
+            except Exception:
+                continue
+        for clone in candidates:
+            try:
+                if is_agent_session_branch(current_branch(str(clone)), agent):
+                    out.append(str(clone))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
+def resolve_scan_agent(home_repo: str) -> str:
+    """The agent whose session branches the end-guard scan matches, lowercased.
+
+    Identity YAML first (T-099 — the single source), then the
+    ``home-{team}-{agent}`` basename as a degraded fallback (the same derivation
+    :mod:`agent_identity` cross-checks against), else ``""`` — which disables
+    the scan rather than guessing. Never raises: an unresolvable identity means
+    a narrower guard, not a broken teardown."""
+    if not home_repo:
+        return ""
+    try:
+        if agent_identity is not None:
+            agent, _role, _scope = agent_identity.resolve(home_repo)
+            return agent.strip().lower()
+    except Exception:
+        pass
+    base = os.path.basename(os.path.realpath(home_repo))
+    parts = base.split("-")
+    if parts[0] == "home" and len(parts) >= 3 and parts[-1]:
+        return parts[-1].lower()
+    return ""
 
 
 def owned_sid_set(session_id: str = "", brief_id: str = "") -> set:
@@ -692,32 +801,73 @@ def locked_repos(owned_sids: set) -> list[dict]:
 
 
 def end_guard_all_clones(home_repo: str, *, session_id: str = "",
-                         brief_id: str = "") -> list[dict]:
-    """Session-end guard over EVERY clone this session locked (T-075 F13).
+                         brief_id: str = "", agent: str = "") -> list[dict]:
+    """Session-end guard over EVERY clone this session touched (T-075 F13 +
+    PROJ-043/T-003).
 
-    Home repo first (the result PR rides it), then each remaining clone in the
-    launch-recorded lock set: :func:`return_to_main` (same per-clone safety
-    semantics — unpushed branches are kept and surfaced, T-068 log-dirt
-    tolerance unchanged, already-on-main is a no-op) + lock release keyed on
-    every owned sid form. Returns one entry per clone:
-    ``{"repo", "kind": "home"|"task", "return": <return_to_main dict>,
-    "lock_released": bool}``. Best-effort throughout — a failure on one clone
-    is recorded in its entry, never raised, and never blocks the next clone."""
+    Three phases, deduped by realpath:
+
+      1. Home repo first (the result PR rides it).
+      2. The launch-recorded lock set (F13) — every remaining clone whose
+         ``~/.claude/session-locks/*.lock`` holder sid is one of this session's
+         owned forms.
+      3. The T-003 agent-scoped workspace scan — any other primary clone under
+         the workspace roots left on one of THIS agent's session branches (the
+         mid-session ``git checkout -b`` class the lock set cannot see; the
+         t002/e29fed8b live hit). ``agent`` defaults to
+         :func:`resolve_scan_agent` on ``home_repo``; unresolvable ⇒ the scan
+         is skipped, never guessed. A scanned clone whose lock is held by a
+         FOREIGN session is skipped outright (``skipped-foreign-lock``) — even
+         a stale foreign lock is that agent's preflight to recover, not ours.
+
+    Each clone gets :func:`return_to_main` (same per-clone safety semantics —
+    unpushed branches are kept and surfaced, T-068 log-dirt tolerance
+    unchanged, already-on-main is a no-op) + lock release keyed on every owned
+    sid form. Returns one entry per clone:
+    ``{"repo", "kind": "home"|"task", "via": "home"|"lock"|"scan",
+    "return": <return_to_main dict>, "lock_released": bool}``. Best-effort
+    throughout — a failure on one clone is recorded in its entry, never
+    raised, and never blocks the next clone."""
     owned = sorted(owned_sid_set(session_id, brief_id))
+    owned_set = set(owned)
     results: list[dict] = []
-    home_real = os.path.realpath(home_repo) if home_repo else ""
+    processed: set = set()
     if home_repo:
         res = return_to_main(home_repo)
         released = SessionLock(home_repo, session_id).release(owned_sids=owned)
-        results.append({"repo": home_repo, "kind": "home",
+        results.append({"repo": home_repo, "kind": "home", "via": "home",
                         "return": res, "lock_released": released})
-    for holder in locked_repos(set(owned)):
+        processed.add(os.path.realpath(home_repo))
+    for holder in locked_repos(owned_set):
         repo = str(holder.get("repo", ""))
-        if not repo or os.path.realpath(repo) == home_real:
+        real = os.path.realpath(repo) if repo else ""
+        if not repo or real in processed:
             continue  # home handled above; its lock is already released
         res = return_to_main(repo)
         released = SessionLock(repo, session_id).release(owned_sids=owned)
-        results.append({"repo": repo, "kind": "task",
+        results.append({"repo": repo, "kind": "task", "via": "lock",
+                        "return": res, "lock_released": released})
+        processed.add(real)
+    scan_agent = (agent or resolve_scan_agent(home_repo)).strip().lower()
+    for repo in stranded_agent_clones(scan_agent):
+        real = os.path.realpath(repo)
+        if real in processed:
+            continue
+        processed.add(real)
+        holder = lock_holder(repo)
+        hsid = (holder or {}).get("session_id", "")
+        if hsid and hsid not in owned_set:
+            results.append({"repo": repo, "kind": "task", "via": "scan",
+                            "return": {"ok": True,
+                                       "disposition": "skipped-foreign-lock",
+                                       "branch": current_branch(repo),
+                                       "reason": f"lock held by session "
+                                                 f"'{hsid}' — theirs to return"},
+                            "lock_released": False})
+            continue
+        res = return_to_main(repo)
+        released = SessionLock(repo, session_id).release(owned_sids=owned)
+        results.append({"repo": repo, "kind": "task", "via": "scan",
                         "return": res, "lock_released": released})
     return results
 

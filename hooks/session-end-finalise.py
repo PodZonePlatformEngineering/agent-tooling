@@ -622,6 +622,10 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
     # on this session's sid/brief_id) enumerates the task-repo clones that were
     # previously stranded on their session branches (three consecutive manual
     # Hermes sweeps of ~/workspace/agent-tooling: t069/t070/t071).
+    # PROJ-043/T-003: plus the agent-scoped workspace scan — a clone branched
+    # MID-SESSION with a bare `git checkout -b` has no lock and was invisible to
+    # the F13 set (t002 live hit, sid e29fed8b: ~/workspace/agent-tooling stranded
+    # on its merged session branch; Hermes's next pull failed on the deleted ref).
     if home_repo:
         try:
             from lib import session_guard
@@ -630,11 +634,15 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
             task_failed = False
             for entry in results:
                 res = entry["return"]
-                _log(f"session-end main-guard [{entry['kind']}] {entry['repo']}: "
+                # An unpushed branch is deliberately kept — but that is a loud
+                # condition (possible lost work), not a routine INFO line.
+                kept_unpushed = res["disposition"] == "returned-branch-kept-unpushed"
+                _log(f"session-end main-guard [{entry['kind']}"
+                     f"/{entry.get('via', '')}] {entry['repo']}: "
                      f"{res['disposition']} — {res['reason']}; "
                      f"lock released: {entry['lock_released']}",
                      session_id=session_id,
-                     level="INFO" if res["ok"] else "WARN")
+                     level="INFO" if res["ok"] and not kept_unpushed else "WARN")
                 if entry["kind"] == "home":
                     _step("return_to_main", res["disposition"] if res["ok"] else "failed")
                 elif not res["ok"]:
