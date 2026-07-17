@@ -142,6 +142,26 @@ class TestTelemetryScopeAndRemote(unittest.TestCase):
         self.assertFalse(any(p.startswith("!/Users-") for p in pats),
                          f"leading-dash slug missing in {pats}")
 
+    def test_scope_patterns_emit_teamed_layout_allowlist(self):
+        # PROJ-043: ~/workspace/{team}/… teamed layout, alongside the flat one, until
+        # T-104 retires the flat patterns fleet-wide.
+        pats = telemetry_repo._scope_patterns(home="/Users/martincolley")
+        for teamed in (
+            "!-Users-martincolley-workspace-training-home-*/",
+            "!-Users-martincolley-workspace-training-trainingTeam/",
+            "!-Users-martincolley-workspace-roadmap-home-*/",
+            "!-Users-martincolley-workspace-roadmap-roadmapTeam/",
+            "!-Users-martincolley-workspace-podzone-home-*/",
+            "!-Users-martincolley-workspace-podzone-podzoneTeam/",
+            "!-Users-martincolley-workspace-podzone-agent-tooling/",
+        ):
+            self.assertIn(teamed, pats)
+        # flat-layout patterns must still be present — both layouts coexist.
+        self.assertIn("!-Users-martincolley-workspace-podzoneTeam/", pats)
+        self.assertIn("!-Users-martincolley-workspace-trainingTeam/", pats)
+        self.assertIn("!-Users-martincolley-workspace-roadmapTeam/", pats)
+        self.assertIn("!-Users-martincolley-workspace-agent-tooling/", pats)
+
     def test_scope_gitignore_skipped_for_non_default_repo(self):
         # A custom telemetry dir is assumed already-scoped; ensure_repo must not
         # drop a ~/.claude/projects-shaped allowlist into it.
