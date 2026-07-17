@@ -34,8 +34,12 @@ DEFAULT_REMOTE_ENV = "PODZONE_TELEMETRY_REMOTE"
 # flat (one dir per cwd, slug = cwd path with ``/`` -> ``-``), so a top-level allowlist
 # is sufficient. Agent sessions always run under ``~/sessions/`` (launch-session
 # worktrees) or the resident agent clones under ``~/workspace`` (home-* repos + the
-# team repos + agent-tooling). Everything else (personal code, cluster-repos, academy…)
-# stays ignored and never leaves the workstation.
+# team repos + agent-tooling) — flat layout — or, increasingly, under the teamed
+# layout ``~/workspace/{team}/…`` (home-* repos + the team repo, per team dir;
+# training reorg + PROJ-043 both hand-patched the deployed .gitignore for this before
+# it was canonical here). Both layouts coexist until T-104 retires the flat patterns
+# fleet-wide. Everything else (personal code, cluster-repos, academy…) stays ignored
+# and never leaves the workstation.
 def _scope_patterns(home: Optional[str] = None) -> list[str]:
     home = home or os.path.expanduser("~")
     # Claude encodes the cwd's absolute path into the dir name by replacing every
@@ -48,11 +52,20 @@ def _scope_patterns(home: Optional[str] = None) -> list[str]:
         "/*",
         "!/.gitignore",
         f"!{pfx}-sessions-*/",            # launch-session worktrees (all agents)
-        f"!{pfx}-workspace-home-*/",      # resident migrated home repos
+        f"!{pfx}-workspace-home-*/",      # resident migrated home repos (flat layout)
         f"!{pfx}-workspace-podzoneTeam/",
         f"!{pfx}-workspace-trainingTeam/",
         f"!{pfx}-workspace-roadmapTeam/",
         f"!{pfx}-workspace-agent-tooling/",
+        # Teamed workspace layout (~/workspace/{team}/…): agent repos under the team
+        # dirs. Flat patterns above stay until T-104 retires them fleet-wide.
+        f"!{pfx}-workspace-training-home-*/",
+        f"!{pfx}-workspace-training-trainingTeam/",
+        f"!{pfx}-workspace-roadmap-home-*/",
+        f"!{pfx}-workspace-roadmap-roadmapTeam/",
+        f"!{pfx}-workspace-podzone-home-*/",
+        f"!{pfx}-workspace-podzone-podzoneTeam/",
+        f"!{pfx}-workspace-podzone-agent-tooling/",
     ]
 
 
