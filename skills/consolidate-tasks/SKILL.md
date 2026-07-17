@@ -134,7 +134,7 @@ ls team/*/outgoing/session-*.md 2>/dev/null
 ```
 
 This covers all current podzoneTeam agents (Hermes, Hephaestus, Atlas, Thoth) plus
-any fissioned-team stub agents (Clio, Alex, Norma, Eben) whose stubs land here.
+any fissioned-team stub agents (Clio) whose stubs land here.
 
 ### Step 1a — Migrated home-repo scan (PROJ-039/T-011 C2, T-007)
 
@@ -185,7 +185,6 @@ local path using this config table (update as new teams are stood up):
 
 | Team | Local path | Outbox agents | Tasklist | Session PR repo |
 |---|---|---|---|---|
-| trainingTeam | ~/workspace/trainingTeam | athena, hestia | planning/team-tasklist.md | PodZonePlatformEngineering/trainingTeam |
 | roadmapTeam | ~/workspace/roadmapTeam | clio, kronos | (none yet — flag to Hermes) | PodZonePlatformEngineering/roadmapTeam |
 
 For each team in the table:
@@ -211,7 +210,7 @@ The fissioned Team Lead consolidates their own team without depending on Hermes.
 
 **Load-bearing for a migrated team lead.** Local mode used to assume the current repo
 *was* the team repo (true for the legacy fissioned layout where `home_repo == trainingTeam`).
-A **migrated** team lead's `home_repo` is `home-<team>-<agent>` (e.g. `home-training-athena`)
+A **migrated** team lead's `home_repo` is `home-<team>-<agent>` (e.g. `home-roadmap-X`)
 — a hooks+coordination-skills home repo that is **not** the team repo and has no
 `team/*/outgoing/`, `planning/team-tasklist.md`, or `planning/STATUS.md`. Before any step,
 resolve the separate team repo from identity:
@@ -224,8 +223,8 @@ python3 .workspace/agent-tooling/lib/team_repo.py --home-repo "$HOME_REPO" --jso
 ```
 
 Use the resolved values for every local-mode step below — call the team repo's checkout
-`{team_repo}` (e.g. `~/workspace/trainingTeam`) and its GitHub repo `{github_repo}`
-(e.g. `PodZonePlatformEngineering/trainingTeam`). Clone `{team_repo}` into `.workspace/`
+`{team_repo}` (e.g. `~/workspace/roadmapTeam`) and its GitHub repo `{github_repo}`
+(e.g. `PodZonePlatformEngineering/roadmapTeam`). Clone `{team_repo}` into `.workspace/`
 if it is not already present. **Never** read/write the home repo for tasklist/STATUS/outbox
 — those live in `{team_repo}`. (Legacy fissioned lead: `{team_repo}` == `home_repo`, so the
 table below is unchanged for them.)
@@ -239,7 +238,7 @@ migrated lead is a DIFFERENT checkout from `home_repo`):
 | Step 1 — podzoneTeam outbox scan | **Skip** — not applicable |
 | Step 1b — fissioned repo scan | **Run for `{team_repo}` only**: `ls {team_repo}/team/*/outgoing/session-*.md 2>/dev/null` (plus the migrated-home-repo `results/` scan of Step 1a for any migrated team members) |
 | Step 2 — read and parse | Same as full mode |
-| Step 2b — PR review | Look up session PRs in `{github_repo}` (e.g. `PodZonePlatformEngineering/trainingTeam`) |
+| Step 2b — PR review | Look up session PRs in `{github_repo}` (e.g. `PodZonePlatformEngineering/roadmapTeam`) |
 | Step 2c — drafts reconciliation | Scan `{team_repo}/team/*/incoming/drafts/*.md` only |
 | Step 3 — apply to tasklist | Update `{team_repo}/planning/team-tasklist.md`, not podzoneTeam's and not the home repo's |
 | Step 4 — update STATUS.md | Update `{team_repo}/planning/STATUS.md` |
@@ -335,7 +334,7 @@ gh pr view {repo}#{number} --json state,title,headRefName,commits,statusCheckRol
 
 **Fissioned team session PRs:** When checking the session PR (not task-repo PRs) for a
 fissioned team agent, look it up in the repo from the Step 1b config table
-(e.g. `PodZonePlatformEngineering/trainingTeam`), not `podzoneTeam`.
+(e.g. `PodZonePlatformEngineering/roadmapTeam`), not `podzoneTeam`.
 
 **Check 1 — PR exists and is open** (state == `OPEN`):
 - If `MERGED`: already done — note as complete, skip further checks
@@ -627,7 +626,6 @@ Questions for Martin (N):
     Context: {brief or spec link}
 
 Fissioned teams consolidated (N):
-  trainingTeam: N outboxes — N tasks updated in trainingTeam/planning/team-tasklist.md
   roadmapTeam: N outboxes — no tasklist; tasks listed:
     {agent}: {task-slug} — {status}
   ⚠️  {team}: local path unreachable — skipped   ← if applicable
