@@ -73,6 +73,34 @@ out-of-subset skill, so session ceremony can never leak in) and asserted both th
 canonical `lib/team_repo.py` resolves the **team repo** the lead consolidates against
 (`home-<team>-<agent>` → `<team>Team`) for the `home_repo ≠ team_repo` case.
 
+## Role-resident external skills — `neon` + `neon-postgres` (PROJ-039/T-106)
+
+Operator policy (2026-07-18): the Neon agent-skills (`neon`, `neon-postgres`, from
+**neondatabase/agent-skills**, hash-locked) are **required residents for the team-lead,
+coder, and trainer (training-admin) roles**. They are a fifth delivery class: canonical
+copies live in `skills/` like any source skill, but they ship to **home repos by role**
+(via `sync-agent-tooling.sh` / `scaffold.sh` — team-lead through the manifest,
+coder/trainer through `role_resident_skills`), **not** to the team mirrors — every
+`<mirror>:neon*` pair is allowlisted so the mirror sweep neither installs nor flags them.
+
+The install carries two sync-managed adjuncts in each resident home repo:
+
+- `.agents/skills/{neon,neon-postgres}` — the installer's multi-runtime mirror,
+  byte-identical to the `.claude/skills/` copies;
+- `skills-lock.json` (repo root) — the upstream hash-lock; canonical copy is
+  `skills/skills-lock.json` (a top-level *file* in `skills/`, invisible to the
+  dir-scoped mirror machinery).
+
+Both are installed and byte-identity-asserted by the role-sync invariant; `TestResidentSkills`
+in `test_skills_parity.py` pins the lock ↔ resident-set agreement and the allowlist entries.
+
+**Policy: Neon skills are verification-only — DB changes are scripted
+(migrations/tooling), never applied ad hoc via skills.**
+
+To refresh from upstream: update `skills/{neon,neon-postgres}/SKILL.md` +
+`skills/skills-lock.json` together (verify the upstream hashes), and let the fleet pick
+the change up via each repo's next `TOOLING_UPDATE` — never hand-edit a home-repo copy.
+
 ### When a fix has only landed in a mirror
 
 If a skill was hardened in the **apex** copy first (the recurring real case — apex

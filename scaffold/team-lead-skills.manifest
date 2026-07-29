@@ -36,3 +36,13 @@ launch-session
 create-task
 usage-report
 session-end
+
+# Resident external skills (PROJ-039/T-106, CC-438 — operator policy 2026-07-18):
+# the Neon agent-skills (neondatabase/agent-skills, hash-locked via
+# skills/skills-lock.json) are required residents for the team-lead, coder, and
+# trainer (training-admin) roles. For a team lead they ride this manifest; for
+# coder/trainer they are the role_resident_skills set in sync-agent-tooling.sh /
+# scaffold.sh. Policy: Neon skills are VERIFICATION-ONLY — DB changes are scripted
+# (migrations/tooling), never applied ad hoc via skills.
+neon
+neon-postgres

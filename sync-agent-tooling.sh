@@ -597,81 +597,105 @@ else
   find "$LIB_DST" -mindepth 1 -type d -empty -delete 2>/dev/null || true
 fi
 
-# --- Coordination skills (team-lead variant only) ---
+# --- Role skill set (team-lead coordination subset + T-106 resident skills) ---
 # A team-lead home repo carries the coordination skill subset under .claude/skills/,
 # byte-identical to the canonical agent-tooling/skills/ source and EXACTLY the subset
-# (any out-of-subset skill is pruned — session ceremony stays hook-driven). Build-agent
-# home repos stay skill-free: if a .claude/skills/ exists for a non-team-lead role it is
-# flagged (and pruned on confirm). PROJ-039/T-038.
+# (any out-of-subset skill is pruned — session ceremony stays hook-driven). PROJ-039/
+# T-038. Since T-106 (CC-438, operator policy 2026-07-18) the Neon agent-skills
+# (`neon`, `neon-postgres` — neondatabase/agent-skills, hash-locked via
+# skills/skills-lock.json) are additionally required residents for the team-lead,
+# coder, and trainer (training-admin) roles: for a team lead they ride the manifest;
+# for coder/trainer they ARE the role's skill set. Policy: Neon skills are
+# VERIFICATION-ONLY — DB changes are scripted (migrations/tooling), never applied
+# ad hoc via skills. Every other role stays skill-free: a stray .claude/skills/ is
+# flagged (and pruned on confirm).
+
+# T-106 resident external skills per role (empty = none). Keep in lockstep with
+# role_resident_skills in scaffold.sh and RESIDENT_SKILLS in test_skills_parity.py.
+role_resident_skills() {
+  case "$1" in
+    team-lead|coder|trainer) echo "neon neon-postgres" ;;
+    *) echo "" ;;
+  esac
+}
+RESIDENT_SKILLS="$(role_resident_skills "$ROLE")"
 
 SKILLS_DST="${HOME_REPO}/.claude/skills"
 SUBSET_SET=""
 echo ""
 if [[ "$ROLE" == "team-lead" ]]; then
-  echo "==> Syncing coordination skills (team-lead) → ${SKILLS_DST}"
   if [[ ! -f "$TEAM_LEAD_SKILLS_MANIFEST" ]]; then
-    echo "  SKIP  skills/ — manifest not found (${TEAM_LEAD_SKILLS_MANIFEST})"
+    echo "==> SKIP  skills/ — manifest not found (${TEAM_LEAD_SKILLS_MANIFEST})"
     ((SKIPPED++))
   else
-    mkdir -p "$SKILLS_DST"
     while IFS= read -r line || [[ -n "$line" ]]; do
       entry="${line%%#*}"; entry="${entry//[[:space:]]/}"
       [[ -z "$entry" ]] && continue
       SUBSET_SET="${SUBSET_SET} ${entry}"
-      src="${SKILLS_SRC}/${entry}"
-      dst="${SKILLS_DST}/${entry}"
-      if [[ ! -d "$src" ]]; then
-        echo "  SKIP  skills/${entry} — not found in agent-tooling (${src})"
-        ((SKIPPED++)); continue
-      fi
-      if [[ -d "$dst" ]] && diff -rq -x '__pycache__' -x '*.pyc' "$src" "$dst" > /dev/null 2>&1; then
-        echo "  OK    skills/${entry} — unchanged"
-        ((UNCHANGED++)); continue
-      fi
-      if [[ -d "$dst" ]]; then
-        echo "  DIFF  skills/${entry}:"
-        diff -rq -x '__pycache__' -x '*.pyc' "$dst" "$src" || true
-      else
-        echo "  NEW   skills/${entry} — not present in home repo"
-      fi
-      if [[ $YES -eq 0 ]]; then
-        printf "  Overwrite skills/%s? [y/N] " "$entry"
-        read -r answer </dev/tty
-        if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
-          echo "  Skipped."; ((SKIPPED++)); continue
-        fi
-      fi
-      atomic_install_dir "$src" "$dst"
-      echo "  Updated: skills/${entry}"
-      ((UPDATED++))
     done < "$TEAM_LEAD_SKILLS_MANIFEST"
-
-    # Prune any skill NOT in the subset (session ceremony / drift).
-    if [[ -d "$SKILLS_DST" ]]; then
-      while IFS= read -r d; do
-        name="$(basename "$d")"
-        case " ${SUBSET_SET} " in
-          *" ${name} "*) : ;;  # in subset — keep
-          *)
-            if [[ $YES -eq 0 ]]; then
-              printf "  Prune out-of-subset skills/%s? [y/N] " "$name"
-              read -r answer </dev/tty
-              [[ "$answer" == "y" || "$answer" == "Y" ]] || { echo "  Kept."; continue; }
-            fi
-            rm -rf "$d"
-            echo "  Pruned: skills/${name} (not in team-lead-skills.manifest)"
-            ((UPDATED++))
-            ;;
-        esac
-      done < <(find "$SKILLS_DST" -mindepth 1 -maxdepth 1 -type d)
-    fi
   fi
 else
-  # Build-agent home repos are hooks-only. A stray skills/ is a regression.
+  SUBSET_SET=" ${RESIDENT_SKILLS}"
+  SUBSET_SET="${SUBSET_SET% }"
+fi
+
+if [[ -n "${SUBSET_SET// /}" ]]; then
+  echo "==> Syncing role skill set (${ROLE}) → ${SKILLS_DST}"
+  mkdir -p "$SKILLS_DST"
+  for entry in $SUBSET_SET; do
+    src="${SKILLS_SRC}/${entry}"
+    dst="${SKILLS_DST}/${entry}"
+    if [[ ! -d "$src" ]]; then
+      echo "  SKIP  skills/${entry} — not found in agent-tooling (${src})"
+      ((SKIPPED++)); continue
+    fi
+    if [[ -d "$dst" ]] && diff -rq -x '__pycache__' -x '*.pyc' "$src" "$dst" > /dev/null 2>&1; then
+      echo "  OK    skills/${entry} — unchanged"
+      ((UNCHANGED++)); continue
+    fi
+    if [[ -d "$dst" ]]; then
+      echo "  DIFF  skills/${entry}:"
+      diff -rq -x '__pycache__' -x '*.pyc' "$dst" "$src" || true
+    else
+      echo "  NEW   skills/${entry} — not present in home repo"
+    fi
+    if [[ $YES -eq 0 ]]; then
+      printf "  Overwrite skills/%s? [y/N] " "$entry"
+      read -r answer </dev/tty
+      if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+        echo "  Skipped."; ((SKIPPED++)); continue
+      fi
+    fi
+    atomic_install_dir "$src" "$dst"
+    echo "  Updated: skills/${entry}"
+    ((UPDATED++))
+  done
+
+  # Prune any skill NOT in the role's set (session ceremony / drift).
+  if [[ -d "$SKILLS_DST" ]]; then
+    while IFS= read -r d; do
+      name="$(basename "$d")"
+      case " ${SUBSET_SET} " in
+        *" ${name} "*) : ;;  # in subset — keep
+        *)
+          if [[ $YES -eq 0 ]]; then
+            printf "  Prune out-of-subset skills/%s? [y/N] " "$name"
+            read -r answer </dev/tty
+            [[ "$answer" == "y" || "$answer" == "Y" ]] || { echo "  Kept."; continue; }
+          fi
+          rm -rf "$d"
+          echo "  Pruned: skills/${name} (not in the '${ROLE}' role skill set)"
+          ((UPDATED++))
+          ;;
+      esac
+    done < <(find "$SKILLS_DST" -mindepth 1 -maxdepth 1 -type d)
+  fi
+else
+  # Skill-free roles are hooks-only. A stray skills/ is a regression.
   if [[ -d "$SKILLS_DST" ]]; then
     echo "==> WARNING: role '${ROLE}' is hooks-only but .claude/skills/ exists."
     if [[ $YES -eq 0 ]]; then
-      printf "  Remove .claude/skills/ (build agents carry no skills)? [y/N] "
+      printf "  Remove .claude/skills/ (this role carries no skills)? [y/N] "
       read -r answer </dev/tty
       if [[ "$answer" == "y" || "$answer" == "Y" ]]; then
         rm -rf "$SKILLS_DST"; echo "  Removed: .claude/skills/"; ((UPDATED++))
@@ -683,6 +707,63 @@ else
     fi
   else
     echo "==> Skills: none (role '${ROLE}' is hooks-only — correct)"
+  fi
+fi
+
+# --- T-106 resident-skill adjuncts: .agents/skills mirror + skills-lock.json ---
+# The Neon skill install carries two adjacent artefacts the role-sync must manage
+# (not prune): a multi-runtime `.agents/skills/` mirror of the same skill dirs, and
+# the root `skills-lock.json` hash-lock (canonical copy: skills/skills-lock.json).
+# Only roles with resident skills carry them; both are byte-identity-synced.
+AGENTS_SKILLS_DST="${HOME_REPO}/.agents/skills"
+SKILLS_LOCK_SRC="${SKILLS_SRC}/skills-lock.json"
+SKILLS_LOCK_DST="${HOME_REPO}/skills-lock.json"
+if [[ -n "${RESIDENT_SKILLS// /}" ]]; then
+  echo ""
+  echo "==> Syncing resident-skill adjuncts (${ROLE}) → .agents/skills/ + skills-lock.json"
+  mkdir -p "$AGENTS_SKILLS_DST"
+  for entry in $RESIDENT_SKILLS; do
+    src="${SKILLS_SRC}/${entry}"
+    dst="${AGENTS_SKILLS_DST}/${entry}"
+    if [[ ! -d "$src" ]]; then
+      echo "  SKIP  .agents/skills/${entry} — not found in agent-tooling (${src})"
+      ((SKIPPED++)); continue
+    fi
+    if [[ -d "$dst" ]] && diff -rq -x '__pycache__' -x '*.pyc' "$src" "$dst" > /dev/null 2>&1; then
+      echo "  OK    .agents/skills/${entry} — unchanged"
+      ((UNCHANGED++)); continue
+    fi
+    if [[ $YES -eq 0 ]]; then
+      printf "  Overwrite .agents/skills/%s? [y/N] " "$entry"
+      read -r answer </dev/tty
+      if [[ "$answer" != "y" && "$answer" != "Y" ]]; then
+        echo "  Skipped."; ((SKIPPED++)); continue
+      fi
+    fi
+    atomic_install_dir "$src" "$dst"
+    echo "  Updated: .agents/skills/${entry}"
+    ((UPDATED++))
+  done
+  if [[ -f "$SKILLS_LOCK_SRC" ]]; then
+    if [[ -f "$SKILLS_LOCK_DST" ]] && diff -q "$SKILLS_LOCK_SRC" "$SKILLS_LOCK_DST" > /dev/null 2>&1; then
+      echo "  OK    skills-lock.json — unchanged"
+      ((UNCHANGED++))
+    else
+      APPLY=1
+      if [[ $YES -eq 0 ]]; then
+        printf "  Overwrite skills-lock.json? [y/N] "
+        read -r answer </dev/tty
+        [[ "$answer" == "y" || "$answer" == "Y" ]] || { echo "  Skipped."; ((SKIPPED++)); APPLY=0; }
+      fi
+      if [[ $APPLY -eq 1 ]]; then
+        atomic_install "$SKILLS_LOCK_SRC" "$SKILLS_LOCK_DST" 644
+        echo "  Updated: skills-lock.json"
+        ((UPDATED++))
+      fi
+    fi
+  else
+    echo "  SKIP  skills-lock.json — canonical copy not found (${SKILLS_LOCK_SRC})"
+    ((SKIPPED++))
   fi
 fi
 
@@ -909,10 +990,11 @@ if [[ "$ROLE" != "trainee" && -n "$README_RENDERED" ]]; then
     || { echo "  DRIFT: README.md (not byte-identical to rendered template / missing)"; DRIFT=1; }
 fi
 
-# Skills invariant (PROJ-039/T-038): a team-lead home repo's .claude/skills/ MUST be
-# exactly the coordination subset, each byte-identical to source; a build-agent home
-# repo MUST have NO .claude/skills/ at all.
-if [[ "$ROLE" == "team-lead" && -f "$TEAM_LEAD_SKILLS_MANIFEST" ]]; then
+# Skills invariant (PROJ-039/T-038 + T-106): a home repo with a role skill set
+# (team-lead coordination subset; coder/trainer Neon residents) MUST carry exactly
+# that set under .claude/skills/, each byte-identical to source; a skill-free role
+# MUST have NO .claude/skills/ at all.
+if [[ -n "${SUBSET_SET// /}" ]]; then
   for skill in $SUBSET_SET; do
     diff -rq -x '__pycache__' -x '*.pyc' "${SKILLS_SRC}/${skill}" "${SKILLS_DST}/${skill}" > /dev/null 2>&1 \
       || { echo "  DRIFT: skills/${skill} (not byte-identical to source / missing)"; DRIFT=1; }
@@ -921,12 +1003,24 @@ if [[ "$ROLE" == "team-lead" && -f "$TEAM_LEAD_SKILLS_MANIFEST" ]]; then
     name="$(basename "$d")"
     case " ${SUBSET_SET} " in
       *" ${name} "*) : ;;
-      *) echo "  DRIFT: skills/${name} (out of subset — not in team-lead-skills.manifest)"; DRIFT=1 ;;
+      *) echo "  DRIFT: skills/${name} (out of subset — not in the '${ROLE}' role skill set)"; DRIFT=1 ;;
     esac
   done < <(find "$SKILLS_DST" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
-elif [[ "$ROLE" != "team-lead" && -d "$SKILLS_DST" ]]; then
-  echo "  DRIFT: .claude/skills/ present for hooks-only role '${ROLE}' (build agents carry no skills)"
+elif [[ -d "$SKILLS_DST" ]]; then
+  echo "  DRIFT: .claude/skills/ present for hooks-only role '${ROLE}' (this role carries no skills)"
   DRIFT=1
+fi
+# T-106 resident-skill adjuncts invariant: .agents/skills mirror + skills-lock.json
+# byte-identical to canonical for roles carrying the Neon residents.
+if [[ -n "${RESIDENT_SKILLS// /}" ]]; then
+  for skill in $RESIDENT_SKILLS; do
+    diff -rq -x '__pycache__' -x '*.pyc' "${SKILLS_SRC}/${skill}" "${AGENTS_SKILLS_DST}/${skill}" > /dev/null 2>&1 \
+      || { echo "  DRIFT: .agents/skills/${skill} (not byte-identical to source / missing)"; DRIFT=1; }
+  done
+  if [[ -f "$SKILLS_LOCK_SRC" ]]; then
+    diff -q "$SKILLS_LOCK_SRC" "$SKILLS_LOCK_DST" > /dev/null 2>&1 \
+      || { echo "  DRIFT: skills-lock.json (not byte-identical to canonical / missing)"; DRIFT=1; }
+  fi
 fi
 
 if [[ $DRIFT -eq 0 ]]; then

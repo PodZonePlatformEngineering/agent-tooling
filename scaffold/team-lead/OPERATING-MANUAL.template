@@ -217,7 +217,7 @@ Duties per pass:
 
 ## 7. Coordination skills — parity subset vs apex extras
 
-Your `.claude/skills/` carries exactly the **4-skill parity manifest**
+Your `.claude/skills/` carries exactly the **parity manifest**
 (`agent-tooling/scaffold/team-lead-skills.manifest`), byte-identical to canonical
 `agent-tooling/skills/` and enforced by `test_skills_parity.py` (subset present +
 byte-identical + no out-of-subset skill):
@@ -228,6 +228,16 @@ byte-identical + no out-of-subset skill):
 | `/launch-session` | §4 — launching your team's agents |
 | `/create-task` | task-board entry creation, identity-routed |
 | `/usage-report` | 7-day usage digest, output into the resolved team repo |
+| `/session-end` | T-100 manual-finalise wrapper (sidebar `/exit` equivalent) |
+| `neon`, `neon-postgres` | T-106 resident Neon skills — see policy below |
+
+**Neon skills are verification-only — DB changes are scripted (migrations/tooling),
+never applied ad hoc via skills.** The `neon` + `neon-postgres` residents (operator
+policy 2026-07-18, PROJ-039/T-106) come from `neondatabase/agent-skills`, hash-locked
+via the sync-managed root `skills-lock.json`; role-sync also maintains their
+`.agents/skills/` mirror. They ship to the team-lead, coder, and trainer
+(training-admin) roles; use them to look things up and verify state, not to mutate
+databases outside a scripted migration.
 
 Further team-management skills (`team-lead-brief`, `onboard-agent`, `stand-up-team`,
 and others) live in **podzoneTeam `.claude/skills/`** — NOT in home repos: the sync

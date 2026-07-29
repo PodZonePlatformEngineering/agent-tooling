@@ -493,12 +493,41 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 done < "$LIB_MANIFEST"
 echo "    copied: lib/ (${LIB_COUNT} modules from manifest)"
 
-# --- Copy coordination skills (team-lead variant only) ---
-# A team lead is the ONLY home-repo class that carries skills: the coordination
-# subset it invokes to lead its team (consolidate-tasks, launch-session). Build
-# agents get nothing here. Copied byte-identical from the canonical agent-tooling/
-# skills/ source per team-lead-skills.manifest; test_skills_parity.py enforces both
-# the byte-identity and the "subset only" shape. PROJ-039/T-038.
+# --- Copy role skill set (team-lead subset + T-106 resident skills) ---
+# A team lead carries the coordination subset it invokes to lead its team
+# (consolidate-tasks, launch-session, …) per team-lead-skills.manifest —
+# PROJ-039/T-038. Since T-106 (CC-438, operator policy 2026-07-18) the Neon
+# agent-skills (`neon`, `neon-postgres`, hash-locked via skills/skills-lock.json)
+# are required residents for team-lead (via the manifest), coder, and trainer
+# (training-admin) — VERIFICATION-ONLY: DB changes are scripted (migrations/
+# tooling), never applied ad hoc via skills. Roles with residents also carry the
+# install's adjacent artefacts: the .agents/skills/ mirror + root skills-lock.json.
+# Every other role stays skill-free. Copied byte-identical from the canonical
+# agent-tooling/skills/ source; test_skills_parity.py enforces byte-identity and
+# the "exact set" shape. Keep role_resident_skills in lockstep with
+# sync-agent-tooling.sh.
+
+role_resident_skills() {
+  case "$1" in
+    team-lead|coder|trainer) echo "neon neon-postgres" ;;
+    *) echo "" ;;
+  esac
+}
+RESIDENT_SKILLS="$(role_resident_skills "$ROLE")"
+
+copy_skill() {  # copy_skill <skill-name> <dst-skills-dir>
+  local entry="$1" dstdir="$2"
+  local src="${SKILLS_SRC}/${entry}"
+  local dst="${dstdir}/${entry}"
+  if [[ ! -d "$src" ]]; then
+    echo "Error: role skill set lists '${entry}' but source is missing: ${src}"
+    exit 1
+  fi
+  rm -rf "$dst"
+  cp -R "$src" "$dst"
+  find "$dst" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+  echo "    copied: ${dst#"${TARGET_DIR}/"}"
+}
 
 if [[ "$ROLE" == "team-lead" ]]; then
   echo "==> Copying coordination skills (team-lead variant) into .claude/skills/..."
@@ -511,19 +540,31 @@ if [[ "$ROLE" == "team-lead" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
     entry="${line%%#*}"; entry="${entry//[[:space:]]/}"
     [[ -z "$entry" ]] && continue
-    src="${SKILLS_SRC}/${entry}"
-    dst="${TARGET_DIR}/.claude/skills/${entry}"
-    if [[ ! -d "$src" ]]; then
-      echo "Error: manifest lists skill '${entry}' but source is missing: ${src}"
-      exit 1
-    fi
-    rm -rf "$dst"
-    cp -R "$src" "$dst"
-    find "$dst" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+    copy_skill "$entry" "${TARGET_DIR}/.claude/skills"
     SKILL_COUNT=$((SKILL_COUNT + 1))
-    echo "    copied: skills/${entry}"
   done < "$TEAM_LEAD_SKILLS_MANIFEST"
   echo "    copied: skills/ (${SKILL_COUNT} coordination skills)"
+elif [[ -n "${RESIDENT_SKILLS// /}" ]]; then
+  echo "==> Copying resident skills (${ROLE}) into .claude/skills/..."
+  mkdir -p "${TARGET_DIR}/.claude/skills"
+  for entry in $RESIDENT_SKILLS; do
+    copy_skill "$entry" "${TARGET_DIR}/.claude/skills"
+  done
+fi
+
+# T-106 resident-skill adjuncts: .agents/skills mirror + root skills-lock.json.
+if [[ -n "${RESIDENT_SKILLS// /}" ]]; then
+  echo "==> Copying resident-skill adjuncts (.agents/skills/ + skills-lock.json)..."
+  mkdir -p "${TARGET_DIR}/.agents/skills"
+  for entry in $RESIDENT_SKILLS; do
+    copy_skill "$entry" "${TARGET_DIR}/.agents/skills"
+  done
+  if [[ ! -f "${SKILLS_SRC}/skills-lock.json" ]]; then
+    echo "Error: canonical skills-lock.json missing: ${SKILLS_SRC}/skills-lock.json"
+    exit 1
+  fi
+  cp "${SKILLS_SRC}/skills-lock.json" "${TARGET_DIR}/skills-lock.json"
+  echo "    copied: skills-lock.json"
 fi
 
 # --- Operating manual (team-lead variant only, PROJ-039/T-081) ---

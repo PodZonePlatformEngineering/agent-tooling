@@ -12,5 +12,15 @@
 #
 #   trainingTeam:session-end      # trainer-specific close-out flow, intentionally divergent
 #
-# There are currently NO exceptions: all four copies of every source skill are
-# byte-identical. Add an entry only with a one-line reason for the divergence.
+# Add an entry only with a one-line reason for the divergence.
+
+# PROJ-039/T-106 (CC-438): the Neon agent-skills are ROLE-RESIDENT skills — they
+# ship to team-lead / coder / trainer HOME repos via role-sync, not to the team
+# mirrors. Exempt them here so the team-mirror parity sweep neither installs nor
+# flags them; remove these entries if operator policy later extends them to teams.
+podzoneTeam:neon
+podzoneTeam:neon-postgres
+trainingTeam:neon
+trainingTeam:neon-postgres
+roadmapTeam:neon
+roadmapTeam:neon-postgres
