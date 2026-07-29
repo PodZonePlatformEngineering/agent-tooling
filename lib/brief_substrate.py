@@ -108,10 +108,17 @@ def create_brief(
     `brief` named vector is set from ``body`` only when an embed endpoint is
     explicitly configured (``ollama_host`` argument or ``OLLAMA_HOST`` env),
     else the point is written vector-less with a stderr note. Re-running with
-    the same ``brief_id`` converges on the same point (idempotent authoring). ``session_ids`` and ``completed_at`` start empty/None
-    and are only ever written later via the partial-write helpers, so a re-author
-    of an in-flight brief does NOT clobber accumulated session links unless the
-    caller passes them — this function deliberately does not accept them.
+    the same ``brief_id`` converges on the same point (idempotent authoring).
+
+    Re-author preservation (PROJ-039/T-109): although creation is a full
+    upsert, this function first fetches any existing point and carries the
+    lifecycle fields it deliberately does not accept forward — ``session_ids``
+    accumulated by materialise survive a convergent re-author, ``created_at``
+    keeps the original authoring timestamp unless explicitly passed, and
+    ``completed_at`` survives when the re-author keeps ``status=complete``
+    (re-opening to any other status clears it). ``status`` itself always
+    applies as passed — an explicit ``--status``/``--approve`` on re-author is
+    the ADR-008 D5 gate action and must win over the stored value.
 
     ``tooling_update`` (PROJ-039/T-056) is the audit-record twin of the
     launch-time ``TOOLING_UPDATE`` env var that actually triggers the resident
@@ -134,7 +141,16 @@ def create_brief(
         raise ValueError("brief body is empty")
 
     pid = point_id_for(brief_id)
-    created_at = created_at or session_substrate._now_iso()
+    # Read-modify-write (T-109): a convergent re-author must not erase the
+    # lifecycle state only the partial-write helpers own.
+    existing = qdrant_http.get_point(pid, collection=COLLECTION, api_key=api_key) or {}
+    session_ids = (
+        list(existing["session_ids"])
+        if isinstance(existing.get("session_ids"), list)
+        else []
+    )
+    created_at = created_at or existing.get("created_at") or session_substrate._now_iso()
+    completed_at = existing.get("completed_at") if status == STATUS_COMPLETE else None
     brief_vector = session_substrate.maybe_embed(
         body, label="brief_body", ollama_host=ollama_host
     )
@@ -147,8 +163,8 @@ def create_brief(
         "assignee_type": assignee_type,
         "status": status,
         "created_at": created_at,
-        "completed_at": None,
-        "session_ids": [],
+        "completed_at": completed_at,
+        "session_ids": session_ids,
         "work_items": list(work_items or []),
         "summary": summary or "",
         "body": body,

@@ -159,6 +159,60 @@ class TestCreateBrief(unittest.TestCase):
             )
         self.assertEqual(rec2.payload["tooling_update"], "v1.1.0")
 
+    def test_reauthor_preserves_session_ids_and_updates_body(self) -> None:
+        # PROJ-039/T-109 regression: author → materialise appends a sid →
+        # convergent re-author of the same brief_id. Before the fix the second
+        # full upsert always wrote session_ids: [] and silently erased the
+        # brief's session history (hit live on t085/t088, 2026-07-26).
+        rec = RecordingQdrant()
+        with patch.object(qdrant_http, "request_json", rec), \
+             patch.object(session_substrate, "embed_text", lambda *a, **k: [0.1] * 768):
+            brief_substrate.create_brief(
+                brief_id=BRIEF_ID, team="training", author="athena",
+                assignee="alex", assignee_type="trainee", body="Learn prompt basics.",
+                status="approved", summary="v1",
+            )
+            first_created_at = rec.payload["created_at"]
+            brief_substrate.append_session_id(BRIEF_ID, "runtime-sid-9")
+            brief_substrate.create_brief(
+                brief_id=BRIEF_ID, team="training", author="athena",
+                assignee="alex", assignee_type="trainee",
+                body="Learn prompt basics — reworked.",
+                status="approved", summary="v2",
+            )
+        self.assertEqual(rec.payload["session_ids"], ["runtime-sid-9"])
+        self.assertEqual(rec.payload["body"], "Learn prompt basics — reworked.")
+        self.assertEqual(rec.payload["summary"], "v2")
+        self.assertEqual(rec.payload["created_at"], first_created_at)
+        self.assertEqual(rec.payload["status"], "approved")
+
+    def test_reauthor_completed_at_follows_status(self) -> None:
+        # completed_at survives a re-author that keeps status=complete; a
+        # re-open to any other status clears it (a non-complete brief must not
+        # carry a stale completion stamp).
+        rec = RecordingQdrant()
+        with patch.object(qdrant_http, "request_json", rec), \
+             patch.object(session_substrate, "embed_text", lambda *a, **k: [0.1] * 768):
+            brief_substrate.create_brief(
+                brief_id=BRIEF_ID, team="training", author="athena",
+                assignee="alex", assignee_type="trainee", body="b.",
+                status="approved",
+            )
+            brief_substrate.complete_brief(BRIEF_ID, completed_at="2026-07-29T00:00:00Z")
+            brief_substrate.create_brief(
+                brief_id=BRIEF_ID, team="training", author="athena",
+                assignee="alex", assignee_type="trainee", body="b2.",
+                status="complete",
+            )
+            self.assertEqual(rec.payload["completed_at"], "2026-07-29T00:00:00Z")
+            brief_substrate.create_brief(
+                brief_id=BRIEF_ID, team="training", author="athena",
+                assignee="alex", assignee_type="trainee", body="b3.",
+                status="in_progress",
+            )
+        self.assertIsNone(rec.payload["completed_at"])
+        self.assertEqual(rec.payload["status"], "in_progress")
+
     def test_rejects_bad_status_and_type_and_empty_body(self) -> None:
         with patch.object(session_substrate, "embed_text", lambda *a, **k: [0.1] * 768):
             with self.assertRaises(ValueError):
