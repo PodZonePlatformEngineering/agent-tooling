@@ -36,6 +36,12 @@ ALLOWLIST = REPO_ROOT / "skills-sync-allowlist"
 # Team-lead home-repo coordination subset (PROJ-039/T-038).
 TEAM_LEAD_SKILLS_MANIFEST = REPO_ROOT / "scaffold" / "team-lead-skills.manifest"
 
+# T-106 (CC-438) resident external skills: required residents for the team-lead,
+# coder, and trainer (training-admin) roles, hash-locked via skills/skills-lock.json.
+# Keep in lockstep with role_resident_skills in sync-agent-tooling.sh / scaffold.sh.
+RESIDENT_SKILLS = ("neon", "neon-postgres")
+SKILLS_LOCK = SOURCE / "skills-lock.json"
+
 # Mirror skills dirs, relative to agent-tooling's parent. Kept in sync with the
 # default MIRRORS in sync-skills.sh.
 MIRROR_RELPATHS = (
@@ -299,12 +305,86 @@ class TestTeamLeadScaffoldDelivery(unittest.TestCase):
             drift = find_home_subset_drift(SOURCE, home_skills, subset)
             self.assertEqual(drift, [], f"team-lead skills drift: {drift}")
 
-    def test_build_agent_has_no_skills(self):
+    def test_team_lead_gets_resident_adjuncts(self):
+        """T-106: a team-lead home repo also carries the .agents/skills mirror
+        + root skills-lock.json for the Neon residents."""
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "home-training-athena"
+            self._scaffold("training", "athena", "team-lead", target)
+            for skill in RESIDENT_SKILLS:
+                self.assertTrue(
+                    _dirs_identical(SOURCE / skill, target / ".agents" / "skills" / skill),
+                    f".agents/skills/{skill} missing or not byte-identical")
+            self.assertEqual((target / "skills-lock.json").read_bytes(),
+                             SKILLS_LOCK.read_bytes())
+
+    def test_coder_gets_exactly_the_resident_skills(self):
+        """T-106: a coder home repo carries EXACTLY the Neon residents (byte-
+        identical, .claude + .agents mirrors) plus the root skills-lock.json."""
         with tempfile.TemporaryDirectory() as td:
             target = Path(td) / "home-podzone-coder"
             self._scaffold("podzone", "somecoder", "coder", target)
+            home_skills = target / ".claude" / "skills"
+            drift = find_home_subset_drift(SOURCE, home_skills, list(RESIDENT_SKILLS))
+            self.assertEqual(drift, [], f"coder resident-skills drift: {drift}")
+            for skill in RESIDENT_SKILLS:
+                self.assertTrue(
+                    _dirs_identical(SOURCE / skill, target / ".agents" / "skills" / skill),
+                    f".agents/skills/{skill} missing or not byte-identical")
+            self.assertEqual((target / "skills-lock.json").read_bytes(),
+                             SKILLS_LOCK.read_bytes())
+
+    def test_skill_free_role_has_no_skills(self):
+        """A role outside the T-106 resident set stays hooks-only: no .claude/
+        skills/, no .agents/, no skills-lock.json."""
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "home-podzone-historian"
+            self._scaffold("podzone", "somehistorian", "historian", target)
             self.assertFalse((target / ".claude" / "skills").exists(),
-                             "build-agent home repo must NOT carry .claude/skills/")
+                             "skill-free home repo must NOT carry .claude/skills/")
+            self.assertFalse((target / ".agents").exists(),
+                             "skill-free home repo must NOT carry .agents/")
+            self.assertFalse((target / "skills-lock.json").exists(),
+                             "skill-free home repo must NOT carry skills-lock.json")
+
+
+class TestResidentSkills(unittest.TestCase):
+    """T-106 — the Neon residents exist in the canonical source and the hash-lock
+    covers exactly them (upstream neondatabase/agent-skills provenance)."""
+
+    def test_resident_skills_exist_in_source(self):
+        for skill in RESIDENT_SKILLS:
+            self.assertTrue((SOURCE / skill / "SKILL.md").is_file(),
+                            f"skills/{skill}/SKILL.md missing from canonical source")
+
+    def test_residents_are_in_team_lead_manifest(self):
+        subset = read_subset_manifest(TEAM_LEAD_SKILLS_MANIFEST)
+        for skill in RESIDENT_SKILLS:
+            self.assertIn(skill, subset,
+                          f"'{skill}' must be asserted in team-lead-skills.manifest")
+
+    def test_lock_covers_exactly_the_residents(self):
+        import json
+        self.assertTrue(SKILLS_LOCK.is_file(), "skills/skills-lock.json missing")
+        lock = json.loads(SKILLS_LOCK.read_text())
+        self.assertEqual(sorted(lock.get("skills", {}).keys()),
+                         sorted(RESIDENT_SKILLS))
+        for name, entry in lock["skills"].items():
+            self.assertEqual(entry.get("source"), "neondatabase/agent-skills",
+                             f"lock entry '{name}' has unexpected source")
+            self.assertTrue(entry.get("computedHash"),
+                            f"lock entry '{name}' has no computedHash")
+
+    def test_residents_allowlisted_for_all_team_mirrors(self):
+        """Role-resident skills are home-repo-scoped: every team mirror must be
+        exempted in skills-sync-allowlist so the mirror sweep neither installs
+        nor flags them."""
+        allowed = read_allowlist(ALLOWLIST)
+        for rel in MIRROR_RELPATHS:
+            key = rel.split("/", 1)[0]
+            for skill in RESIDENT_SKILLS:
+                self.assertIn(f"{key}:{skill}", allowed,
+                              f"missing allowlist entry {key}:{skill}")
 
 
 class TestSkillsParityRealRepos(unittest.TestCase):
