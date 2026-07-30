@@ -15,6 +15,9 @@ extras: progress telemetry and the training team's operational-brief channel.
 ```bash
 # git + python3 (macOS: install the Xcode Command Line Tools if missing)
 git --version || xcode-select --install
+
+# python3 must be present AND 3.9+. This is the one hard prerequisite: without
+# it no hook runs, so nothing is branched, committed, or recorded. Do it first.
 python3 --version
 
 # GitHub CLI, authenticated (opens the session PR automatically)
