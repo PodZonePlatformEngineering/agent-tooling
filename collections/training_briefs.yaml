@@ -165,3 +165,18 @@ payload_fields:
     type: string
     index: false
     description: Full markdown body (brief text, or message text); embed source for the `brief` vector.
+
+  - name: files
+    type: json
+    index: false
+    description: >
+      OPTIONAL on operational `brief` points (PROJ-011/T-121 #14). A JSON array
+      of {path, content} maps the trainee's HOOK writes to disk on approval —
+      `trainee-materialise.py --apply <revision>` — instead of the tutor reading
+      an instruction and rewriting its own AGENTS.md/CLAUDE.md in conversation.
+      Paths are repo-relative only: no absolute path, no `..` segment, no
+      backslash, nothing under `.git/`, 256KB per file
+      (lib/training_substrate.normalise_brief_files enforces all of it at
+      authoring time). Absent/empty = the legacy prose-only brief, which the
+      agent applies by hand and closes with `--ack`. Trainee approval is
+      required either way — only the location of the write changed.

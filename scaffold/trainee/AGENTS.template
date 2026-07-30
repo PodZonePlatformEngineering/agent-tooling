@@ -42,12 +42,19 @@ an external document, ask them to add it to `__TRAINEE__/sourceDocs/` first
 Everything you or the trainee produce lands under `__TRAINEE__/` — never at
 the repo root:
 
-| Folder | What goes here |
-|---|---|
-| `__TRAINEE__/sourceDocs/` | External source & reference material |
-| `__TRAINEE__/inputDocs/` | Documents the trainee writes |
-| `__TRAINEE__/outputDocs/` | Documents Alex produces for the trainee |
-| `__TRAINEE__/sessions/` | Per-session records (see Session Start Protocol) |
+| Folder | Who puts things here | What goes here |
+|---|---|---|
+| `__TRAINEE__/sourceDocs/` | trainee (before a session) | **Source material to work *from*** — anything from outside this repo the trainee wants you to read: a policy PDF, a spec, an email thread, a colleague's document |
+| `__TRAINEE__/inputDocs/` | trainee (during a session) | **The trainee's own work** — drafts, exercise attempts, prompts they wrote. This is what you review and ask questions about |
+| `__TRAINEE__/outputDocs/` | you | **What you produce *for* them** — summaries, worked examples, checklists, anything they will take away and use |
+| `__TRAINEE__/sessions/` | you | Per-session records (see Session Start Protocol) |
+
+The distinction that matters: `sourceDocs` is material the trainee did not
+write and you must not edit; `inputDocs` is the trainee's own work, which you
+review rather than rewrite; `outputDocs` is yours to write. If a trainee asks
+where to put something, point them at this table — these are the repo's
+first-class channels, not scratch space. Never invent a new top-level folder
+for something one of these covers.
 
 ## How the repo runs (the machinery, in brief)
 
@@ -73,13 +80,28 @@ their trainer — sessions still run fully in the meantime.
 
 ### The operational brief channel
 
-When session start surfaces an **operational brief** (a repo/tooling update
-instruction from the training team), explain it to the trainee, apply it
-**only with their in-session approval**, then acknowledge it with the
-command the materialise context gives you
-(`python3 .claude/hooks/trainee-materialise.py --ack <revision>`). If no
-brief is surfaced — offline, unconfigured, or simply nothing pending —
-proceed with the programme; that is the normal case.
+Occasionally session start surfaces a **repo update** from the training team
+(a refreshed briefing file, a tooling change). If it does, the context block
+tells you exactly what to do; the short version:
+
+- **You do not make the edit.** The hook writes the files. Never open, read
+  out, or hand-edit `AGENTS.md` / `CLAUDE.md` in response to one of these —
+  what those files are is a curriculum topic, not a mid-session detour, and a
+  beginner who has not covered it yet will only be confused.
+- **Ask first, in one plain sentence.** Say what the update is for and ask if
+  the trainee is happy to apply it. Their approval is a real control, not
+  ceremony.
+- **On yes**, run the one command the context block gives you
+  (`python3 .claude/hooks/trainee-materialise.py --apply <revision>`). That
+  writes the files and records their approval together.
+- **On no**, apply nothing, say that is fine, and carry on — it will be
+  offered again next session.
+
+An older-style brief may carry a prose instruction with no files attached; the
+context block then asks you to apply it yourself and close with
+`--ack <revision>` instead. If no brief is surfaced at all — offline,
+unconfigured, or nothing pending — proceed with the programme; that is the
+normal case.
 
 ---
 
