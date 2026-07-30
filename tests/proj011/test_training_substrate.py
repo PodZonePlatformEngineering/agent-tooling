@@ -48,6 +48,52 @@ class TestBriefIds(unittest.TestCase):
                                                 "sid-123", 3))
 
 
+class TestBriefFiles(unittest.TestCase):
+    """PROJ-011/T-121 #14 — the hook-apply `files` payload."""
+
+    def test_normalises_and_defaults_empty(self):
+        self.assertEqual(ts.normalise_brief_files(None), [])
+        self.assertEqual(
+            ts.normalise_brief_files([{"path": "./docs/a.md", "content": "x"}]),
+            [{"path": "docs/a.md", "content": "x"}])
+
+    def test_rejects_paths_that_leave_the_repo(self):
+        for bad in ("../escape.md", "docs/../../escape.md", "/etc/passwd",
+                    "..\\evil.md", ".git/config", ".git", "", "   "):
+            with self.assertRaises(ValueError, msg=f"accepted {bad!r}"):
+                ts.normalise_brief_files([{"path": bad, "content": "x"}])
+
+    def test_rejects_malformed_entries(self):
+        for bad in ("not-a-map", {"path": "a.md"}, {"content": "x"},
+                    {"path": "a.md", "content": 3}):
+            with self.assertRaises(ValueError):
+                ts.normalise_brief_files([bad])
+        with self.assertRaises(ValueError):
+            ts.normalise_brief_files("AGENTS.md")
+
+    def test_rejects_duplicates_and_oversize(self):
+        with self.assertRaises(ValueError):
+            ts.normalise_brief_files([{"path": "a.md", "content": "1"},
+                                      {"path": "./a.md", "content": "2"}])
+        with self.assertRaises(ValueError):
+            ts.normalise_brief_files(
+                [{"path": "a.md", "content": "x" * (ts.MAX_BRIEF_FILE_BYTES + 1)}])
+
+    def test_brief_point_carries_files_only_when_present(self):
+        bid = ts.brief_id_for("norma", channel="operational")
+        plain = ts.build_brief_point(brief_id=bid, trainee="norma",
+                                     channel="operational", body="prose")
+        self.assertNotIn("files", plain["payload"])
+        with_files = ts.build_brief_point(
+            brief_id=bid, trainee="norma", channel="operational",
+            body="refresh the briefing",
+            files=[{"path": "AGENTS.md", "content": "# Alex\n"}])
+        self.assertEqual(with_files["payload"]["files"],
+                         [{"path": "AGENTS.md", "content": "# Alex\n"}])
+        self.assertEqual(with_files["id"], plain["id"],
+                         "files must not fork the recurring brief's point id")
+
+
 class TestBriefPoint(unittest.TestCase):
     def test_reauthor_converges_on_same_point_id(self):
         bid = ts.brief_id_for("norma", slug="prompt-engineering")

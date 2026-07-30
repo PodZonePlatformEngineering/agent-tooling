@@ -102,9 +102,11 @@ def normalise_brief_files(files) -> list:
             raise ValueError("brief file entry needs a non-empty string 'path'")
         if not isinstance(content, str):
             raise ValueError(f"brief file {path!r} needs a string 'content'")
-        rel = path.strip().lstrip("./")
-        if (path.startswith("/") or "\\" in path or not rel
-                or ".." in rel.split("/")
+        raw = path.strip()
+        # Strip a single leading "./" only — lstrip("./") would eat "../".
+        rel = raw[2:] if raw.startswith("./") else raw
+        if (raw.startswith("/") or "\\" in raw or not rel
+                or ".." in raw.split("/")
                 or rel == ".git" or rel.startswith(".git/")):
             raise ValueError(
                 f"brief file path {path!r} is not an allowed repo-relative path "
