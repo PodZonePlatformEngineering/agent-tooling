@@ -1,0 +1,65 @@
+# Brief — {{TITLE}}
+
+**Brief ID:** `{{TEAM}}/{{DATE}}-{{SLUG}}`
+**Assignee:** {{AGENT}} · **Author:** {{TEAM_LEAD}} · **Date:** {{DATE}}
+**Work items:** {{WORK_ITEMS}}
+**Mode:** {{MODE}} · **Model:** {{MODEL}}
+
+---
+
+## Objective
+
+{{ONE_PARAGRAPH}}
+
+**Out of scope:** {{EXPLICIT_EXCLUSIONS}}
+
+## Context you can rely on
+
+Facts the agent must not re-derive or re-litigate — tags that exist, mechanisms already
+proven, prior-session sids, paths to the authoritative documents.
+
+## Order of work
+
+Hardest / blocking task first. Per task: the evidence, the invariant to encode, and the
+regression tests expected.
+
+### Task 1 — {{TASK}}
+
+### Task 2 — {{TASK}} (deferrable tail)
+
+If budget tightens, drop this task and deliver the rest with a per-task account.
+
+## Delivery
+
+Expected PRs by repo · `VERSION` bump (the Team Lead tags on merge) · self-sync /
+live-proof instruction where the session's own close can prove the fix.
+
+## Extraction authorisation
+
+**Extraction-gate:** `PROJ-011-academy/session-to-curriculum-extraction-gate.md`
+- Boundaries authorised: none
+
+<!--
+MANDATORY — keep this block in every brief, including when the answer is `none`.
+`none` | any of B1 (curriculum) · B2 (podzoneTeam planning) · B3 (another trainee) ·
+B4 (shared substrate / Qdrant).
+
+Authorise the narrowest set that lets the work land: the clause is a ceiling, not a
+forecast, and B2 does not imply B1. If it is anything but `none`, name the data classes
+expected (Class A third-party / Class P participant), point at the gate's §6 checklist,
+and require the §7 declaration in every artefact landed. Full guidance:
+agent-tooling/docs/brief-authoring.md § "The extraction-authorisation clause".
+-->
+
+## Conventions
+
+- Serial simple-repo mode; commit early and often so a limit-stop self-banks.
+- Raise-to-lead-and-exit if something needs operator direction — do not wait.
+- `Brief-Status: complete` in the final response is the deterministic completion signal.
+
+## Definition of done
+
+## Escalation
+
+Conditions under which the agent stops, raises to {{TEAM_LEAD}} with progress so far,
+and exits.
