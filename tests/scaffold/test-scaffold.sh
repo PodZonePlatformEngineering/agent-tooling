@@ -73,12 +73,21 @@ assert "settings.json no SubagentStop"  "$(! grep -q 'SubagentStop' "$SETTINGS" 
 assert "settings.json no stub startup.sh" "$(! grep -q 'startup.sh' "$SETTINGS" && echo ok || echo fail)"
 
 # 4. AGENTS.md contains agent and team
-assert "AGENTS.md contains agent=alex" "$(grep -q 'agent=alex' "${TARGET}/AGENTS.md" && echo ok || echo fail)"
+# PROJ-039/T-124: was `grep 'agent=alex'`. That literal has not been emitted since the
+# AGENTS.md rewrite — the generated file carries a structured "## Agent" section, and
+# runtime identity single-sources from workspaces/identity/*.identity.yaml (T-099).
+# The property under test is unchanged: AGENTS.md names the agent it scaffolds for.
+assert "AGENTS.md names the agent"     "$(grep -q '\*\*Name:\*\* Alex' "${TARGET}/AGENTS.md" && echo ok || echo fail)"
 assert "AGENTS.md contains team=training" "$(grep -q 'training' "${TARGET}/AGENTS.md" && echo ok || echo fail)"
 
 # 5. .gitignore contains .workspace/ and context/
 assert ".gitignore has .workspace/"    "$(grep -q '\.workspace/' "${TARGET}/.gitignore" && echo ok || echo fail)"
-assert ".gitignore has context/"       "$(grep -q 'context/' "${TARGET}/.gitignore" && echo ok || echo fail)"
+# PROJ-039/T-124: was `.gitignore has context/`. `context/` was the pre-migration
+# materialised-context directory (context/brief.md via work_items), dead since the
+# .workspace/ materialise mechanism replaced it (CC-389 / T-079). The .workspace/
+# assertion above is its successor; this slot now covers the other working-state
+# ignore, logs/ (PROJ-039/T-093), which had no assertion at all.
+assert ".gitignore has logs/"          "$(grep -q '^logs/' "${TARGET}/.gitignore" && echo ok || echo fail)"
 assert ".gitignore has settings.local.json" "$(grep -q 'settings.local.json' "${TARGET}/.gitignore" && echo ok || echo fail)"
 
 echo ""
