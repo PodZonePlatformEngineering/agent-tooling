@@ -519,7 +519,8 @@ fi
 # chicken-and-egg: the release that ships the updater now also wires it.
 
 echo ""
-echo "==> Wiring update-tooling.py into SessionStart (.claude/settings.json)"
+echo "==> Patching structural settings.json wiring (.claude/settings.json)"
+echo "    (update-tooling.py SessionStart position; trainee: python3 shell guard, T-125)"
 
 SETTINGS_DST="${HOME_REPO}/.claude/settings.json"
 if [[ ! -f "$SETTINGS_DST" ]]; then
@@ -1017,8 +1018,8 @@ if [[ -f "$GITIGNORE_SRC" ]]; then
 fi
 # Updater wiring invariant (PROJ-039/T-069): structural, not byte — the updater
 # must sit at its canonical SessionStart position in the committed settings.json.
-python3 "${TOOLS_SRC}/wire-update-tooling.py" --settings "${HOME_REPO}/.claude/settings.json" --role "$ROLE" --check > /dev/null 2>&1 \
-  || { echo "  DRIFT: settings.json (update-tooling.py not wired at canonical SessionStart position)"; DRIFT=1; }
+WIRE_CHECK="$(python3 "${TOOLS_SRC}/wire-update-tooling.py" --settings "${HOME_REPO}/.claude/settings.json" --role "$ROLE" --check 2>&1)" \
+  || { echo "  DRIFT: settings.json — ${WIRE_CHECK#*CHECK FAIL — }"; DRIFT=1; }
 # lib/ invariant is manifest-scoped: every manifest module byte-identical to source,
 # AND no out-of-closure module present (the slim-closure guarantee). PROJ-039 C2-v2.1b.
 if [[ -f "$LIB_MANIFEST" ]]; then
