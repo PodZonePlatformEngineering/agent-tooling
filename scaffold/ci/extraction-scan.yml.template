@@ -1,0 +1,50 @@
+# Extraction gate — CI enforcement (PROJ-011/T-126).
+#
+# Install as `.github/workflows/extraction-scan.yml` in a repo that is an extraction
+# DESTINATION: podzoneTeam, and the curriculum repos. Explicitly NOT in trainee repos
+# — those are inside the session boundary and are not a destination, and installing it
+# there would re-create the pre-push framing that T-124 retired.
+#
+# This is the authoritative instance. The pre-commit hook is convenience: it is
+# bypassable with --no-verify and is not installed on every agent workstation.
+#
+# Two repository-level settings this expects:
+#   - AGENT_TOOLING_REF   (optional var) pin to a tag; defaults to main
+#   - EXTRACTION_ROSTER   the participant roster path, if the repo carries one.
+#     Without it the tier-3 name check does not run and the job says so.
+#
+name: extraction-gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the pull request
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # the scan diffs against the base ref
+
+      - name: Check out agent-tooling
+        uses: actions/checkout@v4
+        with:
+          repository: PodZonePlatformEngineering/agent-tooling
+          ref: ${{ vars.AGENT_TOOLING_REF || 'main' }}
+          path: .agent-tooling
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Extraction scan
+        env:
+          # Set only if this repo maintains a roster; absent is handled, not fatal.
+          EXTRACTION_ROSTER: ${{ vars.EXTRACTION_ROSTER }}
+        run: |
+          python3 .agent-tooling/tools/extraction-scan.py \
+            --diff "origin/${{ github.base_ref }}" \
+            --repo . \
+            --fail-on both

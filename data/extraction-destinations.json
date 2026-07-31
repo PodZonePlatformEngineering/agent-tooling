@@ -1,0 +1,55 @@
+{
+  "_comment": [
+    "Extraction destinations (PROJ-011/T-126). Maps repo-relative paths to the §2",
+    "boundaries of PROJ-011-academy/session-to-curriculum-extraction-gate.md.",
+    "A path matching no rule is not an extraction destination: the scanner is silent",
+    "on it entirely, which is what keeps this usable in repos that are mostly code.",
+    "Patterns are globs; ** crosses directory separators, * does not."
+  ],
+  "destinations": [
+    {
+      "boundary": "B2",
+      "_label": "podzoneTeam planning — whole team, permanent git history",
+      "match": [
+        "planning/**",
+        "podzoneTeam/planning/**",
+        "team/*/outgoing/**",
+        "podzoneTeam/team/*/outgoing/**"
+      ]
+    },
+    {
+      "boundary": "B1",
+      "_label": "curriculum — every trainee, indefinitely",
+      "match": [
+        "curriculum/**",
+        "modules/**",
+        "content/modules/**",
+        "labs/**",
+        "glossary/**",
+        "scaffold/trainee/**",
+        "docs/curriculum/**"
+      ]
+    },
+    {
+      "boundary": "B4",
+      "_label": "shared substrate — no git-history remedy exists",
+      "match": [
+        "collections/**",
+        "ingest/**"
+      ]
+    }
+  ],
+  "exempt": [
+    "**/archive/**",
+    "**/archive.md",
+    "**/tests/fixtures/**",
+    "**/node_modules/**",
+    "**/venv/**",
+    "**/.venv/**",
+    "**/site-packages/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/__pycache__/**"
+  ],
+  "declaration_suffixes": [".md", ".markdown"]
+}

@@ -95,8 +95,14 @@ cp "$NEW_FILE" "$DST"   # the pre-T-098 write: same inode, rewritten in place
 finish_reader
 assert "control: plain cp over an open fd corrupts the in-flight reader (mixed bytes)" \
   "$(! diff -q "$OLD_FILE" "${WORK}/control.out" > /dev/null 2>&1 && echo ok || echo fail)"
+# PROJ-039/T-124: the pattern was `NEW 0`, which assumed the in-flight reader resumes
+# into the START of the rewritten file — true only if cp rewrites every page before the
+# reader continues. On APFS the observed shape is the old prefix intact plus the new
+# file's TAIL (here: 1000 OLD lines then NEW 1000..1199), so `NEW 0` never appeared and
+# this control failed on every run. The property under test is unchanged and is what the
+# description always said: the corrupted read contains NEW bytes after the old prefix.
 assert "control: corrupted read contains NEW bytes after the old prefix" \
-  "$(grep -q 'NEW 0' "${WORK}/control.out" && echo ok || echo fail)"
+  "$(grep -q 'NEW ' "${WORK}/control.out" && echo ok || echo fail)"
 
 # --- 2. Real sync path: hook file (atomic_install) ---
 
