@@ -11,9 +11,9 @@ All your work lives under **`__TRAINEE__/`**:
 
 | Folder | What goes here |
 |---|---|
-| `__TRAINEE__/sourceDocs/` | Source & reference material (add anything external here **before** using it) |
-| `__TRAINEE__/inputDocs/` | Documents **you** write during a session |
-| `__TRAINEE__/outputDocs/` | Summaries & documents Alex produces for you |
+| `__TRAINEE__/sourceDocs/` | **Material to work *from*** that came from elsewhere — a policy document, a spec, an email thread. Copy it in **before** asking Alex to read it |
+| `__TRAINEE__/inputDocs/` | **Your own work** — drafts, exercise attempts, prompts you wrote. Alex reviews these and asks you about them |
+| `__TRAINEE__/outputDocs/` | **What Alex makes for you** — summaries, worked examples, checklists you'll take away |
 | `__TRAINEE__/sessions/` | Per-session records (`__TRAINEE___{date}_session-N/`) |
 | `__TRAINEE__/trainee-profile.md` | Who you are + what you want from the course (anchors every example) |
 | `__TRAINEE__/training-state.md` | Where you are in the curriculum |
@@ -37,9 +37,11 @@ in the repo, not on a server.
 
 ## What happens automatically
 
-- **At session start** you are moved onto a fresh session branch off `main`, and any
-  pending update instruction from the training team (the *operational brief*) is
-  surfaced — Alex will explain it and only apply it with your approval.
+- **At session start** you are moved onto a fresh session branch off `main`. If the
+  training team has an update for your repo, Alex tells you in one sentence what it
+  is and asks whether to apply it. **Say yes and the repo applies it itself** — Alex
+  does not hand-edit anything, and you never have to. Say no and nothing changes;
+  you'll be asked again next time.
 - **While you work**, if you try to read a document from **outside** this repo you'll
   get a reminder to copy it into `__TRAINEE__/sourceDocs/` first (keeps your context
   contained and reproducible).

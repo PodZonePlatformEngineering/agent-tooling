@@ -66,10 +66,25 @@ retry-idempotent id `uuid5("{brief_id}/msg/{session_id}/{seq}")`.
 
 1. Trainer re-authors `training/{trainee}/operational` (revision N) with the
    instruction (tooling update, config change, credential rotation…).
-2. The trainee's agent surfaces and applies it in-session; the **trainee
-   approves in-session** (no team pushes to trainee repos).
-3. The agent writes back a `message` point `message_type: ack,
-   ack_of_revision: N` — the trainer's confirmation the instruction landed.
+2. SessionStart surfaces it; the **trainee approves in-session** (no team
+   pushes to trainee repos).
+3. The `ack` lands as a `message` point (`message_type: ack,
+   ack_of_revision: N`) — the trainer's confirmation the instruction landed.
+
+**Who performs the write (PROJ-011/T-121 #14).** A brief may carry an optional
+`files: [{path, content}]` payload. When it does, the **hook** writes those
+files — `python3 .claude/hooks/trainee-materialise.py --apply N` applies them
+*and* acks in one step. The tutor's whole part is a one-sentence summary and a
+yes/no question: a beginner is never shown Alex reading an operational
+instruction and rewriting its own persona/protocol files mid-conversation.
+
+Paths are repo-relative only (no absolute, no `..`, no backslash, nothing under
+`.git/`, 256KB cap) — `training_substrate.normalise_brief_files` enforces this
+when the trainer authors, and the hook re-checks the resolved path against the
+repo root before writing. A brief with no `files` is the legacy prose form: the
+agent applies it by hand and closes with `--ack N`. Recurring briefs never
+expire, so the hook compares content on disk and stays silent once a revision
+has been applied — the trainee is asked exactly once.
 
 ### Vectors & embedding split
 

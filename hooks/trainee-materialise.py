@@ -16,12 +16,24 @@ unfilled, or no active brief are all NORMAL — the hook logs, says at most one
 quiet line, and exits 0. It never blocks a session and never touches any
 fleet collection (the config loader cannot name one — R2-3).
 
-``--ack <revision>`` mode (agent-invoked, in-session, after the trainee
-approves the applied instruction — R2-1): writes the ``message_type: ack``
-write-back point to ``training_briefs`` so the trainer sees the instruction
-landed. Idempotent per (session, revision).
+``--apply <revision>`` mode (agent-invoked, in-session, ONCE the trainee has
+said yes — PROJ-011/T-121 #14): the HOOK writes the brief's ``files`` to disk
+and then writes the ack. The tutor never reads an operational instruction and
+rewrites its own persona/protocol files mid-conversation — a beginner should
+never see that operation. Alex's whole part is: relay the one-line summary,
+ask for approval, run this command.
 
-Always exits 0. Reads stdin JSON: ``session_id``, ``cwd``.
+``--ack <revision>`` mode: the legacy prose-only round-trip close — writes the
+``message_type: ack`` write-back point to ``training_briefs`` so the trainer
+sees the instruction landed. Idempotent per (session, revision). ``--apply``
+writes the same ack itself; ``--ack`` remains for briefs that carry no
+``files`` (a config change the trainee performs by hand, say).
+
+**Approval semantics are unchanged.** The trainee still consents in-session
+before anything is written, and the ack is still what the trainer sees. Only
+*where the write happens* moved: conversation → hook.
+
+Always exits 0 in hook mode. Reads stdin JSON: ``session_id``, ``cwd``.
 Tested by tests/proj011/test_trainee_routing.py.
 """
 
@@ -86,17 +98,98 @@ def fetch_operational_brief(cfg: dict, *, session_id: str) -> dict | None:
     return payload
 
 
-def write_ack(cfg: dict, *, session_id: str, revision: int) -> dict:
+def brief_files(brief: dict) -> list:
+    """The brief's normalised ``files`` list — [] for a prose-only brief.
+
+    A malformed ``files`` payload is NOT fatal here: the trainee's session is
+    not the place to discover a trainer's authoring error. Log and treat the
+    brief as prose-only.
+    """
+    from lib import training_substrate
+    try:
+        return training_substrate.normalise_brief_files(brief.get("files"))
+    except ValueError as exc:
+        _log(f"operational brief files rejected (treated as prose-only): {exc}")
+        return []
+
+
+def resolve_target(repo_root: str, rel_path: str) -> Path:
+    """Absolute path for a brief file, proven to stay inside the repo.
+
+    ``normalise_brief_files`` already rejects the obvious escapes; this is the
+    resolved-path backstop that also catches a symlinked directory pointing
+    out of the repo. Raises ValueError if the target escapes.
+    """
+    root = Path(repo_root).resolve()
+    target = (root / rel_path).resolve()
+    if target != root and root not in target.parents:
+        raise ValueError(f"{rel_path!r} resolves outside the repo — refusing to write")
+    return target
+
+
+def files_already_applied(repo_root: str, files: list) -> bool:
+    """True when every brief file is already on disk with exactly this content.
+
+    This is the re-prompt guard, and it is deliberately stateless: a recurring
+    brief stays ``active`` forever, so without it every later session would ask
+    the trainee to approve a change that has already landed. Comparing content
+    needs no local state file and survives a fresh clone.
+    """
+    if not files:
+        return False
+    for spec in files:
+        try:
+            target = resolve_target(repo_root, spec["path"])
+            if target.read_text(encoding="utf-8") != spec["content"]:
+                return False
+        except (OSError, ValueError, UnicodeDecodeError):
+            return False
+    return True
+
+
+def apply_files(repo_root: str, files: list) -> list:
+    """Write the brief's files. Returns [(path, "written"|"unchanged"), ...].
+
+    Parent directories are created; existing files are overwritten in place
+    (the trainee's session branch + close PR are the undo path — the trainer
+    sees every applied change in the diff they review).
+    """
+    results = []
+    for spec in files:
+        target = resolve_target(repo_root, spec["path"])
+        try:
+            current = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            current = None
+        if current == spec["content"]:
+            results.append((spec["path"], "unchanged"))
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(spec["content"], encoding="utf-8")
+        results.append((spec["path"], "written"))
+    return results
+
+
+def write_ack(cfg: dict, *, session_id: str, revision: int,
+              applied: list | None = None) -> dict:
     """The R2-1 round-trip close: an ``ack`` message point on the operational
-    thread. seq=revision → idempotent per (session, revision)."""
+    thread. seq=revision → idempotent per (session, revision).
+
+    ``applied`` (from ``apply_files``) is recorded in the body so the trainer
+    sees exactly which files the hook wrote, not just that "it landed".
+    """
     from lib import qdrant_http, training_config, training_substrate
 
+    body = f"Applied with in-session trainee approval (revision {revision})."
+    if applied:
+        listing = ", ".join(f"{path} ({state})" for path, state in applied)
+        body += f" Files written by the hook: {listing}."
     point = training_substrate.build_message_point(
         brief_id=cfg["operational_brief_id"], trainee=cfg["trainee"],
         session_id=session_id, seq=revision, message_type="ack",
         channel="operational", ack_of_revision=revision,
         summary=f"operational brief revision {revision} applied",
-        body=f"Applied with in-session trainee approval (revision {revision}).")
+        body=body)
     return qdrant_http.upsert_points(
         [point], collection=cfg["briefs_collection"],
         timeout=QDRANT_TIMEOUT, **training_config.qdrant_kwargs(cfg))
@@ -117,12 +210,18 @@ def _load_config(repo_root: str, session_id: str = ""):
     return cfg
 
 
-def _ack_main(revision_arg: str) -> int:
+def _parse_revision(flag: str, revision_arg: str):
     try:
-        revision = int(revision_arg)
+        return int(revision_arg)
     except ValueError:
-        print(f"--ack needs an integer revision, got {revision_arg!r}",
+        print(f"{flag} needs an integer revision, got {revision_arg!r}",
               file=sys.stderr)
+        return None
+
+
+def _ack_main(revision_arg: str) -> int:
+    revision = _parse_revision("--ack", revision_arg)
+    if revision is None:
         return 1
     session_id = os.environ.get("CLAUDE_SESSION_ID", "")
     cfg = _load_config(_repo_root(""), session_id)
@@ -138,10 +237,78 @@ def _ack_main(revision_arg: str) -> int:
     return 0
 
 
+def _apply_main(revision_arg: str) -> int:
+    """T-121 #14: the hook applies the brief's files, then acks.
+
+    Run ONLY after the trainee has approved in-session. Refetches the brief
+    (rather than trusting anything relayed through the conversation) so what
+    lands on disk is exactly what the trainer authored.
+    """
+    revision = _parse_revision("--apply", revision_arg)
+    if revision is None:
+        return 1
+    session_id = os.environ.get("CLAUDE_SESSION_ID", "")
+    repo_root = _repo_root("")
+    cfg = _load_config(repo_root, session_id)
+    if cfg is None:
+        print("training-config.yaml missing/unfilled — cannot apply", file=sys.stderr)
+        return 1
+
+    try:
+        brief = fetch_operational_brief(cfg, session_id=session_id)
+    except Exception as exc:
+        print(f"could not reach the operational brief channel: {exc}\n"
+              "Nothing was changed. This is safe to retry when back online.",
+              file=sys.stderr)
+        return 1
+    if brief is None:
+        print("no active operational brief to apply — nothing changed",
+              file=sys.stderr)
+        return 1
+
+    live_revision = brief.get("revision", 1)
+    if live_revision != revision:
+        print(f"revision mismatch: the trainee approved revision {revision} but "
+              f"the live brief is now revision {live_revision}. Nothing changed — "
+              "show the trainee the new version and get approval for that one.",
+              file=sys.stderr)
+        return 1
+
+    files = brief_files(brief)
+    if not files:
+        print("this operational brief carries no files to apply — it is a prose "
+              f"instruction. Acknowledge it with --ack {revision} once done.",
+              file=sys.stderr)
+        return 1
+
+    try:
+        applied = apply_files(repo_root, files)
+    except Exception as exc:
+        print(f"apply failed: {exc}", file=sys.stderr)
+        return 1
+
+    for path, state in applied:
+        print(f"  {state:9} {path}")
+    try:
+        write_ack(cfg, session_id=session_id or "no-session", revision=revision,
+                  applied=applied)
+    except Exception as exc:
+        # The files ARE applied; only the trainer's receipt failed. Say so
+        # precisely — a retry re-acks idempotently and re-writes nothing.
+        print(f"files applied, but the ack write-back failed: {exc}\n"
+              "Retry this command when back online; it is idempotent.",
+              file=sys.stderr)
+        return 1
+    print(f"Applied operational brief revision {revision} and acknowledged it.")
+    return 0
+
+
 def main() -> int:
     argv = sys.argv[1:]
     if argv and argv[0] == "--ack":
         return _ack_main(argv[1] if len(argv) > 1 else "")
+    if argv and argv[0] == "--apply":
+        return _apply_main(argv[1] if len(argv) > 1 else "")
 
     try:
         data = json.loads(sys.stdin.read() or "{}")
@@ -170,16 +337,54 @@ def main() -> int:
         return 0
 
     revision = brief.get("revision", 1)
+    summary = brief.get("summary") or "repo update instruction"
+    files = brief_files(brief)
+
+    # Already on disk from an earlier session? Recurring briefs stay `active`
+    # forever, so stay silent rather than re-asking for approval of a change
+    # the trainee already approved.
+    if files and files_already_applied(_repo_root(cwd), files):
+        _log(f"operational brief revision {revision} already applied — quiet",
+             session_id)
+        return 0
+
     _log(f"operational brief materialised: {cfg['operational_brief_id']} "
-         f"revision {revision}", session_id)
-    _emit_context(
-        f"📋 OPERATIONAL BRIEF (revision {revision}, updated "
-        f"{brief.get('updated_at', 'unknown')}) — "
-        f"{brief.get('summary') or 'repo update instruction'}\n\n"
-        f"{brief.get('body', '')}\n\n"
-        "Apply the above WITH the trainee's in-session approval before "
-        "continuing the programme. Once applied, acknowledge with:\n"
-        f"  python3 .claude/hooks/trainee-materialise.py --ack {revision}")
+         f"revision {revision}"
+         f"{' (hook-apply, %d file(s))' % len(files) if files else ''}",
+         session_id)
+
+    if files:
+        # T-121 #14: the HOOK writes these files, not the tutor. Alex's job is
+        # one plain-language sentence and a yes/no — a beginner is never asked
+        # to reason about AGENTS.md/CLAUDE.md they have not been taught yet.
+        listing = "\n".join(f"  - {spec['path']}" for spec in files)
+        _emit_context(
+            f"📋 REPO UPDATE PENDING (revision {revision}, from the training "
+            f"team, updated {brief.get('updated_at', 'unknown')}) — {summary}\n\n"
+            "DO NOT edit any of these files yourself, and do not show the "
+            "trainee their contents or discuss what they are for — that is a "
+            "curriculum topic, not a session interruption. The hook applies "
+            "them.\n\n"
+            f"Files the update will replace:\n{listing}\n\n"
+            f"Trainer's note (context for you, not a script to read out):\n"
+            f"{brief.get('body', '')}\n\n"
+            "Do this, before starting the programme content:\n"
+            "  1. Tell the trainee in ONE plain sentence what the update is "
+            f"for (\"{summary}\") and ask if they're happy to apply it.\n"
+            "  2. If they say yes, run exactly:\n"
+            f"       python3 .claude/hooks/trainee-materialise.py --apply {revision}\n"
+            "     That writes the files and records their approval in one step.\n"
+            "  3. If they say no, apply nothing, tell them that's fine, and "
+            "carry on with the session — it will be offered again next time.")
+    else:
+        _emit_context(
+            f"📋 OPERATIONAL BRIEF (revision {revision}, updated "
+            f"{brief.get('updated_at', 'unknown')}) — {summary}\n\n"
+            f"{brief.get('body', '')}\n\n"
+            "This brief carries no files for the hook to apply — it is a prose "
+            "instruction. Apply it WITH the trainee's in-session approval "
+            "before continuing the programme. Once applied, acknowledge with:\n"
+            f"  python3 .claude/hooks/trainee-materialise.py --ack {revision}")
     return 0
 
 

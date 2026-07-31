@@ -39,6 +39,10 @@ MESSAGE_STATUSES = ("open", "seen", "resolved")
 CHANNELS = ("training", "operational")
 MESSAGE_TYPES = ("progress", "question", "issue", "ack")
 
+# Cap on a single brief-carried file body. Briefs ship briefing files
+# (AGENTS.md, CLAUDE.md, docs) — anything larger is a payload, not a brief.
+MAX_BRIEF_FILE_BYTES = 256 * 1024
+
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -69,41 +73,98 @@ def message_point_id(brief_id: str, session_id: str, seq: int) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{brief_id}/msg/{session_id}/{seq}"))
 
 
+def normalise_brief_files(files) -> list:
+    """Validate + normalise a brief's optional ``files`` payload.
+
+    ``files`` is the T-121 #14 hook-apply channel: instead of prose telling the
+    tutor to rewrite ``AGENTS.md``/``CLAUDE.md`` mid-conversation, the trainer
+    ships the literal file bodies and ``trainee-materialise.py --apply`` writes
+    them on the trainee's approval. Each entry is
+    ``{"path": <repo-relative>, "content": <text>}``.
+
+    Path rules (the trainee approves a *repo* change, never a machine change):
+    repo-relative only — no absolute path, no ``..`` segment, no backslash, and
+    nothing under ``.git/``. Raises ValueError on anything else, so a malformed
+    brief fails at authoring time rather than on a trainee's workstation.
+    """
+    if files is None:
+        return []
+    if not isinstance(files, (list, tuple)):
+        raise ValueError("brief files must be a list of {path, content} maps")
+    out = []
+    seen = set()
+    for entry in files:
+        if not isinstance(entry, dict):
+            raise ValueError(f"brief file entry must be a map, got {type(entry).__name__}")
+        path = entry.get("path")
+        content = entry.get("content")
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError("brief file entry needs a non-empty string 'path'")
+        if not isinstance(content, str):
+            raise ValueError(f"brief file {path!r} needs a string 'content'")
+        raw = path.strip()
+        # Strip a single leading "./" only — lstrip("./") would eat "../".
+        rel = raw[2:] if raw.startswith("./") else raw
+        if (raw.startswith("/") or "\\" in raw or not rel
+                or ".." in raw.split("/")
+                or rel == ".git" or rel.startswith(".git/")):
+            raise ValueError(
+                f"brief file path {path!r} is not an allowed repo-relative path "
+                "(no absolute paths, no '..', no backslashes, nothing under .git/)")
+        if len(content.encode("utf-8")) > MAX_BRIEF_FILE_BYTES:
+            raise ValueError(
+                f"brief file {rel!r} exceeds {MAX_BRIEF_FILE_BYTES} bytes — "
+                "briefs carry briefing files, not payloads")
+        if rel in seen:
+            raise ValueError(f"brief file {rel!r} listed twice")
+        seen.add(rel)
+        out.append({"path": rel, "content": content})
+    return out
+
+
 def build_brief_point(*, brief_id: str, trainee: str, channel: str,
                       body: str, summary: str = "", author: str = "",
                       status: str = "active", revision: int = 1,
                       created_at: Optional[str] = None,
                       updated_at: Optional[str] = None,
                       session_ids: Optional[list] = None,
+                      files: Optional[list] = None,
                       vector: Optional[dict] = None) -> dict:
     """A trainer-authored ``brief`` point (direction to_trainee).
 
     ``vector`` is the named-vector map ``{"brief": [...768 floats]}`` when the
     trainer-side tool embedded; defaults to the payload-only empty map.
+
+    ``files`` (optional) turns the brief into a hook-applied repo change — see
+    ``normalise_brief_files``. Absent/empty keeps the legacy prose-only shape.
     """
     if channel not in CHANNELS:
         raise ValueError(f"channel must be one of {CHANNELS}, got {channel!r}")
     if status not in BRIEF_STATUSES:
         raise ValueError(f"brief status must be one of {BRIEF_STATUSES}, got {status!r}")
+    normalised_files = normalise_brief_files(files)
     ts = now_iso()
+    payload = {
+        "point_type": "brief",
+        "direction": "to_trainee",
+        "brief_id": brief_id,
+        "trainee": trainee,
+        "channel": channel,
+        "status": status,
+        "revision": revision,
+        "author": author,
+        "created_at": created_at or ts,
+        "updated_at": updated_at or ts,
+        "session_ids": session_ids or [],
+        "summary": summary,
+        "body": body,
+    }
+    if normalised_files:
+        payload["files"] = normalised_files
     return {
         "id": brief_point_id(brief_id),
         "vector": vector if vector is not None else {},
-        "payload": {
-            "point_type": "brief",
-            "direction": "to_trainee",
-            "brief_id": brief_id,
-            "trainee": trainee,
-            "channel": channel,
-            "status": status,
-            "revision": revision,
-            "author": author,
-            "created_at": created_at or ts,
-            "updated_at": updated_at or ts,
-            "session_ids": session_ids or [],
-            "summary": summary,
-            "body": body,
-        },
+        "payload": payload,
     }
 
 

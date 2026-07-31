@@ -24,6 +24,12 @@ from pathlib import Path
 SETUP_GUIDE = "docs/workstation-setup.md"
 DEP_DOC = "docs/dependency-analysis.md"
 
+# The floor the trainee hooks are written against (dict|None unions under
+# `from __future__ import annotations`, pathlib, f-strings). macOS 13+ and any
+# current Linux ship at least this; an older interpreter fails later with a
+# raw error, which is exactly what feedback #12/#4 asked us to pre-empt.
+MIN_PYTHON = (3, 9)
+
 
 def _has(cmd: str) -> bool:
     return shutil.which(cmd) is not None
@@ -57,13 +63,34 @@ def _config_filled() -> bool:
         return False
 
 
+def _python_version_ok() -> bool:
+    return sys.version_info >= MIN_PYTHON
+
+
+def _version_label() -> str:
+    v = sys.version_info
+    return f"python3 {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ (found {v.major}.{v.minor}.{v.micro})"
+
+
 def checks() -> list[tuple[str, bool, str, bool]]:
-    """(label, ok, next-action, required) — required=False means "trainer will do it"."""
+    """(label, ok, next-action, required) — required=False means "trainer will do it".
+
+    The full hard-prerequisite enumeration (PROJ-011/T-121, feedback #4/#12):
+    every dependency whose absence would otherwise fail a trainee's FIRST
+    session with a raw error is listed here, checked at SessionStart, and
+    reported in plain language with the exact next action.
+    """
     return [
         ("git", _has("git"),
-         "install the Xcode Command Line Tools / your package manager", True),
-        ("python3", _has("python3"),
-         "install python3", True),
+         "install the Xcode Command Line Tools (`xcode-select --install`) or "
+         "use your package manager", True),
+        # We are running under python3, so "missing" is impossible here — but
+        # too OLD is not, and it fails later with a raw syntax/attribute error.
+        # (A completely absent python3 is caught by the shell guard on the
+        # SessionStart hook command, which is not written in Python.)
+        (_version_label(), _python_version_ok(),
+         f"upgrade to Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer "
+         "(`brew install python3`, or python.org)", True),
         ("gh (authenticated)", _gh_authed(),
          "brew install gh && gh auth login  (optional — without it, open the session PR by hand)",
          False),
@@ -98,14 +125,20 @@ def _report(results) -> int:
 def _hook_pointer(results) -> int:
     # SessionStart mode: one concise pointer if anything required is missing; silent
     # (all good) otherwise. Never blocks — orientation always works.
-    missing = [label for label, ok, _a, required in results if required and not ok]
+    missing = [(label, action) for label, ok, action, required in results
+               if required and not ok]
     if missing:
+        detail = "; ".join(f"{label} → {action}" for label, action in missing)
         print(
-            "ℹ️  Training repo not configured on this workstation yet "
-            f"({', '.join(missing)} missing). This is expected on a fresh clone — "
-            f"the hooks fail soft, nothing is broken. Work through {SETUP_GUIDE} with "
-            "your trainer, then run `python3 .claude/hooks/trainee-preflight.py` to "
-            f"confirm. Full dependency list: {DEP_DOC}."
+            "ℹ️  Training repo not set up on this workstation yet "
+            f"({', '.join(label for label, _ in missing)}). This is expected on a "
+            "fresh clone — the hooks fail soft, nothing is broken, and the session "
+            f"runs fine offline meanwhile.\n\nWhat is needed: {detail}.\n\n"
+            f"Work through {SETUP_GUIDE} with the trainer, then run "
+            "`python3 .claude/hooks/trainee-preflight.py` to confirm. Full "
+            f"dependency list: {DEP_DOC}.\n\nTell the trainee this in one friendly "
+            "sentence if it is relevant to them — do not paste this block at them, "
+            "and do not let it stall the session."
         )
     return 0
 
@@ -126,6 +159,10 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         sys.exit(main())
-    except Exception:
-        # Fail-soft contract: a preflight failure must never wall the session.
+    except Exception as exc:
+        # Fail-soft contract: a preflight failure must never wall the session —
+        # and must never surface as a raw traceback either (feedback #12/#4).
+        print(f"ℹ️  The preflight check could not complete ({type(exc).__name__}). "
+              "Nothing is broken and the session runs normally — mention it to the "
+              f"trainer, and see {SETUP_GUIDE} if setup is still pending.")
         sys.exit(0)

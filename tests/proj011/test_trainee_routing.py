@@ -14,6 +14,7 @@ The two properties the brief demands proven:
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -164,6 +165,119 @@ class TestTrainingCollectionRouting(unittest.TestCase):
                 mock.patch.dict(os.environ, env):
             tel.write_event({"hook_event_name": "SessionStart", "session_id": SID})
         self.assertEqual(seen_keys, ["scoped-key"])
+
+
+class TestHookAppliedBriefFiles(unittest.TestCase):
+    """PROJ-011/T-121 #14 — the HOOK writes the brief's files, not the tutor.
+
+    The properties that matter: SessionStart asks for approval and writes
+    nothing; ``--apply`` writes the files and acks in one step; an
+    already-applied brief never re-asks; nothing escapes the repo.
+    """
+
+    FILES = [{"path": "AGENTS.md", "content": "# Alex, v2\n"},
+             {"path": "docs/new-note.md", "content": "note\n"}]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        (self.repo / "training-config.yaml").write_text(CONFIG, encoding="utf-8")
+        self.addCleanup(self.tmp.cleanup)
+        self.mat = _load_hook("trainee-materialise")
+
+    def _brief(self, *, revision=3, files=None):
+        brief = {"status": "active", "revision": revision,
+                 "summary": "refresh Alex's briefing",
+                 "body": "Replace the briefing files.", "session_ids": []}
+        if files is not None:
+            brief["files"] = files
+        return brief
+
+    def _run_sessionstart(self, brief):
+        cap = _UrlCapture(get_result=brief)
+        stdin = json.dumps({"session_id": SID, "cwd": str(self.repo)})
+        buf = io.StringIO()
+        with mock.patch.object(qdrant_http, "request_json", cap), \
+                mock.patch.object(sys, "stdin", io.StringIO(stdin)), \
+                mock.patch.object(sys, "stdout", buf), \
+                mock.patch.dict(os.environ,
+                                {"CLAUDE_PROJECT_DIR": str(self.repo)}):
+            rc = self.mat.main()
+        self.assertEqual(rc, 0)
+        out = buf.getvalue().strip()
+        if not out:
+            return ""
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+    def _run_apply(self, revision, brief):
+        cap = _UrlCapture(get_result=brief)
+        env = {"CLAUDE_PROJECT_DIR": str(self.repo), "CLAUDE_SESSION_ID": SID}
+        with mock.patch.object(qdrant_http, "request_json", cap), \
+                mock.patch.dict(os.environ, env):
+            rc = self.mat._apply_main(str(revision))
+        return rc, cap.urls
+
+    def test_sessionstart_asks_for_approval_and_writes_nothing(self):
+        ctx = self._run_sessionstart(self._brief(files=self.FILES))
+        self.assertFalse((self.repo / "AGENTS.md").exists(),
+                         "SessionStart must not apply anything before approval")
+        self.assertIn("--apply 3", ctx)
+        self.assertIn("DO NOT edit", ctx)
+        for spec in self.FILES:
+            self.assertIn(spec["path"], ctx)
+        # The tutor is never handed the file bodies to retype.
+        self.assertNotIn("# Alex, v2", ctx)
+
+    def test_apply_writes_files_and_acks(self):
+        rc, urls = self._run_apply(3, self._brief(files=self.FILES))
+        self.assertEqual(rc, 0)
+        self.assertEqual((self.repo / "AGENTS.md").read_text(encoding="utf-8"),
+                         "# Alex, v2\n")
+        self.assertEqual(
+            (self.repo / "docs" / "new-note.md").read_text(encoding="utf-8"),
+            "note\n")
+        self.assertTrue(any("/points?" in u or "/points" in u for u in urls))
+        for url in urls:
+            self.assertIn("/collections/training_", url)
+
+    def test_apply_is_idempotent(self):
+        brief = self._brief(files=self.FILES)
+        self.assertEqual(self._run_apply(3, brief)[0], 0)
+        self.assertEqual(self._run_apply(3, brief)[0], 0)
+        self.assertEqual((self.repo / "AGENTS.md").read_text(encoding="utf-8"),
+                         "# Alex, v2\n")
+
+    def test_applied_brief_never_re_asks(self):
+        brief = self._brief(files=self.FILES)
+        self.assertEqual(self._run_apply(3, brief)[0], 0)
+        self.assertEqual(self._run_sessionstart(brief), "",
+                         "an already-applied brief must stay silent")
+
+    def test_apply_refuses_revision_mismatch(self):
+        rc, _urls = self._run_apply(2, self._brief(revision=3, files=self.FILES))
+        self.assertEqual(rc, 1)
+        self.assertFalse((self.repo / "AGENTS.md").exists(),
+                         "a stale approval must change nothing")
+
+    def test_prose_only_brief_keeps_the_ack_path(self):
+        ctx = self._run_sessionstart(self._brief())
+        self.assertIn("--ack 3", ctx)
+        self.assertNotIn("--apply", ctx)
+        self.assertEqual(self._run_apply(3, self._brief())[0], 1)
+
+    def test_malformed_files_degrade_to_prose(self):
+        ctx = self._run_sessionstart(
+            self._brief(files=[{"path": "../escape.md", "content": "x"}]))
+        self.assertIn("--ack 3", ctx)
+        self.assertFalse((self.repo.parent / "escape.md").exists())
+
+    def test_resolve_target_refuses_repo_escape(self):
+        self.assertEqual(self.mat.resolve_target(str(self.repo), "docs/a.md"),
+                         (self.repo / "docs" / "a.md").resolve())
+        link = self.repo / "away"
+        link.symlink_to(Path(self.tmp.name).parent, target_is_directory=True)
+        with self.assertRaises(ValueError):
+            self.mat.resolve_target(str(self.repo), "away/escaped.md")
 
 
 class TestOfflineDegradation(unittest.TestCase):

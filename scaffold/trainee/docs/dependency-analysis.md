@@ -32,7 +32,13 @@ action. It never changes anything and never fails the shell.
 |---|---|---|---|
 | `git` | Session branch + commit are hook-driven; you run no git | `git --version` | Xcode CLT / package manager |
 | `gh` (authenticated) | Opens the session PR to `main`. Without it the finalise still commits + pushes and tells you to open the PR by hand | `gh auth status` | `brew install gh` → `gh auth login` |
-| `python3` | Every hook is Python | `python3 --version` | Xcode CLT / package manager |
+| `python3` **3.9 or newer** | Every hook is Python. This is the one **hard** prerequisite that has no graceful degradation — without it no hook runs at all, so nothing is branched, committed, or recorded | `python3 --version` | Xcode CLT / package manager |
+
+**Check `python3` first.** Every other item on this page fails softly; this one
+does not. The preflight reports a too-old interpreter by version, and the
+session-start wiring reports an entirely missing one in plain language — but
+both are after the fact. Running `python3 --version` before the first session
+is the cheapest check on this page.
 
 ### 2. The credential — in `training-config.yaml`
 
