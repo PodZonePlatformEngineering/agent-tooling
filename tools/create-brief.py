@@ -41,6 +41,50 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from lib import brief_substrate  # noqa: E402
+from lib import extraction_scan as ES  # noqa: E402
+
+
+def _gate_body(body: str, *, skip: bool) -> int:
+    """B4 gate — a brief upsert is a write into the shared substrate (gate §2).
+
+    Substrate writes are not pull requests, so CI never sees them, and B4 is the one
+    boundary with no remediation story: the PROJ-013 remedy (mint a clean repo, delete
+    the old) has no equivalent in a vector store agents read from continuously. So the
+    check runs here, at the write path, which is the only place it can run at all.
+
+    Tier 1 blocks. The missing T-123 clause warns rather than blocks, deliberately:
+    turning it into a hard failure would strand a Team Lead mid-dispatch on briefs
+    authored before the clause existed. Promote it once the fleet has converged.
+    """
+    if skip:
+        print("create-brief: extraction scan SKIPPED by --skip-extraction-scan "
+              "(recorded on the point)", file=sys.stderr)
+        return 0
+
+    roster = ES.Roster.load(None)
+    findings = []
+    for line_no, line in enumerate(body.splitlines(), start=1):
+        for code, message, excerpt, tier in ES.scan_line_tier1(
+                line, roster=roster, boundaries=("B4",)):
+            if tier == ES.TIER_HARD:
+                findings.append(ES.Finding(tier=tier, code=code, path="<brief body>",
+                                           line=line_no, message=message,
+                                           excerpt=excerpt, boundary="B4"))
+
+    auth = ES.parse_brief_authorisation(body)
+    for error in auth.errors:
+        print(f"create-brief: warning — {error} (T-123 clause; see "
+              f"docs/brief-authoring.md)", file=sys.stderr)
+
+    if findings:
+        print("create-brief: REFUSING to upsert — the brief body carries tier-1 "
+              "material and B4 has no revocation remedy:", file=sys.stderr)
+        for finding in findings:
+            print(f"  {finding.format()}", file=sys.stderr)
+        print(f"  gate: {ES.GATE_DOC} · override with --skip-extraction-scan",
+              file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -69,6 +113,13 @@ def main(argv: list[str] | None = None) -> int:
                          "instruction (PROJ-039/T-056); the resident update-tooling.py is "
                          "actually triggered by the launch-time TOOLING_UPDATE env var, not "
                          "this field")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="run validation and the B4 extraction gate, then stop without "
+                         "upserting. A brief point is idempotent but not free to undo — "
+                         "there is no draft state in the substrate to fall back to.")
+    ap.add_argument("--skip-extraction-scan", action="store_true",
+                    help="bypass the B4 extraction gate (PROJ-011/T-126). Use only with "
+                         "a stated reason: substrate writes have no revocation remedy.")
     args = ap.parse_args(argv)
 
     if args.body_file:
@@ -81,7 +132,17 @@ def main(argv: list[str] | None = None) -> int:
         print("create-brief: brief body is empty", file=sys.stderr)
         return 2
 
+    gate_rc = _gate_body(body, skip=args.skip_extraction_scan)
+    if gate_rc:
+        return gate_rc
+
     status = brief_substrate.STATUS_APPROVED if args.approve else args.status
+
+    if args.dry_run:
+        print(f"dry-run: brief {args.brief_id} would be upserted as "
+              f"{brief_substrate.point_id_for(args.brief_id)} "
+              f"(assignee={args.assignee}, status={status}); extraction gate passed")
+        return 0
 
     result = brief_substrate.create_brief(
         brief_id=args.brief_id,
