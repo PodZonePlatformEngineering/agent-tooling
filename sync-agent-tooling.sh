@@ -165,7 +165,11 @@ role_hooks() {
     # produced by construction. first-prompt-brief.py is v2-retired for this
     # role: the operational brief id lives in the config file, not the first
     # prompt, and the personalised brief is the in-repo trainee-brief.md (R2-4).
-    trainee)               echo "trainee-preflight.py trainee-session-branch.py trainee-read-guard.py trainee-materialise.py trainee-telemetry.py trainee-finalise.py" ;;
+    # run-hook.sh is the python3 entry shim EVERY trainee hook command routes
+    # through (PROJ-011/T-128): it must ship with the hooks it guards, or the
+    # settings.json wiring points at a file that is not there. Trainee-only —
+    # no other role has a workstation that might lack python3.
+    trainee)               echo "run-hook.sh trainee-preflight.py trainee-session-branch.py trainee-read-guard.py trainee-materialise.py trainee-telemetry.py trainee-finalise.py" ;;
   esac
 }
 

@@ -123,7 +123,11 @@ role_hooks() {
     # produced by construction. first-prompt-brief.py is v2-retired for this
     # role: the operational brief id lives in the config file, not the first
     # prompt, and the personalised brief is the in-repo trainee-brief.md (R2-4).
-    trainee)               echo "trainee-preflight.py trainee-session-branch.py trainee-read-guard.py trainee-materialise.py trainee-telemetry.py trainee-finalise.py" ;;
+    # run-hook.sh is the python3 entry shim EVERY trainee hook command routes
+    # through (PROJ-011/T-128): it must ship with the hooks it guards, or the
+    # settings.json wiring points at a file that is not there. Trainee-only —
+    # no other role has a workstation that might lack python3.
+    trainee)               echo "run-hook.sh trainee-preflight.py trainee-session-branch.py trainee-read-guard.py trainee-materialise.py trainee-telemetry.py trainee-finalise.py" ;;
   esac
 }
 
@@ -187,6 +191,15 @@ role_settings_json() {
   # a truncated close) → session branch → update-tooling (after the branch
   # switch so a self-update commit lands on the session branch) → operational-
   # brief materialise → telemetry baseline.
+  #
+  # EVERY command routes through hooks/run-hook.sh (PROJ-011/T-128): the python3
+  # check happens once, in one place, so a workstation with no python3 gets one
+  # plain-English message instead of a raw `command not found` on every prompt and
+  # every tool call. `--announce` is on the FIRST SessionStart command only — that
+  # is what makes the message once-per-session rather than once-per-hook. The shim
+  # `exec`s python3, so exit codes and stdio are the hook's own (PreToolUse exit-2
+  # denies still deny). Keep in lockstep with tools/wire-update-tooling.py, which
+  # normalises live repos to exactly these strings.
   if [[ "$role" == "trainee" ]]; then
     cat <<'TRAINEE_SETTINGS'
 {
@@ -195,22 +208,22 @@ role_settings_json() {
   },
   "hooks": {
     "SessionStart": [
-      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "command -v python3 >/dev/null 2>&1 && python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-preflight.py || echo 'Python 3 is not installed on this machine, so none of this training repo automation can run (no session branch, no saved work, no progress records). Nothing here is broken and you can still talk to the trainee, but say so plainly at the start of the session and ask them to install Python 3 with their trainer before the next one - see docs/workstation-setup.md.'" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-finalise.py --guard" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-session-branch.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/tools/update-tooling.py", "timeout": 300 }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-materialise.py" }, { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-telemetry.py" } ] }
+      { "matcher": "startup|resume", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/run-hook.sh --announce hooks/trainee-preflight.py" }, { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/run-hook.sh hooks/trainee-finalise.py --guard" }, { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/run-hook.sh hooks/trainee-session-branch.py" }, { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/run-hook.sh tools/update-tooling.py", "timeout": 300 }, { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/run-hook.sh hooks/trainee-materialise.py" }, { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/run-hook.sh hooks/trainee-telemetry.py" } ] }
     ],
     "UserPromptSubmit": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-telemetry.py" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/run-hook.sh hooks/trainee-telemetry.py" } ] }
     ],
     "PreToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-read-guard.py" } ] }
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/run-hook.sh hooks/trainee-read-guard.py" } ] }
     ],
     "PostCompact": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-telemetry.py" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/run-hook.sh hooks/trainee-telemetry.py" } ] }
     ],
     "Stop": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-telemetry.py" } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/run-hook.sh hooks/trainee-telemetry.py" } ] }
     ],
     "SessionEnd": [
-      { "matcher": "", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-finalise.py", "timeout": 600 } ] }
+      { "matcher": "", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/run-hook.sh hooks/trainee-finalise.py", "timeout": 600 } ] }
     ]
   }
 }

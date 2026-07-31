@@ -28,14 +28,23 @@ Canonical wiring (matches scaffold.sh role_settings_json byte-for-byte):
   tooling (PROJ-011/T-030).
 
 Since PROJ-011/T-125 (CC-519) this tool carries a SECOND structural
-normalisation of the same file for the ``trainee`` role: the ``python3`` shell
-guard on the preflight hook command (§ GUARDED_PREFLIGHT_COMMAND). Same
-argument, same mechanism — a per-repo file that cannot be byte-copied still
-gets its safety-critical bits enforced structurally.
+normalisation of the same file for the ``trainee`` role: the ``python3`` guard.
+Same argument, same mechanism — a per-repo file that cannot be byte-copied
+still gets its safety-critical bits enforced structurally.
+
+PROJ-011/T-128 (CC-525) made that guard TOTAL. T-125 shipped it as an inline
+``command -v python3 … || echo …`` on the preflight command, which covered 1 of
+the trainee's 11 ``python3`` hook invocations: the trainee saw one friendly
+message and then a raw ``python3: command not found`` on every prompt and every
+tool call. Every trainee hook command now routes through the
+``hooks/run-hook.sh`` shim instead (§ SHIM_PREFIX), which does the check once.
+The normalisation here is generic — ANY ``python3 "$CLAUDE_PROJECT_DIR"/.claude/…``
+command in ANY hook event is rewritten — so a hook added later is covered by
+construction rather than by remembering to guard it.
 
 Exit codes: 0 = wired (already or now); 1 = usage/parse error; 2 = ``--check``
-found the wiring absent/out of position, or (trainee) the preflight guard
-missing.
+found the wiring absent/out of position, or (trainee) an unshimmed ``python3``
+hook command.
 
 Called by sync-agent-tooling.sh (patch step + byte-identity ``--check``) and
 usable standalone against any home repo:
@@ -47,6 +56,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -59,62 +69,171 @@ UPDATER_ENTRY = {
     # launch — so give the real path room to finish.
     "timeout": 300,
 }
+# The trainee variant of the same entry: identical in every respect (position,
+# 300s timeout) except that it routes through the run-hook.sh shim, like every
+# other trainee command (T-128). The timeout is a SIBLING KEY of the entry, not
+# part of the command string, so shimming cannot disturb it.
+TRAINEE_UPDATER_ENTRY = {
+    "type": "command",
+    "command": "bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/run-hook.sh tools/update-tooling.py",
+    "timeout": 300,
+}
 
 
 TRAINEE_ANCHOR = "trainee-session-branch.py"
 
-# --- Trainee python3 shell guard (PROJ-011/T-125, CC-519) ---
+# --- Trainee python3 guard (PROJ-011/T-125 → made total by T-128) ---
 # T-121 fixed the failure Martin hit on a fresh Windows 11 install: the very first
-# session died with a raw Python error because ``python3`` was absent. Part of that
-# fix is a SHELL guard on the preflight hook COMMAND — a Python-based preflight
-# structurally cannot catch its own interpreter being missing, so the guard has to
-# live in the command string. That string lives in ``.claude/settings.json``, which
-# can never join the byte-identity set, so it joins the sync set STRUCTURALLY here,
-# exactly like the updater wiring above: the preflight command is normalised to the
-# canonical guarded form in place, leaving position, env and every other hook alone.
+# session died with a raw Python error because ``python3`` was absent. The guard has
+# to be at SHELL level — a Python-based preflight structurally cannot catch its own
+# interpreter being missing — so it lives in the hook COMMAND strings, which live in
+# ``.claude/settings.json``, which can never join the byte-identity set. So it joins
+# the sync set STRUCTURALLY here, exactly like the updater wiring above.
+#
+# T-125 shipped it as an inline `command -v python3 … || echo …` on the PREFLIGHT
+# command only. That is 1 of the trainee's 11 python3 invocations: one friendly
+# message at session start, then a raw `python3: command not found` on every prompt
+# (UserPromptSubmit telemetry) and every tool call (PreToolUse read-guard) for the
+# rest of the session. T-128 routes every command through ONE shim instead:
+#
+#   bash "$CLAUDE_PROJECT_DIR"/.claude/hooks/run-hook.sh [--announce] <rel> [args]
+#
+# Chosen over eleven inline guards because eleven guards are eleven places to forget
+# when hook #12 is added — and because the rewrite below is generic over ANY
+# `python3 "$CLAUDE_PROJECT_DIR"/.claude/…` command in ANY event, so hook #12 is
+# covered whether or not anyone remembers. It also keeps settings.json legible: one
+# inline guard already took the file from 6 lines to 76.
+#
+# ``--announce`` is carried by exactly ONE command — the first SessionStart hook — so
+# the message is emitted once per session. A shim printing on every PreToolUse would
+# be worse than the raw error it replaces; every other command is silent on the
+# missing-interpreter path (exit 0, no output), which for PreToolUse and
+# UserPromptSubmit is the neutral "proceed" answer.
 #
 # Keep byte-for-byte in lockstep with scaffold.sh's role_settings_json trainee block
 # (tests/proj039/test_wire_update_tooling.py pins the two together by scaffolding a
 # real trainee repo and comparing).
-PREFLIGHT_MARKER = "trainee-preflight.py"
-GUARDED_PREFLIGHT_COMMAND = (
-    "command -v python3 >/dev/null 2>&1 && python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/trainee-preflight.py || echo 'Python 3 is not installed on this machine, so none of this training repo automation can run (no session branch, no saved work, no progress records). Nothing here is broken and you can still talk to the trainee, but say so plainly at the start of the session and ask them to install Python 3 with their trainer before the next one - see docs/workstation-setup.md.'"
+SHIM_REL = "hooks/run-hook.sh"
+SHIM_PREFIX = "bash \"$CLAUDE_PROJECT_DIR\"/.claude/" + SHIM_REL
+ANNOUNCE_FLAG = " --announce"
+
+#: A bare resident-hook invocation: `python3 "$CLAUDE_PROJECT_DIR"/.claude/<rel> [args]`
+_PY_COMMAND = re.compile(
+    r'^python3 "\$CLAUDE_PROJECT_DIR"/\.claude/(?P<rel>\S+)(?P<args>.*)$'
+)
+#: The T-125 inline guard wrapped around one of those. Stripped back to the bare
+#: invocation before shimming, so a live repo carrying the T-125 form converges.
+_T125_GUARD = re.compile(
+    r"^command -v python3 >/dev/null 2>&1 && (?P<inner>.*?) \|\| echo '.*'$",
+    re.DOTALL,
+)
+
+#: The message the shim prints. Kept here only so the delivery tooling and tests can
+#: assert on it; the authoritative copy is in hooks/run-hook.sh.
+NO_PYTHON_MESSAGE = (
+    "Python 3 is not installed on this machine, so none of this training repo "
+    "automation can run (no session branch, no saved work, no progress records). "
+    "Nothing here is broken and you can still talk to the trainee, but say so "
+    "plainly at the start of the session and ask them to install Python 3 with "
+    "their trainer before the next one - see docs/workstation-setup.md."
 )
 
 
-def guard_trainee_preflight(settings: dict) -> bool:
-    """Normalise the trainee preflight SessionStart command to the guarded form.
+def _iter_hook_entries(settings: dict):
+    """Yield every hook command entry in the file, in document order, across every
+    event. Generic on purpose: a hook added to a NEW event is still swept."""
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return
+    for event in hooks.values():
+        if not isinstance(event, list):
+            continue
+        for group in event:
+            if not isinstance(group, dict):
+                continue
+            for entry in group.get("hooks") or []:
+                if isinstance(entry, dict) and "command" in entry:
+                    yield entry
 
-    Returns True if anything changed. Position and any sibling keys (``timeout``)
-    are preserved — only the command string is rewritten, and only when it differs.
-    A repo with no preflight entry is left alone (nothing to guard).
+
+def shim_command(cmd: str, *, announce: bool) -> str | None:
+    """Return the canonical shimmed form of ``cmd``, or None if it is not a
+    python3 resident-hook invocation (a `bash .../session-start.sh` command, say,
+    needs no guard and must be left exactly as it is).
+
+    Idempotent: an already-shimmed command comes back unchanged apart from the
+    ``--announce`` flag, which is normalised onto the announce carrier and off
+    everything else.
     """
-    try:
-        commands = settings["hooks"]["SessionStart"][0]["hooks"]
-    except (KeyError, IndexError, TypeError):
-        return False
-    changed = False
-    for entry in commands:
-        cmd = str(entry.get("command", ""))
-        if PREFLIGHT_MARKER in cmd and cmd != GUARDED_PREFLIGHT_COMMAND:
-            entry["command"] = GUARDED_PREFLIGHT_COMMAND
-            changed = True
-    return changed
+    if cmd.startswith(SHIM_PREFIX):
+        rest = cmd[len(SHIM_PREFIX):]
+        if rest.startswith(ANNOUNCE_FLAG):
+            rest = rest[len(ANNOUNCE_FLAG):]
+        return SHIM_PREFIX + (ANNOUNCE_FLAG if announce else "") + rest
+    bare = cmd
+    m125 = _T125_GUARD.match(bare)
+    if m125:
+        bare = m125.group("inner")
+    m = _PY_COMMAND.match(bare.strip())
+    if not m:
+        return None
+    return (SHIM_PREFIX + (ANNOUNCE_FLAG if announce else "")
+            + " " + m.group("rel") + m.group("args"))
 
 
-def check_trainee_preflight(settings: dict) -> str | None:
-    """None if the preflight command carries the canonical guard (or is absent),
-    else a human-readable defect description."""
+def _announce_carrier(settings: dict) -> dict | None:
+    """The one entry that prints the message: the FIRST SessionStart hook command.
+    SessionStart runs once per session, and its stdout is surfaced to the tutor —
+    which is exactly the once-per-session delivery the message wants."""
     try:
         commands = settings["hooks"]["SessionStart"][0]["hooks"]
     except (KeyError, IndexError, TypeError):
         return None
-    for entry in commands:
-        cmd = str(entry.get("command", ""))
-        if PREFLIGHT_MARKER in cmd and cmd != GUARDED_PREFLIGHT_COMMAND:
-            return ("trainee-preflight.py command is missing the python3 shell "
-                    "guard (T-125) — a machine without python3 gets a raw error "
-                    "instead of the plain-English message")
+    return commands[0] if commands else None
+
+
+def guard_trainee_hooks(settings: dict) -> bool:
+    """Route every python3 hook command in ``settings`` through the shim.
+
+    Returns True if anything changed. Only the command STRINGS are rewritten:
+    position, sibling keys (``timeout``), matchers, ``env`` and any non-python3
+    command are left exactly as they are.
+    """
+    carrier = _announce_carrier(settings)
+    changed = False
+    for entry in _iter_hook_entries(settings):
+        cmd = str(entry["command"])
+        shimmed = shim_command(cmd, announce=entry is carrier)
+        if shimmed is not None and shimmed != cmd:
+            entry["command"] = shimmed
+            changed = True
+    return changed
+
+
+def check_trainee_hooks(settings: dict) -> str | None:
+    """None if EVERY python3 hook invocation is shimmed and the message fires
+    exactly once, else a human-readable defect description.
+
+    This is the coverage assertion (T-128 task 3) in its load-bearing place: it is
+    count-based over the whole file, so adding a hook without coverage fails
+    ``--check`` and, through it, the sync and the test suite.
+    """
+    unshimmed = [str(e["command"]) for e in _iter_hook_entries(settings)
+                 if "python3" in str(e["command"])]
+    if unshimmed:
+        return (f"{len(unshimmed)} hook command(s) invoke python3 without the "
+                f"run-hook.sh shim (T-128) — a machine without python3 gets a raw "
+                f"error on every one of them; first: {unshimmed[0][:80]}")
+    announcers = [e for e in _iter_hook_entries(settings)
+                  if ANNOUNCE_FLAG.strip() in str(e["command"])]
+    if len(announcers) > 1:
+        return (f"{len(announcers)} hook commands carry --announce — the "
+                f"no-python3 message must fire ONCE per session, not per hook")
+    shimmed = [e for e in _iter_hook_entries(settings)
+               if str(e["command"]).startswith(SHIM_PREFIX)]
+    if shimmed and not announcers:
+        return ("no hook command carries --announce — a trainee with no python3 "
+                "would get silence instead of the plain-English message")
     return None
 
 
@@ -144,7 +263,7 @@ def wire(settings: dict, role: str) -> tuple[dict, bool]:
     if role == "trainee":
         anchor = _anchor_index(commands)
         pos = len(commands) if anchor is None else anchor + 1
-        commands.insert(pos, dict(UPDATER_ENTRY))
+        commands.insert(pos, dict(TRAINEE_UPDATER_ENTRY))
     else:
         commands.insert(0, dict(UPDATER_ENTRY))
     group["hooks"] = commands
@@ -170,7 +289,7 @@ def check(settings: dict, role: str) -> str | None:
         return (f"update-tooling.py at position(s) {positions}, expected "
                 f"[{want}] for role {role!r}")
     if role == "trainee":
-        return check_trainee_preflight(settings)
+        return check_trainee_hooks(settings)
     return None
 
 
@@ -202,9 +321,9 @@ def main() -> int:
         return 0
 
     settings, changed = wire(settings, args.role)
-    # The trainee python3 shell guard is a second, independent normalisation of the
-    # same file (T-125) — reported separately so each says what it actually did.
-    guarded = args.role == "trainee" and guard_trainee_preflight(settings)
+    # The trainee python3 guard is a second, independent normalisation of the same
+    # file (T-125/T-128) — reported separately so each says what it actually did.
+    guarded = args.role == "trainee" and guard_trainee_hooks(settings)
     if changed or guarded:
         path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
     if changed:
@@ -212,8 +331,10 @@ def main() -> int:
     else:
         print(f"wire-update-tooling: OK — already wired ({path})")
     if guarded:
-        print("wire-update-tooling: GUARDED trainee-preflight.py with the python3 "
-              f"shell guard (T-125) in {path}")
+        shimmed = sum(1 for e in _iter_hook_entries(settings)
+                      if str(e["command"]).startswith(SHIM_PREFIX))
+        print(f"wire-update-tooling: GUARDED {shimmed} trainee hook command(s) "
+              f"through hooks/run-hook.sh (T-128) in {path}")
     return 0
 
 
