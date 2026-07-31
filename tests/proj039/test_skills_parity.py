@@ -42,6 +42,11 @@ TEAM_LEAD_SKILLS_MANIFEST = REPO_ROOT / "scaffold" / "team-lead-skills.manifest"
 RESIDENT_SKILLS = ("neon", "neon-postgres")
 SKILLS_LOCK = SOURCE / "skills-lock.json"
 
+# T-122 (CC-520) role DOMAIN skills: first-party canonical skills a role needs to do
+# its job. They ride the role's .claude/skills/ set but NOT the resident adjuncts.
+# Keep in lockstep with role_domain_skills in sync-agent-tooling.sh / scaffold.sh.
+DOMAIN_SKILLS = {"trainer": ("create-trainee-brief",)}
+
 # Mirror skills dirs, relative to agent-tooling's parent. Kept in sync with the
 # default MIRRORS in sync-skills.sh.
 MIRROR_RELPATHS = (
@@ -334,6 +339,23 @@ class TestTeamLeadScaffoldDelivery(unittest.TestCase):
             self.assertEqual((target / "skills-lock.json").read_bytes(),
                              SKILLS_LOCK.read_bytes())
 
+    def test_trainer_gets_residents_plus_domain_skill(self):
+        """T-122: a trainer home repo carries the Neon residents AND the
+        create-trainee-brief domain skill — the skill Athena's repo held locally,
+        now canonical and sync-managed. The domain skill is NOT a resident adjunct:
+        it must not appear under .agents/skills/."""
+        expected = list(RESIDENT_SKILLS) + list(DOMAIN_SKILLS["trainer"])
+        with tempfile.TemporaryDirectory() as td:
+            target = Path(td) / "home-podzone-athena"
+            self._scaffold("podzone", "sometrainer", "trainer", target)
+            home_skills = target / ".claude" / "skills"
+            drift = find_home_subset_drift(SOURCE, home_skills, expected)
+            self.assertEqual(drift, [], f"trainer skill-set drift: {drift}")
+            for skill in DOMAIN_SKILLS["trainer"]:
+                self.assertFalse(
+                    (target / ".agents" / "skills" / skill).exists(),
+                    f"domain skill {skill} must not ship as a resident adjunct")
+
     def test_skill_free_role_has_no_skills(self):
         """A role outside the T-106 resident set stays hooks-only: no .claude/
         skills/, no .agents/, no skills-lock.json."""
@@ -385,6 +407,35 @@ class TestResidentSkills(unittest.TestCase):
             for skill in RESIDENT_SKILLS:
                 self.assertIn(f"{key}:{skill}", allowed,
                               f"missing allowlist entry {key}:{skill}")
+
+
+class TestDomainSkills(unittest.TestCase):
+    """T-122 — role domain skills exist canonically and are mirror-exempt."""
+
+    def test_domain_skills_exist_in_source(self):
+        for role, skills in DOMAIN_SKILLS.items():
+            for skill in skills:
+                self.assertTrue((SOURCE / skill / "SKILL.md").is_file(),
+                                f"skills/{skill}/SKILL.md missing (domain skill for {role})")
+
+    def test_domain_skills_allowlisted_for_all_team_mirrors(self):
+        """Domain skills are home-repo-scoped: exempt in every team mirror, so the
+        mirror sweep neither installs nor flags them (same shape as the residents)."""
+        allowed = read_allowlist(ALLOWLIST)
+        for rel in MIRROR_RELPATHS:
+            key = rel.split("/", 1)[0]
+            for skills in DOMAIN_SKILLS.values():
+                for skill in skills:
+                    self.assertIn(f"{key}:{skill}", allowed,
+                                  f"missing allowlist entry {key}:{skill}")
+
+    def test_domain_skills_not_in_team_lead_manifest(self):
+        """Domain skills come from role_domain_skills, not the team-lead manifest —
+        keeping the two mechanisms from double-delivering the same skill."""
+        subset = read_subset_manifest(TEAM_LEAD_SKILLS_MANIFEST)
+        for skills in DOMAIN_SKILLS.values():
+            for skill in skills:
+                self.assertNotIn(skill, subset)
 
 
 class TestSkillsParityRealRepos(unittest.TestCase):

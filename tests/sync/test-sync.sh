@@ -218,6 +218,49 @@ assert "sync does not report a README sync step for trainee" \
   "$(! grep -q 'Syncing home-repo README' /tmp/test-sync-readme-trainee-out-$$ && echo ok || echo fail)"
 rm -rf "$TRAINEE_SYNC_TARGET" /tmp/test-sync-readme-trainee-out-$$
 
+# 5f. Pre-prune orphan-skill guard (PROJ-039/T-122, CC-520). The Athena case: a
+# repo-local skill with NO canonical source in agent-tooling/skills/ must survive a
+# --yes role-sync, be reported loudly, and NOT fail the invariant — while an
+# out-of-subset skill that DOES have a canonical source is still pruned as before.
+ORPH="/tmp/test-sync-orphan-$$"
+NO_TELEMETRY_BOOTSTRAP=1 bash "${AGENT_TOOLING_DIR}/scaffold.sh" training orphansync trainer --target-dir "$ORPH" > /dev/null
+mkdir -p "${ORPH}/.claude/skills/invented-locally"
+echo "local work" > "${ORPH}/.claude/skills/invented-locally/SKILL.md"
+# An out-of-subset skill that IS canonical (recoverable) — must still be pruned.
+cp -R "${AGENT_TOOLING_DIR}/skills/session-end" "${ORPH}/.claude/skills/session-end"
+ORPH_RC=0
+bash "${AGENT_TOOLING_DIR}/sync-agent-tooling.sh" \
+  --role trainer --home-repo "$ORPH" --agent-tooling "${AGENT_TOOLING_DIR}" \
+  --yes > /tmp/test-sync-orphan-out-$$ 2>&1 || ORPH_RC=$?
+assert "orphan skill (no canonical source) survives a --yes sync" \
+  "$([ -f "${ORPH}/.claude/skills/invented-locally/SKILL.md" ] && echo ok || echo fail)"
+assert "orphan skill content untouched" \
+  "$(grep -q 'local work' "${ORPH}/.claude/skills/invented-locally/SKILL.md" && echo ok || echo fail)"
+assert "sync reports the orphan loudly" \
+  "$(grep -q 'ORPHAN SKILLS RETAINED' /tmp/test-sync-orphan-out-$$ && echo ok || echo fail)"
+assert "orphan report names the skill" \
+  "$(grep -q 'skills/invented-locally' /tmp/test-sync-orphan-out-$$ && echo ok || echo fail)"
+assert "orphan report offers canonicalise + --prune-orphan-skills routes" \
+  "$(grep -q -- '--prune-orphan-skills' /tmp/test-sync-orphan-out-$$ && echo ok || echo fail)"
+assert "out-of-subset skill WITH a canonical source is still pruned" \
+  "$([ ! -d "${ORPH}/.claude/skills/session-end" ] && echo ok || echo fail)"
+assert "orphan does not fail the invariant (sync exit 0)" \
+  "$([ "$ORPH_RC" -eq 0 ] && echo ok || echo fail)"
+assert "invariant still PASSes with an orphan present" \
+  "$(grep -q 'Byte-identity invariant: PASS' /tmp/test-sync-orphan-out-$$ && echo ok || echo fail)"
+# Explicit opt-in deletes it.
+bash "${AGENT_TOOLING_DIR}/sync-agent-tooling.sh" \
+  --role trainer --home-repo "$ORPH" --agent-tooling "${AGENT_TOOLING_DIR}" \
+  --yes --prune-orphan-skills > /tmp/test-sync-orphan-out2-$$ 2>&1
+assert "--prune-orphan-skills deletes the orphan" \
+  "$([ ! -d "${ORPH}/.claude/skills/invented-locally" ] && echo ok || echo fail)"
+# T-122: the canonicalised trainer domain skill is delivered by the role sync.
+assert "trainer sync delivers create-trainee-brief (canonicalised)" \
+  "$(diff -rq "${AGENT_TOOLING_DIR}/skills/create-trainee-brief" "${ORPH}/.claude/skills/create-trainee-brief" > /dev/null 2>&1 && echo ok || echo fail)"
+assert "domain skill is not a resident adjunct (.agents/skills/)" \
+  "$([ ! -d "${ORPH}/.agents/skills/create-trainee-brief" ] && echo ok || echo fail)"
+rm -rf "$ORPH" /tmp/test-sync-orphan-out-$$ /tmp/test-sync-orphan-out2-$$
+
 # 6. Auto-detect role from identity YAML (no --role flag)
 bash "${AGENT_TOOLING_DIR}/scaffold.sh" training auto-test trainer --target-dir "${TARGET}-auto" > /dev/null
 echo "# DRIFT" >> "${TARGET}-auto/.claude/hooks/session-start.sh"
