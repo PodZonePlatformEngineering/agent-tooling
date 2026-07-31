@@ -1,0 +1,23 @@
+{
+  "_comment": [
+    "EXAMPLE ONLY — fictional entries. This repository is PUBLIC, and a maintained",
+    "list of real participant names is exactly the Class P material the extraction",
+    "gate exists to keep out of public reach. Do not populate this file.",
+    "",
+    "The real roster lives in a private repo (podzoneTeam) and is passed to the",
+    "scanner by path: --roster <path>, or the EXTRACTION_ROSTER environment variable.",
+    "With no roster configured the tier-3 participant-name check does not run, and",
+    "the scanner says so in its summary rather than passing silently.",
+    "",
+    "Roster entries are only ever compared against added lines, and only at B1/B3/B4",
+    "— participant attribution is permitted at B2 (gate §2.1)."
+  ],
+  "names": [
+    "Ada Lovelace",
+    "Grace Hopper"
+  ],
+  "emails": [
+    "ada@example.invalid",
+    "grace@example.invalid"
+  ]
+}
