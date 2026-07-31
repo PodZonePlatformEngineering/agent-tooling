@@ -18,6 +18,10 @@
 #   --home-repo /path            Default: git root of CWD
 #   --agent-tooling /path        Default: directory containing this script
 #   --yes                        Skip confirmation prompts (for automation)
+#   --prune-orphan-skills        Allow deletion of .claude/skills/<name> that has NO
+#                                canonical source in agent-tooling/skills/. Off by
+#                                default: such a skill is repo-local work and its
+#                                deletion is unrecoverable (PROJ-039/T-122).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,7 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VALID_ROLES="team-lead coder archivist trainer cluster-operator curriculum-developer historian strategist trainee"
 
 usage() {
-  echo "Usage: bash sync-agent-tooling.sh --role {role-class} [--home-repo /path] [--agent-tooling /path] [--yes]"
+  echo "Usage: bash sync-agent-tooling.sh --role {role-class} [--home-repo /path] [--agent-tooling /path] [--yes] [--prune-orphan-skills]"
   echo ""
   echo "Valid role classes: ${VALID_ROLES}"
   echo "Role-class variants: team-lead-apex (aliased to the team-lead file set)"
@@ -38,6 +42,9 @@ ROLE=""
 HOME_REPO=""
 AGENT_TOOLING_DIR="$SCRIPT_DIR"
 YES=0
+PRUNE_ORPHANS=0
+# Out-of-subset skills found with no canonical source (T-122). Retained, reported.
+ORPHAN_SKILLS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -45,6 +52,7 @@ while [[ $# -gt 0 ]]; do
     --home-repo)     HOME_REPO="$2"; shift 2 ;;
     --agent-tooling) AGENT_TOOLING_DIR="$2"; shift 2 ;;
     --yes)           YES=1; shift ;;
+    --prune-orphan-skills) PRUNE_ORPHANS=1; shift ;;
     --help|-h)       usage ;;
     *) echo "Unknown argument: $1"; usage ;;
   esac
@@ -511,7 +519,8 @@ fi
 # chicken-and-egg: the release that ships the updater now also wires it.
 
 echo ""
-echo "==> Wiring update-tooling.py into SessionStart (.claude/settings.json)"
+echo "==> Patching structural settings.json wiring (.claude/settings.json)"
+echo "    (update-tooling.py SessionStart position; trainee: python3 shell guard, T-125)"
 
 SETTINGS_DST="${HOME_REPO}/.claude/settings.json"
 if [[ ! -f "$SETTINGS_DST" ]]; then
@@ -620,6 +629,23 @@ role_resident_skills() {
 }
 RESIDENT_SKILLS="$(role_resident_skills "$ROLE")"
 
+# PROJ-039/T-122 (CC-520) role DOMAIN skills: first-party canonical skills a role
+# needs to do its job, as opposed to the T-106 external residents. They ride the
+# role's .claude/skills/ set but NOT the resident adjuncts (.agents/skills mirror /
+# skills-lock.json — those are the hash-locked upstream-install artefacts).
+#   trainer: create-trainee-brief — authoring trainee briefs + the enrolment-email
+#     draft is the trainer's job (Athena). Curriculum authoring (Hestia,
+#     curriculum-developer) does not brief trainees, so it does NOT get this skill.
+# Keep in lockstep with role_domain_skills in scaffold.sh and DOMAIN_SKILLS in
+# test_skills_parity.py.
+role_domain_skills() {
+  case "$1" in
+    trainer) echo "create-trainee-brief" ;;
+    *) echo "" ;;
+  esac
+}
+DOMAIN_SKILLS="$(role_domain_skills "$ROLE")"
+
 SKILLS_DST="${HOME_REPO}/.claude/skills"
 SUBSET_SET=""
 echo ""
@@ -637,6 +663,10 @@ if [[ "$ROLE" == "team-lead" ]]; then
 else
   SUBSET_SET=" ${RESIDENT_SKILLS}"
   SUBSET_SET="${SUBSET_SET% }"
+fi
+# Domain skills ride every role's set (team-lead's manifest included).
+if [[ -n "${DOMAIN_SKILLS// /}" ]]; then
+  SUBSET_SET="${SUBSET_SET} ${DOMAIN_SKILLS}"
 fi
 
 if [[ -n "${SUBSET_SET// /}" ]]; then
@@ -672,12 +702,33 @@ if [[ -n "${SUBSET_SET// /}" ]]; then
   done
 
   # Prune any skill NOT in the role's set (session ceremony / drift).
+  #
+  # PRE-PRUNE ORPHAN GUARD (PROJ-039/T-122, CC-520). Pruning an out-of-subset skill
+  # is only safe when the skill EXISTS in the canonical source: the copy is then
+  # recoverable and the prune is just de-drifting. A skill with NO canonical source
+  # is repo-local work someone invented (Athena's create-trainee-brief was one sync
+  # from deletion) — deleting it under --yes is unrecoverable DATA LOSS, and silent.
+  # So: orphans are RETAINED and reported loudly, never deleted implicitly. Deleting
+  # one requires the explicit --prune-orphan-skills opt-in.
   if [[ -d "$SKILLS_DST" ]]; then
     while IFS= read -r d; do
       name="$(basename "$d")"
       case " ${SUBSET_SET} " in
         *" ${name} "*) : ;;  # in subset — keep
         *)
+          if [[ ! -d "${SKILLS_SRC}/${name}" ]]; then
+            if [[ $PRUNE_ORPHANS -eq 1 ]]; then
+              rm -rf "$d"
+              echo "  Pruned: skills/${name} (ORPHAN — deleted on explicit --prune-orphan-skills)"
+              ((UPDATED++))
+              continue
+            fi
+            ORPHAN_SKILLS="${ORPHAN_SKILLS} ${name}"
+            echo "  ORPHAN skills/${name} — no canonical source in agent-tooling/skills/."
+            echo "         KEPT (not pruned): deleting it would be unrecoverable."
+            ((SKIPPED++))
+            continue
+          fi
           if [[ $YES -eq 0 ]]; then
             printf "  Prune out-of-subset skills/%s? [y/N] " "$name"
             read -r answer </dev/tty
@@ -694,7 +745,21 @@ else
   # Skill-free roles are hooks-only. A stray skills/ is a regression.
   if [[ -d "$SKILLS_DST" ]]; then
     echo "==> WARNING: role '${ROLE}' is hooks-only but .claude/skills/ exists."
-    if [[ $YES -eq 0 ]]; then
+    # Same orphan guard as the prune path (T-122): a stray skills/ holding a skill
+    # with no canonical source is someone's repo-local work, not recoverable drift.
+    STRAY_ORPHANS=""
+    while IFS= read -r d; do
+      name="$(basename "$d")"
+      [[ -d "${SKILLS_SRC}/${name}" ]] || STRAY_ORPHANS="${STRAY_ORPHANS} ${name}"
+    done < <(find "$SKILLS_DST" -mindepth 1 -maxdepth 1 -type d)
+    if [[ -n "${STRAY_ORPHANS// /}" && $PRUNE_ORPHANS -eq 0 ]]; then
+      for name in $STRAY_ORPHANS; do
+        ORPHAN_SKILLS="${ORPHAN_SKILLS} ${name}"
+        echo "  ORPHAN skills/${name} — no canonical source in agent-tooling/skills/."
+      done
+      echo "  KEPT .claude/skills/ — removing it would be unrecoverable."
+      ((SKIPPED++))
+    elif [[ $YES -eq 0 ]]; then
       printf "  Remove .claude/skills/ (this role carries no skills)? [y/N] "
       read -r answer </dev/tty
       if [[ "$answer" == "y" || "$answer" == "Y" ]]; then
@@ -953,8 +1018,8 @@ if [[ -f "$GITIGNORE_SRC" ]]; then
 fi
 # Updater wiring invariant (PROJ-039/T-069): structural, not byte — the updater
 # must sit at its canonical SessionStart position in the committed settings.json.
-python3 "${TOOLS_SRC}/wire-update-tooling.py" --settings "${HOME_REPO}/.claude/settings.json" --role "$ROLE" --check > /dev/null 2>&1 \
-  || { echo "  DRIFT: settings.json (update-tooling.py not wired at canonical SessionStart position)"; DRIFT=1; }
+WIRE_CHECK="$(python3 "${TOOLS_SRC}/wire-update-tooling.py" --settings "${HOME_REPO}/.claude/settings.json" --role "$ROLE" --check 2>&1)" \
+  || { echo "  DRIFT: settings.json — ${WIRE_CHECK#*CHECK FAIL — }"; DRIFT=1; }
 # lib/ invariant is manifest-scoped: every manifest module byte-identical to source,
 # AND no out-of-closure module present (the slim-closure guarantee). PROJ-039 C2-v2.1b.
 if [[ -f "$LIB_MANIFEST" ]]; then
@@ -1003,12 +1068,24 @@ if [[ -n "${SUBSET_SET// /}" ]]; then
     name="$(basename "$d")"
     case " ${SUBSET_SET} " in
       *" ${name} "*) : ;;
-      *) echo "  DRIFT: skills/${name} (out of subset — not in the '${ROLE}' role skill set)"; DRIFT=1 ;;
+      # T-122: an out-of-subset skill WITH a canonical source is recoverable drift
+      # and stays a hard DRIFT. An ORPHAN (no canonical source) is retained work,
+      # deliberately kept by the pre-prune guard — a WARNING, not a failure, so the
+      # rest of the tooling update still lands on the repo carrying it.
+      *) if [[ -d "${SKILLS_SRC}/${name}" ]]; then
+           echo "  DRIFT: skills/${name} (out of subset — not in the '${ROLE}' role skill set)"; DRIFT=1
+         else
+           echo "  WARN:  skills/${name} (ORPHAN — kept; no canonical source to sync from)"
+         fi ;;
     esac
   done < <(find "$SKILLS_DST" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
 elif [[ -d "$SKILLS_DST" ]]; then
-  echo "  DRIFT: .claude/skills/ present for hooks-only role '${ROLE}' (this role carries no skills)"
-  DRIFT=1
+  if [[ -n "${ORPHAN_SKILLS// /}" ]]; then
+    echo "  WARN:  .claude/skills/ kept for hooks-only role '${ROLE}' (holds orphan skills:${ORPHAN_SKILLS})"
+  else
+    echo "  DRIFT: .claude/skills/ present for hooks-only role '${ROLE}' (this role carries no skills)"
+    DRIFT=1
+  fi
 fi
 # T-106 resident-skill adjuncts invariant: .agents/skills mirror + skills-lock.json
 # byte-identical to canonical for roles carrying the Neon residents.
@@ -1021,6 +1098,30 @@ if [[ -n "${RESIDENT_SKILLS// /}" ]]; then
     diff -q "$SKILLS_LOCK_SRC" "$SKILLS_LOCK_DST" > /dev/null 2>&1 \
       || { echo "  DRIFT: skills-lock.json (not byte-identical to canonical / missing)"; DRIFT=1; }
   fi
+fi
+
+# --- Orphan-skill report (PROJ-039/T-122, CC-520) ---
+# Loud, actionable, and printed even on a clean run: the whole point of the guard is
+# that a repo-local skill with no canonical source is never deleted SILENTLY.
+if [[ -n "${ORPHAN_SKILLS// /}" ]]; then
+  echo ""
+  echo "=============================================================================="
+  echo "ORPHAN SKILLS RETAINED — not pruned, not sync-managed"
+  echo "=============================================================================="
+  for name in $ORPHAN_SKILLS; do
+    echo "  .claude/skills/${name}  (no agent-tooling/skills/${name})"
+  done
+  echo ""
+  echo "  These exist only in this repo. The role sync would otherwise have deleted"
+  echo "  them and no canonical copy exists to restore from, so they were KEPT."
+  echo ""
+  echo "  Resolve by either:"
+  echo "    (a) canonicalise — copy the skill into agent-tooling/skills/<name>/ and"
+  echo "        add it to the role's set (role_domain_skills / the team-lead"
+  echo "        manifest) so it becomes sync-managed; or"
+  echo "    (b) discard — re-run this sync with --prune-orphan-skills to delete it."
+  echo "=============================================================================="
+  echo ""
 fi
 
 if [[ $DRIFT -eq 0 ]]; then

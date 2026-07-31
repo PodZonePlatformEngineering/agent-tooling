@@ -24,3 +24,10 @@ trainingTeam:neon
 trainingTeam:neon-postgres
 roadmapTeam:neon
 roadmapTeam:neon-postgres
+
+# PROJ-039/T-122 (CC-520): create-trainee-brief is a ROLE-DOMAIN skill — it ships to
+# the trainer HOME repo (Athena) via role-sync, not to the team mirrors. Exempt it so
+# the team-mirror parity sweep neither installs nor flags it.
+podzoneTeam:create-trainee-brief
+trainingTeam:create-trainee-brief
+roadmapTeam:create-trainee-brief

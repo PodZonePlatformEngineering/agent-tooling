@@ -101,6 +101,57 @@ To refresh from upstream: update `skills/{neon,neon-postgres}/SKILL.md` +
 `skills/skills-lock.json` together (verify the upstream hashes), and let the fleet pick
 the change up via each repo's next `TOOLING_UPDATE` — never hand-edit a home-repo copy.
 
+## Role-domain skills (PROJ-039/T-122)
+
+A **domain skill** is a first-party canonical skill a role needs to do its *job* (as
+opposed to the T-106 external residents, which are an upstream install). Delivery is
+the same role-scoped shape:
+
+| | Residents (`neon`, `neon-postgres`) | Domain skills |
+|---|---|---|
+| source | `skills/<name>/` | `skills/<name>/` |
+| selected by | `role_resident_skills` | `role_domain_skills` |
+| `.claude/skills/` | yes | yes |
+| `.agents/skills/` + `skills-lock.json` | yes | **no** (not an upstream install) |
+| team mirrors | allowlisted out | allowlisted out |
+
+Current set:
+
+- **`trainer` → `create-trainee-brief`** — filling the trainee-briefing template,
+  authoring the brief to the `briefs` collection, and drafting the enrolment email.
+  Briefing trainees is the trainer's job (Athena); `curriculum-developer` (Hestia)
+  authors curriculum and does not brief, so it does **not** carry this skill.
+
+To add one: put the skill in `skills/<name>/`, add it to `role_domain_skills` in
+**both** `sync-agent-tooling.sh` and `scaffold.sh`, add `DOMAIN_SKILLS` in
+`test_skills_parity.py`, and add a `<mirror>:<name>` allowlist line per team mirror.
+
+## The orphan-skill guard (PROJ-039/T-122)
+
+The role sync **prunes any out-of-subset skill** from a home repo, and
+`TOOLING_UPDATE` runs it with `--yes`. That is safe when the skill has a canonical
+source (the copy is recoverable — it is just de-drifting), and it is **unrecoverable
+data loss** when it does not: a repo-local skill someone invented is deleted silently
+with no copy anywhere. Athena's `create-trainee-brief` was one sync away from exactly
+that, which is why it is canonical above.
+
+So the prune is now split on provenance:
+
+- **has a canonical source** → pruned as before; still hard `DRIFT` in the invariant.
+- **no canonical source (ORPHAN)** → **kept**, listed in a loud end-of-run
+  `ORPHAN SKILLS RETAINED` block naming each skill and both remedies, and reported by
+  the invariant as `WARN` rather than `DRIFT` — so the rest of the tooling update
+  still lands on the repo carrying it.
+
+Deleting an orphan requires the explicit opt-in:
+
+```bash
+bash sync-agent-tooling.sh --role trainer --yes --prune-orphan-skills
+```
+
+The same guard covers the hooks-only-role path (a stray `.claude/skills/` holding an
+orphan is not `rm -rf`'d). Covered by `tests/sync/test-sync.sh` §5f.
+
 ### When a fix has only landed in a mirror
 
 If a skill was hardened in the **apex** copy first (the recurring real case — apex

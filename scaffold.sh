@@ -515,6 +515,21 @@ role_resident_skills() {
 }
 RESIDENT_SKILLS="$(role_resident_skills "$ROLE")"
 
+# PROJ-039/T-122 (CC-520) role DOMAIN skills: first-party canonical skills a role
+# needs to do its job (as opposed to the T-106 external residents). They ride the
+# role's .claude/skills/ set but NOT the resident adjuncts (.agents/skills mirror /
+# skills-lock.json — those belong to the hash-locked upstream install).
+#   trainer: create-trainee-brief — briefing trainees is the trainer's job;
+#     curriculum-developer authors curriculum and does not brief, so it is excluded.
+# Keep in lockstep with role_domain_skills in sync-agent-tooling.sh.
+role_domain_skills() {
+  case "$1" in
+    trainer) echo "create-trainee-brief" ;;
+    *) echo "" ;;
+  esac
+}
+DOMAIN_SKILLS="$(role_domain_skills "$ROLE")"
+
 copy_skill() {  # copy_skill <skill-name> <dst-skills-dir>
   local entry="$1" dstdir="$2"
   local src="${SKILLS_SRC}/${entry}"
@@ -548,6 +563,16 @@ elif [[ -n "${RESIDENT_SKILLS// /}" ]]; then
   echo "==> Copying resident skills (${ROLE}) into .claude/skills/..."
   mkdir -p "${TARGET_DIR}/.claude/skills"
   for entry in $RESIDENT_SKILLS; do
+    copy_skill "$entry" "${TARGET_DIR}/.claude/skills"
+  done
+fi
+
+# Role domain skills ride the .claude/skills/ set for every role that has them
+# (including team-lead, whose base set comes from the manifest).
+if [[ -n "${DOMAIN_SKILLS// /}" ]]; then
+  echo "==> Copying domain skills (${ROLE}) into .claude/skills/..."
+  mkdir -p "${TARGET_DIR}/.claude/skills"
+  for entry in $DOMAIN_SKILLS; do
     copy_skill "$entry" "${TARGET_DIR}/.claude/skills"
   done
 fi
