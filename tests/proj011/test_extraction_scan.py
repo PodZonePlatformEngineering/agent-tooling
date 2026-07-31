@@ -101,8 +101,22 @@ class TestTier1(unittest.TestCase):
     def test_long_number_that_is_not_thirteen_digits_is_ignored(self) -> None:
         self.assertEqual(self._codes("point 1234567890123456789"), [])
 
-    def test_email_fires(self) -> None:
-        self.assertIn("PII_EMAIL", self._codes("contact jane.doe@acme-widgets.co.za"))
+    def test_email_hard_fails_at_b1_without_a_roster(self) -> None:
+        self.assertIn("PII_EMAIL",
+                      self._codes("contact jane.doe@acme-widgets.co.za", ("B1",)))
+
+    def test_unrostered_email_hard_fails_at_b2_once_a_roster_exists(self) -> None:
+        roster = _roster([], ["tutor@team.invalid"])
+        self.assertIn("PII_EMAIL",
+                      self._codes("contact jane.doe@acme-widgets.co.za", ("B2",), roster))
+
+    def test_email_at_b2_without_a_roster_only_warns(self) -> None:
+        """Blocking here would be a guess: the gate permits Class P at B2, and with
+        no roster a participant address is indistinguishable from a client's."""
+        hits = ES.scan_line_tier1("contact jane.doe@acme-widgets.co.za",
+                                  roster=_empty_roster(), boundaries=("B2",))
+        self.assertEqual([(c, t) for c, _m, _e, t in hits],
+                         [("EMAIL_UNCLASSIFIED", ES.TIER_WARN)])
 
     def test_example_email_does_not_fire(self) -> None:
         self.assertEqual(self._codes("contact someone@example.com"), [])
@@ -118,6 +132,11 @@ class TestTier1(unittest.TestCase):
 
     def test_sa_phone_fires(self) -> None:
         self.assertIn("PII_PHONE_SA", self._codes("call 082 555 1234"))
+        self.assertIn("PII_PHONE_SA", self._codes("call +27 82 555 1234"))
+
+    def test_bare_ten_digit_run_is_not_a_phone_number(self) -> None:
+        """The dominant false positive in the acceptance corpus: decay-report ids."""
+        self.assertEqual(self._codes("- **0382731749** — high — term first seen"), [])
 
     def test_version_string_is_not_a_phone_number(self) -> None:
         self.assertEqual(self._codes("bumped to 1.20.0 today"), [])
@@ -135,6 +154,16 @@ class TestTier1(unittest.TestCase):
     def test_placeholder_credentials_do_not_fire(self) -> None:
         self.assertEqual(self._codes("dsn postgres://user:<PASSWORD>@host/db"), [])
         self.assertEqual(self._codes("export TOKEN=ghp_your-token-here"), [])
+
+    def test_convention_table_row_does_not_fire(self) -> None:
+        """The gate document tabulates 'real data -> placeholder'. A scanner that
+        fails its own specification is the first one to lose trust."""
+        line = "| Telephone / contact number | 083 123 4567 | `[PHONE_001]` |"
+        self.assertEqual(self._codes(line), [])
+
+    def test_credentials_still_fire_on_a_demonstration_line(self) -> None:
+        line = "| token | ghp_" + "q" * 30 + " | `[TOKEN_001]` |"
+        self.assertIn("CREDENTIAL_GITHUB", self._codes(line))
 
     def test_findings_never_echo_the_value(self) -> None:
         secret = "ghp_" + "z" * 30

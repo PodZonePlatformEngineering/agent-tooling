@@ -239,7 +239,13 @@ _RE_LONG_DIGITS = re.compile(r"(?<![\d-])(\d{13})(?![\d-])")
 _RE_PASSPORT = re.compile(r"\b([A-Z]{1,2}\d{6,9})\b")
 _RE_PASSPORT_CONTEXT = re.compile(r"passport", re.IGNORECASE)
 _RE_EMAIL = re.compile(r"\b([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})\b")
-_RE_PHONE_SA = re.compile(r"(?<![\w+])(?:\+27|0)(?:\s|-)?\d{2}(?:\s|-)?\d{3}(?:\s|-)?\d{4}(?![\w])")
+# A separator (or the +27 country code) is required. Bare ten-digit runs are not
+# distinguishable from identifiers, and a planning corpus is full of those — the
+# unseparated form was the single largest source of false positives in the
+# acceptance run over podzoneTeam history. Precision beats recall at tier 1.
+_RE_PHONE_SA = re.compile(
+    r"(?<![\w+])(?:\+27[\s-]?\d{2}|0\d{2})[\s-]\d{3}[\s-]?\d{4}(?![\w])"
+    r"|(?<![\w+])\+27[\s-]?\d{2}[\s-]?\d{3}[\s-]?\d{4}(?![\w])")
 _RE_PHONE_INTL = re.compile(r"(?<![\w+])\+(?!27)\d{1,3}(?:[\s-]?\d){7,12}(?![\w])")
 
 _CREDENTIAL_PATTERNS = (
@@ -266,6 +272,26 @@ _PLACEHOLDER_HINTS = (
 def _looks_like_placeholder(value: str) -> bool:
     lowered = value.lower()
     return any(hint in lowered for hint in _PLACEHOLDER_HINTS)
+
+
+#: The gate's own placeholder convention (§5): [CLAIMANT_A], [ID_001], [PHONE_001].
+_RE_PLACEHOLDER_TOKEN = re.compile(r"\[[A-Z][A-Z0-9_]{2,}\]")
+
+
+def is_demonstration_line(line: str) -> bool:
+    """A line that pairs a raw shape with its §5 placeholder is teaching the rule.
+
+    The gate document and its predecessor both tabulate "example of real data →
+    placeholder", so a scanner without this fires on the very documents that define
+    the convention — and the first thing anyone does with a control that fails its
+    own specification is stop trusting it.
+
+    A deliberate, narrow recall trade, and it is stated: a real extract that replaced
+    some entities on a line but left one raw beside them is not caught here. It applies
+    to PII shapes only — credential patterns are never suppressed by it, because a
+    committed secret next to a placeholder is still a committed secret.
+    """
+    return bool(_RE_PLACEHOLDER_TOKEN.search(line))
 
 
 def luhn_ok(digits: str) -> bool:
@@ -299,14 +325,17 @@ def is_sa_id(digits: str) -> bool:
 def scan_line_tier1(line: str, *, roster: Roster, boundaries: Sequence[str]) -> list:
     """Tier-1 findings for one line. Returns ``(code, message, excerpt, tier)`` tuples."""
     out = []
+    demo = is_demonstration_line(line)
 
     for match in _RE_LONG_DIGITS.finditer(line):
+        if demo:
+            break
         digits = match.group(1)
         if is_sa_id(digits):
             out.append(("PII_SA_ID", "13-digit identifier passes the SA ID checksum",
                         mask(digits), TIER_HARD))
 
-    if _RE_PASSPORT_CONTEXT.search(line):
+    if _RE_PASSPORT_CONTEXT.search(line) and not demo:
         for match in _RE_PASSPORT.finditer(line):
             value = match.group(1)
             if not _looks_like_placeholder(value):
@@ -315,14 +344,26 @@ def scan_line_tier1(line: str, *, roster: Roster, boundaries: Sequence[str]) -> 
 
     for match in _RE_EMAIL.finditer(line):
         address = match.group(1)
-        if _looks_like_placeholder(address) or address.lower().endswith(".example"):
+        if demo or _looks_like_placeholder(address) or address.lower().endswith(".example"):
             continue
+        strict = any(b in CLASS_P_STRICT for b in boundaries)
         if roster.is_participant_email(address):
             # Class P: attribution is the point at B2 (gate §2.1), a leak elsewhere.
-            if any(b in CLASS_P_STRICT for b in boundaries):
+            if strict:
                 out.append(("PARTICIPANT_EMAIL",
                             "participant email address at a boundary that removes Class P",
                             mask(address), TIER_HARD))
+            continue
+        if not strict and not roster.configured:
+            # B2 only, with no roster to classify against. The gate permits Class P
+            # here, and without a roster a participant's address is indistinguishable
+            # from a client's — so blocking would be a guess, and a wrong guess at
+            # tier 1 blocks a legitimate planning document. Warn instead, and say why.
+            # Configuring a roster promotes this back to a hard fail for Class A.
+            out.append(("EMAIL_UNCLASSIFIED",
+                        "email address at B2 with no roster configured — cannot tell "
+                        "Class A from Class P; configure --roster to enforce",
+                        mask(address), TIER_WARN))
             continue
         out.append(("PII_EMAIL", "email address (Class A unless rostered)",
                     mask(address), TIER_HARD))
@@ -330,7 +371,7 @@ def scan_line_tier1(line: str, *, roster: Roster, boundaries: Sequence[str]) -> 
     for rx, code in ((_RE_PHONE_SA, "PII_PHONE_SA"), (_RE_PHONE_INTL, "PII_PHONE_INTL")):
         for match in rx.finditer(line):
             value = match.group(0)
-            if _looks_like_placeholder(value):
+            if demo or _looks_like_placeholder(value):
                 continue
             out.append((code, "telephone-number shape", mask(value), TIER_HARD))
 
@@ -350,7 +391,25 @@ def scan_line_tier1(line: str, *, roster: Roster, boundaries: Sequence[str]) -> 
 # --------------------------------------------------------------------------- #
 
 _RE_MONEY = re.compile(r"(?:R|ZAR|\$|£|€|USD|GBP|EUR)\s?((?:\d{1,3}(?:[ ,]\d{3})+|\d{4,})(?:\.\d{2})?)")
-_RE_SPEAKER_TURN = re.compile(r"^\s*(?:>\s*)?(?:\*\*)?[A-Z][A-Za-z .'\-]{1,24}(?:\*\*)?\s*:\s+\S")
+_RE_SPEAKER_TURN = re.compile(
+    r"^\s*(?:>\s*)?(?:\*\*|__)?(?P<label>[A-Z][A-Za-z'\-]{1,15}(?:\s[A-Z][A-Za-z'\-]{1,15})?)"
+    r"(?:\*\*|__)?\s*:\s+\S")
+
+#: Labels that look like a speaker turn and are not one. Document headers and prose
+#: openers are the dominant shape in a planning corpus; without this list the
+#: transcript check fires on nearly every structured markdown file.
+_NOT_SPEAKERS = frozenset({
+    "note", "notes", "subject", "from", "to", "cc", "date", "status", "owner",
+    "example", "examples", "warning", "caution", "objective", "todo", "verdict",
+    "context", "problem", "solution", "result", "results", "summary", "scope",
+    "why", "what", "how", "when", "where", "who", "impact", "risk", "evidence",
+    "fix", "cause", "usage", "input", "output", "before", "after", "reach",
+    "acceptance", "authority", "assignee", "author", "mode", "model", "gate",
+    "supersedes", "tip", "warn", "error", "info", "debug", "step", "phase",
+    "decision", "rationale", "finding", "findings", "action", "next", "deliver",
+    "boundary", "boundaries", "reason", "detail", "details", "default", "returns",
+    "raises", "args", "params", "type", "value", "key", "path", "file", "line",
+})
 
 
 def _is_round_amount(raw: str) -> bool:
@@ -419,26 +478,40 @@ def scan_transcript_shape(lines: Sequence[str], *, boundaries: Sequence[str],
 
     Detected by shape: a run of consecutive speaker-turn lines. Returns
     ``(line_no, code, message)`` tuples.
+
+    A run only counts as a transcript when at least one speaker **recurs**. That single
+    condition is what separates a dialogue from a definition list or an email header
+    block, where every label is distinct and appears once — and those are the dominant
+    shape in a planning corpus, so without it this check fires everywhere and gets
+    turned off.
     """
     if not boundaries:
         return []
     out = []
     run_start = None
-    run = 0
+    run_labels: list = []
+
+    def _flush() -> None:
+        if len(run_labels) >= threshold and len(run_labels) > len(set(run_labels)):
+            out.append((run_start, "TRANSCRIPT_SHAPE",
+                        f"{len(run_labels)} speaker-turn lines with a recurring speaker — "
+                        "extract findings, not transcripts"))
+
     for index, line in enumerate(lines, start=1):
-        if _RE_SPEAKER_TURN.match(line):
-            run += 1
-            if run == 1:
+        stripped = line.lstrip()
+        match = None
+        if not stripped.startswith(("- ", "* ", "#", "|", "+")):
+            match = _RE_SPEAKER_TURN.match(line)
+        label = match.group("label").strip().lower() if match else None
+        if label and label not in _NOT_SPEAKERS:
+            if not run_labels:
                 run_start = index
+            run_labels.append(label)
         else:
-            if run >= threshold:
-                out.append((run_start, "TRANSCRIPT_SHAPE",
-                            f"{run} consecutive speaker-turn lines — extract findings, not transcripts"))
-            run = 0
+            _flush()
+            run_labels = []
             run_start = None
-    if run >= threshold:
-        out.append((run_start, "TRANSCRIPT_SHAPE",
-                    f"{run} consecutive speaker-turn lines — extract findings, not transcripts"))
+    _flush()
     return out
 
 
@@ -578,6 +651,15 @@ def scan_text(path: str, text: str, *, config: DestinationConfig, roster: Roster
     """
     boundaries = config.boundaries_for(path)
     findings: list = []
+
+    # Outside an extraction destination the gate does not fire at all. This is an
+    # extraction control, not a general-purpose secret scanner: a credential in
+    # application code is a real problem and a different control's problem, and
+    # claiming it here is how this one ends up owning every false positive in the
+    # repository. It also makes the `exempt` list total, which is what an exemption
+    # should mean.
+    if not boundaries:
+        return findings
 
     if added_lines is None:
         added_lines = list(enumerate(text.splitlines(), start=1))

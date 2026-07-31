@@ -43,7 +43,13 @@
     "**/archive/**",
     "**/archive.md",
     "**/tests/fixtures/**",
-    "**/node_modules/**"
+    "**/node_modules/**",
+    "**/venv/**",
+    "**/.venv/**",
+    "**/site-packages/**",
+    "**/dist/**",
+    "**/build/**",
+    "**/__pycache__/**"
   ],
   "declaration_suffixes": [".md", ".markdown"]
 }
