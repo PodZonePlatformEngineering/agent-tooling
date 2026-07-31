@@ -76,14 +76,56 @@ class TestDeliverTraineeSettings(unittest.TestCase):
                                       capture_output=True, text=True).stdout
             self.assertNotIn("t125", branches, "--dry-run must not create a branch")
 
-    def test_dry_run_shows_the_guard_in_the_diff(self) -> None:
+    def test_dry_run_shows_the_shim_routing_in_the_diff(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             repo = _fake_trainee_repo(Path(td))
             cp = _run(repo, "--dry-run")
-            self.assertIn("Python 3 is not installed", cp.stdout)
+            self.assertIn("run-hook.sh", cp.stdout)
+            self.assertIn("installs .claude/hooks/run-hook.sh", cp.stdout)
+
+    def test_dry_run_removes_the_shim_it_staged(self) -> None:
+        """The shim is written to render the diff, so --dry-run must delete it
+        again — otherwise an operator inspecting their own clone is left with an
+        untracked file they did not ask for (T-128)."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = _fake_trainee_repo(Path(td))
+            _run(repo, "--dry-run")
+            self.assertFalse((repo / ".claude" / "hooks" / "run-hook.sh").exists())
+            porcelain = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                                       capture_output=True, text=True).stdout
+            self.assertEqual(porcelain.strip(), "", "--dry-run must leave the tree clean")
+
+    def test_shim_is_delivered_with_the_settings_that_reference_it(self) -> None:
+        """The load-bearing coupling (T-128): settings.json pointing at a
+        run-hook.sh the repo does not carry would fail EVERY hook with `No such
+        file or directory` — strictly worse than the unguarded state. The two
+        must land together, and the delivered shim must be the canonical bytes."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("deliver", str(TOOL))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore
+        with tempfile.TemporaryDirectory() as td:
+            repo = _fake_trainee_repo(Path(td))
+            self.assertTrue(mod.install_shim(repo))
+            shim = repo / ".claude" / "hooks" / "run-hook.sh"
+            self.assertTrue(shim.is_file())
+            self.assertEqual(shim.read_text(),
+                             (REPO_ROOT / "hooks" / "run-hook.sh").read_text())
+            self.assertFalse(mod.install_shim(repo), "second install is a no-op")
+            # …and the shim path in settings must be the path just written.
+            subprocess.run([sys.executable, str(REPO_ROOT / "tools" / "wire-update-tooling.py"),
+                            "--settings", str(repo / ".claude" / "settings.json"),
+                            "--role", "trainee"], check=True, capture_output=True)
+            settings = (repo / ".claude" / "settings.json").read_text()
+            self.assertIn(".claude/hooks/run-hook.sh", settings)
+            self.assertEqual(mod.SHIM_REL, ".claude/hooks/run-hook.sh")
 
     def test_already_guarded_repo_is_reported_ok(self) -> None:
-        """Idempotence: the second pass over a repo has nothing to do."""
+        """Idempotence: the second pass over a repo has nothing to do.
+
+        BOTH halves must already be present — settings routing through the shim
+        AND the shim itself. A repo with patched settings but no run-hook.sh is
+        NOT done, and must still report `would-patch` (T-128)."""
         with tempfile.TemporaryDirectory() as td:
             repo = _fake_trainee_repo(Path(td))
             # Apply the patcher directly (the delivery tool's own write path needs
@@ -91,12 +133,21 @@ class TestDeliverTraineeSettings(unittest.TestCase):
             subprocess.run([sys.executable, str(REPO_ROOT / "tools" / "wire-update-tooling.py"),
                             "--settings", str(repo / ".claude" / "settings.json"),
                             "--role", "trainee"], check=True, capture_output=True)
+            half_done = _run(repo, "--dry-run")
+            self.assertIn("would-patch", half_done.stdout,
+                          "settings patched but shim absent is not 'done'")
+
+            shim = repo / ".claude" / "hooks" / "run-hook.sh"
+            shim.parent.mkdir(parents=True, exist_ok=True)
+            shim.write_text((REPO_ROOT / "hooks" / "run-hook.sh").read_text())
             cp = _run(repo, "--dry-run")
             self.assertEqual(cp.returncode, 0, cp.stderr)
             self.assertIn("ok", cp.stdout.split("\n")[0])
             self.assertNotIn("would-patch", cp.stdout)
 
-    def test_patch_changes_only_the_hook_command(self) -> None:
+    def test_patch_changes_only_the_hook_commands(self) -> None:
+        """Everything that is not a command string must survive: env, matchers,
+        hook ordering, event set, and the `timeout` siblings."""
         with tempfile.TemporaryDirectory() as td:
             repo = _fake_trainee_repo(Path(td))
             settings = repo / ".claude" / "settings.json"
@@ -107,14 +158,19 @@ class TestDeliverTraineeSettings(unittest.TestCase):
 
             def norm(d: dict) -> dict:
                 d = json.loads(json.dumps(d))
-                for e in d["hooks"]["SessionStart"][0]["hooks"]:
-                    if "trainee-preflight" in e["command"]:
-                        e["command"] = "PREFLIGHT"
+                for groups in d["hooks"].values():
+                    for g in groups:
+                        for e in g["hooks"]:
+                            e["command"] = "CMD"
                 return d
 
             self.assertEqual(norm(after), norm(LIVE_SETTINGS),
-                             "only the preflight command string may change")
+                             "only command strings may change")
             self.assertEqual(after["env"], {"TRAINEE_RUNTIME": "1"})
+            updater = [e for e in after["hooks"]["SessionStart"][0]["hooks"]
+                       if "update-tooling.py" in e["command"]]
+            self.assertEqual([e["timeout"] for e in updater], [300],
+                             "the 300s updater timeout is a sibling key and must survive")
 
     def test_live_repo_list_is_the_six_onboarded_trainees(self) -> None:
         """The list is explicit on purpose — a wildcard org sweep would rewrite

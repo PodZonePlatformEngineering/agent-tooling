@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
 deliver-trainee-settings.py — deliver the structural settings.json fixes to the
-ALREADY-LIVE trainee repos (PROJ-011/T-125, CC-519).
+ALREADY-LIVE trainee repos (PROJ-011/T-125, CC-519; re-scoped by T-128, CC-525).
+
+Since T-128 this delivers TWO files per repo, in one commit: the
+`.claude/hooks/run-hook.sh` shim and the `settings.json` commands that route
+through it. They are inseparable — settings pointing at a shim the repo does not
+carry fails every hook, which is worse than the unguarded state.
 
 Why this exists
 ---------------
 
 `wire-update-tooling.py` makes the safety-critical bits of a trainee repo's
 committed `.claude/settings.json` — the updater wiring (T-069) and the `python3`
-shell guard on the preflight command (T-121/T-125) — *structurally* enforceable.
+guard on the hook commands (T-121/T-125/T-128) — *structurally* enforceable.
 But nothing ever runs it against the six live trainee repos:
 
 * `scaffold.sh` applies it to **new** repos only;
@@ -80,36 +85,80 @@ LIVE_TRAINEE_REPOS = (
     "home-training-eben",
 )
 
-BRANCH = "chore/t125-python3-shell-guard"
-COMMIT_MSG = """chore(t125): python3 shell guard on the preflight hook command
+BRANCH = "chore/t128-python3-guard-all-hooks"
+PR_TITLE = "chore(t128): python3 guard on every hook command, not just preflight"
+COMMIT_MSG = """chore(t128): route every hook command through the python3 shim
 
-Without this, a workstation with no python3 dies at session start with a raw
-Python error (the failure a trainee hit on a fresh Windows 11 install). The
-guard is a shell-level `command -v python3 || echo <plain-English message>` on
-the hook command itself — a Python preflight cannot catch its own interpreter
-being missing.
+A workstation with no python3 dies with a raw Python error (the failure a
+trainee hit on a fresh Windows 11 install). T-125 guarded the preflight command
+only — 1 of 11 invocations — so the trainee got one friendly message and then a
+raw `python3: command not found` on every prompt and every tool call.
 
-Applied by agent-tooling tools/deliver-trainee-settings.py (PROJ-011/T-125).
+This adds `.claude/hooks/run-hook.sh`, a shell shim that does the check once,
+and points all eleven hook commands at it. On a machine WITH python3 the shim
+`exec`s the interpreter, so exit codes and stdio are the hook's own and nothing
+changes. Without it, one plain-English message at session start and silence
+thereafter.
+
+Applied by agent-tooling tools/deliver-trainee-settings.py (PROJ-011/T-128).
 """
-PR_BODY = """Delivers the PROJ-011/T-121 `python3` shell guard (and, if missing, the
-PROJ-039/T-069 updater wiring) to this already-live trainee repo.
+PR_BODY = """Delivers the PROJ-011/T-128 `python3` guard — now on **all eleven** hook
+commands, not just preflight — to this already-live trainee repo.
+
+T-127 delivered the T-125 guard, which covered `trainee-preflight.py` alone. On a
+machine with no python3 that left a raw `python3: command not found` on every
+`UserPromptSubmit` (telemetry) and every `PreToolUse` (read-guard) for the rest of
+the session. This replaces it with one shim, `.claude/hooks/run-hook.sh`, that every
+command routes through.
+
+**Two files change together and must merge together:** the shim itself, and the
+`settings.json` commands that point at it. A settings.json referencing a shim the
+repo does not carry would fail every hook.
+
+* With python3 present: the shim `exec`s it, so exit codes, stdout, stderr and stdin
+  are the hook process's own — `PreToolUse` deny-on-exit-2 and `UserPromptSubmit`
+  stdout-as-context behave exactly as before. The 300s/600s `timeout` keys are
+  siblings of the command, untouched.
+* With python3 absent: one plain-English message from the first SessionStart hook,
+  then silence — every other command exits 0 quietly rather than printing on every
+  tool call.
 
 `.claude/settings.json` is per-repo, so it is not in the byte-identity sync set;
-`tools/wire-update-tooling.py` enforces its safety-critical bits structurally.
-New repos get this from `scaffold.sh`; live repos need this one pass.
+`tools/wire-update-tooling.py` enforces its safety-critical bits structurally, and
+its `--check` now fails on ANY unshimmed python3 command, so a hook added later
+cannot silently reopen this.
 
-Effect once merged: the trainee's clone fast-forwards `main` at their next
-session start (`session_guard.preflight`), and the guard is live the session
-after that. **A machine with no python3 runs no hooks and so never
-fast-forwards — that trainee must pull by hand.**
+Effect once merged: the trainee's clone fast-forwards `main` at their next session
+start (`session_guard.preflight`), and the guard is live the session after that.
+**A machine with no python3 runs no hooks and so never fast-forwards — that trainee
+must pull by hand.**
 
-Only the SessionStart hook command strings change; `env` and every other hook
-are untouched.
+`env` and hook ordering are untouched.
 """
 
 
 def run(cmd: list[str], cwd: str | None = None, check: bool = True) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=check)
+
+
+#: The shim every patched command routes through (T-128). It MUST land in the same
+#: commit as the settings patch: a settings.json pointing at a run-hook.sh the repo
+#: does not carry would fail every hook with `No such file or directory` — strictly
+#: worse than the unguarded state this fixes. Delivery is therefore two files, and
+#: `install_shim` runs before the settings diff is rendered so --dry-run shows both.
+SHIM_SRC = REPO_ROOT / "hooks" / "run-hook.sh"
+SHIM_REL = ".claude/hooks/run-hook.sh"
+
+
+def install_shim(repo_dir: Path) -> bool:
+    """Copy the canonical run-hook.sh into the repo. True if it changed anything."""
+    dest = repo_dir / SHIM_REL
+    want = SHIM_SRC.read_text(encoding="utf-8")
+    if dest.is_file() and dest.read_text(encoding="utf-8") == want:
+        return False
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(want, encoding="utf-8")
+    return True
 
 
 def patch_settings(repo_dir: Path) -> tuple[bool, str]:
@@ -128,21 +177,31 @@ def patch_settings(repo_dir: Path) -> tuple[bool, str]:
 def process(repo_dir: Path, name: str, *, apply: bool) -> dict:
     settings = repo_dir / ".claude" / "settings.json"
     original = settings.read_text(encoding="utf-8") if settings.is_file() else None
+    shim_dest = repo_dir / SHIM_REL
+    shim_original = shim_dest.read_text(encoding="utf-8") if shim_dest.is_file() else None
+    shimmed = install_shim(repo_dir)
     changed, note = patch_settings(repo_dir)
-    if not changed:
+    if not changed and not shimmed:
         return {"repo": name, "status": "ok", "note": note or "already guarded"}
 
     diff = run(["git", "-C", str(repo_dir), "diff", "--", ".claude/settings.json"],
                check=False).stdout
+    if shimmed:
+        note = f"{note} + installs {SHIM_REL}".strip(" +")
     if not apply:
-        # --dry-run is READ-ONLY, including against an operator's own clone: the
-        # patch was applied only to render the diff, so put the file back exactly.
+        # --dry-run is READ-ONLY, including against an operator's own clone: both
+        # files were written only to render the diff, so put them back exactly.
         if original is not None:
             settings.write_text(original, encoding="utf-8")
+        if shimmed:
+            if shim_original is None:
+                shim_dest.unlink()
+            else:
+                shim_dest.write_text(shim_original, encoding="utf-8")
         return {"repo": name, "status": "would-patch", "note": note, "diff": diff}
 
     run(["git", "-C", str(repo_dir), "checkout", "-B", BRANCH])
-    run(["git", "-C", str(repo_dir), "add", ".claude/settings.json"])
+    run(["git", "-C", str(repo_dir), "add", ".claude/settings.json", SHIM_REL])
     run(["git", "-C", str(repo_dir), "commit", "-m", COMMIT_MSG])
     run(["git", "-C", str(repo_dir), "push", "-u", "origin", BRANCH, "--force-with-lease"])
     body = tempfile.NamedTemporaryFile("w", suffix=".md", delete=False)
@@ -150,7 +209,7 @@ def process(repo_dir: Path, name: str, *, apply: bool) -> dict:
     body.close()
     cp = run(["gh", "pr", "create", "--repo", f"{ORG}/{name}",
               "--head", BRANCH, "--base", "main",
-              "--title", "chore(t125): python3 shell guard on the preflight hook command",
+              "--title", PR_TITLE,
               "--body-file", body.name], cwd=str(repo_dir), check=False)
     return {"repo": name, "status": "pr" if cp.returncode == 0 else "pr-failed",
             "note": (cp.stdout + cp.stderr).strip(), "diff": diff}
