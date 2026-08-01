@@ -110,6 +110,24 @@ class TestTier1(unittest.TestCase):
         self.assertIn("PII_EMAIL",
                       self._codes("contact jane.doe@acme-widgets.co.za", ("B2",), roster))
 
+    def test_unrostered_email_failure_at_b2_names_the_roster_fix(self) -> None:
+        # Deferrable tail, PROJ-011/T-129: the fix for a legitimate new participant
+        # is self-describing at the point of failure.
+        roster = _roster([], ["tutor@team.invalid"])
+        hits = ES.scan_line_tier1("contact jane.doe@acme-widgets.co.za",
+                                  roster=roster, boundaries=("B2",))
+        (_code, message, _excerpt, _tier), = hits
+        self.assertIn("planning/extraction-roster.md", message)
+
+    def test_strict_boundary_email_failure_does_not_suggest_the_roster(self) -> None:
+        # At B1/B3/B4 Class P is removed regardless of roster membership, so adding
+        # the address to the roster would not fix this failure — the hint would lie.
+        roster = _roster([], ["tutor@team.invalid"])
+        hits = ES.scan_line_tier1("contact jane.doe@acme-widgets.co.za",
+                                  roster=roster, boundaries=("B1",))
+        (_code, message, _excerpt, _tier), = hits
+        self.assertNotIn("extraction-roster.md", message)
+
     def test_email_at_b2_without_a_roster_only_warns(self) -> None:
         """Blocking here would be a guess: the gate permits Class P at B2, and with
         no roster a participant address is indistinguishable from a client's."""

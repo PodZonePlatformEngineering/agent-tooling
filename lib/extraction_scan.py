@@ -445,8 +445,16 @@ def scan_line_tier1(line: str, *, roster: Roster, boundaries: Sequence[str]) -> 
                         "Class A from Class P; configure --roster to enforce",
                         mask(address), TIER_WARN))
             continue
-        out.append(("PII_EMAIL", "email address (Class A unless rostered)",
-                    mask(address), TIER_HARD))
+        if strict:
+            message = "email address (Class A unless rostered)"
+        else:
+            # B2, roster configured, address not on it: either genuine Class A, or a
+            # legitimate new participant the roster hasn't caught up with yet. The
+            # fix for the latter is self-describing at the point of failure, per the
+            # roster's own maintenance note (PROJ-011/T-129 deferrable tail).
+            message = ("email address (Class A unless rostered) — if this is a new "
+                       "participant, add them to planning/extraction-roster.md")
+        out.append(("PII_EMAIL", message, mask(address), TIER_HARD))
 
     for rx, code in ((_RE_PHONE_SA, "PII_PHONE_SA"), (_RE_PHONE_INTL, "PII_PHONE_INTL")):
         for match in rx.finditer(line):
