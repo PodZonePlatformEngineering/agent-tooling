@@ -31,6 +31,8 @@ assert "AGENTS.md exists"              "$([ -f "${TARGET}/AGENTS.md" ] && echo o
 assert "README.md exists"              "$([ -f "${TARGET}/README.md" ] && echo ok || echo fail)"
 assert ".gitignore exists"             "$([ -f "${TARGET}/.gitignore" ] && echo ok || echo fail)"
 assert ".claude/settings.json exists"  "$([ -f "${TARGET}/.claude/settings.json" ] && echo ok || echo fail)"
+assert ".claude/settings.local.json exists (T-132)" "$([ -f "${TARGET}/.claude/settings.local.json" ] && echo ok || echo fail)"
+assert "settings.local.json headless-write check passes (T-132)" "$(python3 "${AGENT_TOOLING_DIR}/tools/ensure-local-settings.py" --check --repo "$TARGET" > /dev/null 2>&1 && echo ok || echo fail)"
 assert ".claude/instructions.md exists" "$([ -f "${TARGET}/.claude/instructions.md" ] && echo ok || echo fail)"
 assert ".claude/guardrails.md exists"  "$([ -f "${TARGET}/.claude/guardrails.md" ] && echo ok || echo fail)"
 assert ".claude/output-format.md exists" "$([ -f "${TARGET}/.claude/output-format.md" ] && echo ok || echo fail)"

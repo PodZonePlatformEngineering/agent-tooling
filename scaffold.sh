@@ -640,6 +640,23 @@ cp "${SCAFFOLD_DIR}/gitignore.template" "${TARGET_DIR}/.gitignore"
 
 role_settings_json "$ROLE" > "${TARGET_DIR}/.claude/settings.json"
 
+# --- .claude/settings.local.json (gitignored — local launch wiring, PROJ-039/T-132) ---
+# Headless write-capability posture: a headless (`claude -p`) session has no
+# interactive permission prompt, so a clone without
+# permissions.defaultMode: bypassPermissions in its gitignored
+# settings.local.json burns the dispatch as a no-op (Athena sid 2932eae9).
+# Emitted at scaffold so a fresh home repo never launches headless without it;
+# /launch-session headless prep re-verifies with the same tool's --check and
+# fails loud. Deliberately NOT part of sync/update-tooling: an agent must never
+# self-elevate its own clone mid-session — scaffold + launch prep are the
+# operator/Team-Lead surfaces (T-103 Part A). Trainee repos are skipped:
+# trainee sessions are interactive on student workstations (an operator is on
+# the line to grant prompts) and their posture is owned by the trainee
+# settings-delivery path, not this block.
+if [[ "$ROLE" != "trainee" ]]; then
+  python3 "${AGENT_TOOLING_DIR}/tools/ensure-local-settings.py" --repo "${TARGET_DIR}"
+fi
+
 # --- AGENTS.md ---
 
 ROLE_TITLE="$(role_title "$ROLE")"
