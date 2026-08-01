@@ -123,7 +123,17 @@ either inline on the launch command (simplest, headless) or via a `settings.loca
 `BRIEF_ID` unset → the resident materialise runs its legacy session-point-keyed path unchanged
 (backwards compatible; a no-op when there is no matching point).
 
-**Launch (Step 8, brief-first) — headless:**
+**Launch (Step 8, brief-first) — headless:** first the mandatory write-capability
+gate (see Step 8 — it applies identically here, and a failure means **do not emit
+the launch command**):
+
+```bash
+python3 ~/workspace/agent-tooling/tools/ensure-local-settings.py \
+  --check --repo ~/workspace/{home_repo} \
+  || { echo "HALT: launch clone lacks headless write capability — fix per the tool's message, then re-run prep"; exit 1; }
+```
+
+then the launch command itself:
 
 ```bash
 cd ~/workspace/{home_repo} && BRIEF_ID="{team}/{date}-{task-slug}" \
@@ -745,6 +755,9 @@ at SessionStart. Both lifecycle hooks are now **resident** in migrated home repo
 Confirm both are wired (they are, by scaffold/sync); do **not** re-add them and do **not** author
 a `settings.local.json` for materialise. The only per-launch env `settings.local.json` may still
 carry is `BRIEF_ID` (brief-first) — or pass it inline on the launch command (simplest, headless).
+(Independent of any launch, the same file also carries the standing
+`permissions.defaultMode: bypassPermissions` block — T-132, owned by scaffold/prep, verified by
+the Step 8 headless write-capability gate; it is not per-launch wiring.)
 
 ## Step 7 — Register the session
 
@@ -823,6 +836,38 @@ cd ~/workspace/{home_repo} && claude --session-id {pinned-uuid}
 ```
 
 #### headless (default for autonomous / build briefs — one-shot, non-interactive)
+
+**Write-capability gate (MANDATORY headless prep, PROJ-039/T-132 — fail loud, before
+emitting the command).** A headless session has no interactive permission prompt: if the
+launch clone's gitignored `.claude/settings.local.json` does not grant write capability,
+the whole dispatch burns as a no-op (`Write` never grantable, shell writes
+sandbox-blocked, `git commit` stuck at "requires approval" — Athena's PROJ-046/T-001
+sid `2932eae9`). Verify **before** emitting the launch command:
+
+```bash
+python3 ~/workspace/agent-tooling/tools/ensure-local-settings.py \
+  --check --repo ~/workspace/{home_repo} \
+  || { echo "HALT: launch clone lacks headless write capability"; exit 1; }
+```
+
+On failure, **do not emit the launch command**. Fix at prep (an operator/Team-Lead
+action — never have the agent self-elevate its own clone mid-session):
+`python3 ~/workspace/agent-tooling/tools/ensure-local-settings.py --repo ~/workspace/{home_repo}`
+merges `permissions.defaultMode: bypassPermissions` into the file, preserving existing
+`hooks`/`env`/`permissions.allow` keys; then re-run the check. Fresh scaffolds already
+carry the block (scaffold.sh emits it, same tool).
+
+> **T-103 reconciliation (recorded 2026-08-01, T-132).** The settings-level
+> `permissions.defaultMode: bypassPermissions` in each clone's gitignored
+> `settings.local.json` is the **single durable mechanism** for headless write
+> capability (T-103 Part A as proposed in `launch-wrapper-proposal.md`, now
+> implemented: scaffold emits it, this gate verifies it). The 2026-07-20 interim
+> operator-memory rule — append `--dangerously-skip-permissions` to every emitted M5
+> headless command — is **retired**: emitted commands carry **no** permission flag.
+> One mechanism, not two: the flag was per-command (forgettable — recurrences #2/#3
+> were exactly Hermes omitting it), invisible to prep verification, and redundant
+> once the settings block is guaranteed. This gate makes the settings path
+> prep-verifiable, which the flag never was.
 
 Emit the same launch but with a `-p` one-shot prompt. The agent runs the brief to completion,
 commits + pushes its PRs, and exits without an operator on the line:
@@ -931,7 +976,8 @@ Session prepared: hephaestus-2026-06-25-proj039-t028
   PAT branch:       session/hephaestus-2026-06-25-proj039-t028  (home-podzone-hephaestus)
   Worktrees:        home-podzone-hephaestus (launch cwd), agent-tooling, podzoneTeam
   Materialise hook: resident (session-materialise.py, committed settings.json — no
-                    settings.local.json wiring; the local block is env-only)
+                    settings.local.json wiring; the local block is env +
+                    permissions.defaultMode only, T-132 gate passed)
   SessionEnd:       resident (session-end-finalise.py, C2-v2.1c)
   Registered:       planning/sessions/active.md (podzoneTeam, apex)
   Mode:             headless (autonomous build — default; T-040)
