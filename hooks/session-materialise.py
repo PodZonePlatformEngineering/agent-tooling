@@ -82,22 +82,45 @@ def resumed_after_finalise(session_id: str, cwd: str) -> dict | None:
     except Exception:
         return None
     brief_id = os.environ.get("BRIEF_ID", "").strip()
-    rearm_branch = f"session/{{agent}}-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}-{{slug}}"
+    lock_sid = brief_id or session_id
+    # T-121: a trunk-mode repo's finalise commits+pushes straight to `main` — there is
+    # no result branch. Prescribing `checkout -b` here (the branch-mode re-arm) would
+    # branch a clone whose finalise targets main, stranding the resumed work on an
+    # orphan branch nobody merges — the same failure class `/launch-session` Step 3's
+    # lifecycle-mode fork already guards against for the normal dispatch path.
+    try:
+        from lib import lifecycle_mode
+        trunk = lifecycle_mode.is_trunk_mode(home_repo)
+    except Exception:
+        trunk = False
+    if trunk:
+        rearm = {
+            "branch": None,
+            "lock_sid": lock_sid,
+            "steps": [
+                f"python3 ~/workspace/agent-tooling/lib/session_guard.py lock "
+                f"--repo {home_repo} --sid '{lock_sid}'  # re-lock, no branch — trunk mode",
+                "then continue the brief's work on main",
+            ],
+        }
+    else:
+        rearm_branch = f"session/{{agent}}-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}-{{slug}}"
+        rearm = {
+            "branch": rearm_branch,
+            "lock_sid": lock_sid,
+            "steps": [
+                f"git -C {home_repo} checkout -b {rearm_branch}  # re-branch, keyed to the same brief",
+                f"python3 ~/workspace/agent-tooling/lib/session_guard.py lock "
+                f"--repo {home_repo} --sid '{lock_sid}'  # re-lock",
+                "then continue the brief's work on the new branch",
+            ],
+        }
     return {
         "ok": False,
         "reason": "resumed-after-finalise",
         "session_id": session_id,
         "ts": _now(),
-        "rearm": {
-            "branch": rearm_branch,
-            "lock_sid": brief_id or session_id,
-            "steps": [
-                f"git -C {home_repo} checkout -b {rearm_branch}  # re-branch, keyed to the same brief",
-                f"python3 ~/workspace/agent-tooling/lib/session_guard.py lock "
-                f"--repo {home_repo} --sid '{brief_id or session_id}'  # re-lock",
-                "then continue the brief's work on the new branch",
-            ],
-        },
+        "rearm": rearm,
     }
 
 

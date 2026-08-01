@@ -154,6 +154,38 @@ class TestResumedAfterFinalise(_ResumeFixture):
                          "podzone/2026-07-08-t075-lifecycle-hardening")
 
 
+class TestResumedAfterFinaliseTrunkMode(_ResumeFixture):
+    """PROJ-039/T-121 — a `lifecycle_mode: trunk` repo's finalise commits and
+    pushes straight to `main`; there is no result branch to re-arm. The
+    branch-mode re-arm (`checkout -b`) would strand the resumed work on an
+    orphan branch nobody merges — the exact hazard T-086 exists to prevent.
+    The trunk-mode re-arm must be lock-only, matching `/launch-session`
+    Step 3's lifecycle-mode fork for the normal dispatch path."""
+
+    def _flip_trunk_mode(self) -> None:
+        claude_dir = self.repo / ".claude"
+        claude_dir.mkdir(parents=True, exist_ok=True)
+        (claude_dir / "tooling-manifest.json").write_text(
+            json.dumps({"lifecycle_mode": "trunk"}), encoding="utf-8")
+
+    def test_trunk_repo_rearm_has_no_branch_step(self) -> None:
+        self._flip_trunk_mode()
+        self._finalise_completes(self.SID)
+        halt = sm.resumed_after_finalise(self.SID, str(self.repo))
+        self.assertIsNotNone(halt)
+        steps = halt["rearm"]["steps"]
+        self.assertFalse(any("checkout -b" in s for s in steps), steps)
+        self.assertTrue(any("session_guard.py lock" in s for s in steps), steps)
+        self.assertIsNone(halt["rearm"]["branch"])
+
+    def test_branch_mode_repo_unaffected(self) -> None:
+        """No manifest (default branch mode) keeps the existing two-step re-arm."""
+        self._finalise_completes(self.SID)
+        halt = sm.resumed_after_finalise(self.SID, str(self.repo))
+        steps = halt["rearm"]["steps"]
+        self.assertTrue(any("checkout -b" in s for s in steps), steps)
+
+
 class TestMainHaltsBeforeMaterialise(_ResumeFixture):
     def test_main_writes_sentinel_and_emits_halt(self) -> None:
         """main() must HALT before EITHER materialise path can overwrite the
