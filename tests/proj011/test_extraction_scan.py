@@ -326,6 +326,16 @@ class TestBriefClause(unittest.TestCase):
             "**Extraction-gate:** `gate.md`\n- Boundaries authorised: as needed\n")
         self.assertTrue(any("must read" in e for e in auth.errors))
 
+    def test_bare_line_without_a_bullet_marker_parses(self) -> None:
+        # PROJ-011/T-129 nit: a compliant brief can carry this as prose straight under
+        # the heading, not as a `- ` list item. The strict-bullet regex false-negatived
+        # on exactly this shape.
+        auth = ES.parse_brief_authorisation(
+            "**Extraction-gate:** `gate.md`\nBoundaries authorised: none — no crossing.\n")
+        self.assertTrue(auth.present)
+        self.assertTrue(auth.explicit_none)
+        self.assertEqual(auth.errors, [])
+
     def test_shipped_scaffold_template_carries_a_valid_clause(self) -> None:
         template = Path(__file__).resolve().parents[2] / "scaffold" / "brief.template"
         auth = ES.parse_brief_authorisation(template.read_text(encoding="utf-8"))
@@ -352,6 +362,83 @@ class TestRoster(unittest.TestCase):
         self.assertFalse((repo / "data" / "participant-roster.json").exists(),
                          "a real roster must never be committed to this public repo")
         self.assertTrue((repo / "data" / "participant-roster.example.json").exists())
+
+    def test_unreachable_path_fails_closed_and_loud(self) -> None:
+        # PROJ-011/T-129: a configured-but-missing roster is a misconfiguration, not
+        # an absent roster, and must not silently degrade to unconfigured.
+        with self.assertRaises(ES.ExtractionScanError):
+            ES.Roster.load("/nonexistent/roster.md")
+
+    def test_loads_from_operator_markdown_shape(self) -> None:
+        # Synthetic fixture only — the roster's identities must never appear in this
+        # public repo (PROJ-011/T-129 constraint).
+        markdown = """# Roster
+
+## Testing cohort
+
+| Participant | Email |
+|---|---|
+| Fictional Trainee (operator + trainee) | trainee@example.invalid |
+| Another Trainee | another@example.invalid |
+
+## Operator aliases (not cohort members)
+
+| Alias | Email | Note |
+|---|---|---|
+| Operator (git author) | operator-alias@example.invalid | commit-author address |
+
+## Invited, not yet signed up
+
+| Participant | Email | Note |
+|---|---|---|
+| Pending Person | pending@example.invalid | invited, no login yet |
+
+## Scanner guidance
+
+- Ignore by pattern: `@example.com`, `@customer.com`, `git@github.com`.
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "extraction-roster.md"
+            path.write_text(markdown, encoding="utf-8")
+            roster = ES.Roster.load(str(path))
+        self.assertTrue(roster.configured)
+        self.assertEqual(len(roster.emails), 4)
+        self.assertTrue(roster.is_participant_email("trainee@example.invalid"))
+        self.assertTrue(roster.is_participant_email("operator-alias@example.invalid"))
+        self.assertIn("Fictional Trainee", roster.names)
+        self.assertIn("Another Trainee", roster.names)
+        self.assertIn("Pending Person", roster.names)
+        # The alias table carries no `Participant` column — role labels are not names.
+        self.assertNotIn("Operator", roster.names)
+
+
+class TestEmailPatternIgnores(unittest.TestCase):
+    """PROJ-011/T-129 Task 2 — ignore by pattern, not roster entry."""
+
+    def test_example_domain_email_does_not_fire(self) -> None:
+        findings = ES.scan_line_tier1(
+            "contact norma@example.com for the demo", roster=_empty_roster(),
+            boundaries=("B1",))
+        self.assertEqual(findings, [])
+
+    def test_customer_domain_email_does_not_fire(self) -> None:
+        findings = ES.scan_line_tier1(
+            "reach out to user@customer.com", roster=_empty_roster(), boundaries=("B1",))
+        self.assertEqual(findings, [])
+
+    def test_git_ssh_remote_syntax_does_not_fire(self) -> None:
+        findings = ES.scan_line_tier1(
+            "remote origin: git@github.com:org/repo.git", roster=_empty_roster(),
+            boundaries=("B1",))
+        self.assertEqual(findings, [])
+
+    def test_unrelated_git_prefixed_local_part_at_a_real_domain_is_not_swallowed(self) -> None:
+        # The `^git@` pattern only ignores the literal SSH-remote local part; it must
+        # not blanket-suppress every address containing "git".
+        findings = ES.scan_line_tier1(
+            "contact bridget@unrostered-corp.test", roster=_empty_roster(),
+            boundaries=("B1",))
+        self.assertEqual([f[0] for f in findings], ["PII_EMAIL"])
 
 
 class TestAddedLinesOnly(unittest.TestCase):

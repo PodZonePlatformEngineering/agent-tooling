@@ -58,11 +58,21 @@ repository** — `agent-tooling` is public, and a list of real participant names
 exactly the Class P material the gate exists to contain. `data/participant-roster.example.json`
 is fictional and documents the schema.
 
-The real roster lives in a private repo and is passed by path:
+The real roster lives in a private repo and is passed by path. `podzoneTeam`'s copy is
+the operator-maintained markdown at `planning/extraction-roster.md` — three pipe tables
+(testing cohort, operator aliases, invited-not-yet-signed-up) plus prose; the loader
+detects the `.md`/`.markdown` suffix and parses the tables directly rather than asking
+the operator to hand-maintain a second, machine-readable file that could drift (PROJ-011
+/T-129). A plain JSON roster (`{"names": [...], "emails": [...]}`, see
+`data/participant-roster.example.json`) is still accepted for any repo that prefers it.
 
 ```bash
+# markdown roster (podzoneTeam's shape)
+extraction-scan.py --diff origin/main --roster ~/workspace/podzoneTeam/planning/extraction-roster.md
+# or: export EXTRACTION_ROSTER=~/workspace/podzoneTeam/planning/extraction-roster.md
+
+# JSON roster
 extraction-scan.py --diff origin/main --roster ~/workspace/podzoneTeam/planning/participant-roster.json
-# or: export EXTRACTION_ROSTER=...
 ```
 
 **With no roster configured** the tier-3 name check does not run, and the scanner says
@@ -71,6 +81,19 @@ email address at B2 warns instead of failing, because the gate permits Class P a
 and without a roster a participant's address is indistinguishable from a client's —
 blocking would be a guess, and a wrong guess at tier 1 blocks a legitimate document.
 Configuring the roster promotes it back to a hard fail for Class A.
+
+**A configured roster path that does not resolve is a hard failure (exit 2), not a
+silent fallback to unconfigured.** The roster lives in the same checkout as the content
+being scanned, so "unreachable" here always means misconfiguration — a path typo, or a
+roster file that got deleted — never unavailability. Degrading quietly to "no roster"
+would mean a deleted roster silently disarms the tier-1 hard-fail it was configured to
+enable; the scanner refuses to make that trade on the caller's behalf.
+
+**Pattern-ignores, not roster entries.** Two documentation placeholder domains
+(`@example.com`, `@customer.com`) and the `git@host` shape left by pasted SSH remote
+URLs (`git@github.com:org/repo.git`) are recognised and skipped regardless of roster
+configuration — a roster enumerates people, and placeholders are infinite, so they never
+belong in it (see the roster's own "Scanner guidance" section).
 
 ## Where it runs
 

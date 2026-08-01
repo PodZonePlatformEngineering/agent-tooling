@@ -212,23 +212,90 @@ class Roster:
         The real roster lives in a private repo (``podzoneTeam``); an unconfigured
         roster disables the tier-3 name check and says so, rather than shipping names
         here to make a warning tier work.
+
+        ``.md``/``.markdown`` files are parsed as the operator-maintained roster
+        (PROJ-011/T-129) — three pipe tables plus prose, not a machine-readable
+        format kept in lockstep by hand. Anything else is read as the JSON shape
+        (``{"names": [...], "emails": [...]}``) this module has always accepted.
+
+        A configured path that does not resolve is a **hard failure**, not a silent
+        fallback to unconfigured: the roster lives in the same checkout as the
+        content being scanned, so "unreachable" here means misconfiguration (a typo,
+        a deleted file), never unavailability. A gate that quietly disarms itself
+        when its roster goes missing is worse than one that never had a roster.
         """
         raw_path = path or os.environ.get("EXTRACTION_ROSTER") or ""
         if not raw_path:
             return cls()
         p = Path(raw_path).expanduser()
         if not p.exists():
-            raise ExtractionScanError(f"roster not found: {p}")
-        try:
-            data = json.loads(p.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ExtractionScanError(f"roster is not valid JSON: {exc}") from exc
-        names = tuple(sorted({str(n).strip() for n in data.get("names", []) if str(n).strip()}))
-        emails = tuple(sorted({str(e).strip().lower() for e in data.get("emails", []) if str(e).strip()}))
+            raise ExtractionScanError(
+                f"roster configured but unreachable: {p} — this is a misconfiguration "
+                "(path typo, deleted file), not an absent roster; fix the path or "
+                "unset EXTRACTION_ROSTER rather than let the gate degrade silently")
+        text = p.read_text(encoding="utf-8")
+        if p.suffix.lower() in (".md", ".markdown"):
+            names, emails = _parse_roster_markdown(text)
+        else:
+            try:
+                data = json.loads(text)
+            except json.JSONDecodeError as exc:
+                raise ExtractionScanError(f"roster is not valid JSON: {exc}") from exc
+            names = tuple(sorted({str(n).strip() for n in data.get("names", []) if str(n).strip()}))
+            emails = tuple(sorted({str(e).strip().lower() for e in data.get("emails", []) if str(e).strip()}))
         return cls(names=names, emails=emails, source=str(p))
 
     def is_participant_email(self, address: str) -> bool:
         return address.strip().lower() in self.emails
+
+
+_RE_MD_TABLE_ROW = re.compile(r"^\s*\|(.+)\|\s*$")
+_RE_MD_TABLE_SEP = re.compile(r"^\s*\|?[\s:|-]+\|?\s*$")
+_RE_TRAILING_PAREN = re.compile(r"\s*\([^)]*\)\s*$")
+
+
+def _parse_roster_markdown(text: str) -> tuple:
+    """Parse the operator-maintained roster's pipe tables (PROJ-011/T-129).
+
+    Every table with an ``Email`` column contributes its addresses — the roster's own
+    "Scanner guidance" section states that all three tables (testing cohort, operator
+    aliases, invited-not-yet-signed-up) are Class P. Only tables with a ``Participant``
+    column contribute names: the operator-aliases table names roles ("Operator (git
+    author)"), not people, and role words make poor name-match patterns, so that table
+    is email-only by construction (no ``Participant`` header, nothing to collect).
+
+    Generating a parser around the settled markdown — rather than asking the operator
+    to hand-maintain a second, machine-readable file — is the point of this function;
+    see brief PROJ-011/T-129 Task 1.2.
+    """
+    names: set = set()
+    emails: set = set()
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        header = _RE_MD_TABLE_ROW.match(lines[i])
+        if header and i + 1 < len(lines) and _RE_MD_TABLE_SEP.match(lines[i + 1]):
+            headers = [c.strip().lower() for c in header.group(1).split("|")]
+            email_col = next((idx for idx, h in enumerate(headers) if "email" in h), None)
+            name_col = next((idx for idx, h in enumerate(headers) if "participant" in h), None)
+            i += 2
+            while i < len(lines):
+                row = _RE_MD_TABLE_ROW.match(lines[i])
+                if not row:
+                    break
+                cells = [c.strip() for c in row.group(1).split("|")]
+                if email_col is not None and email_col < len(cells):
+                    match = _RE_EMAIL.search(cells[email_col])
+                    if match:
+                        emails.add(match.group(1).strip().lower())
+                if name_col is not None and name_col < len(cells):
+                    name = _RE_TRAILING_PAREN.sub("", cells[name_col]).strip()
+                    if name:
+                        names.add(name)
+                i += 1
+            continue
+        i += 1
+    return tuple(sorted(names)), tuple(sorted(emails))
 
 
 # --------------------------------------------------------------------------- #
@@ -272,6 +339,18 @@ _PLACEHOLDER_HINTS = (
 def _looks_like_placeholder(value: str) -> bool:
     lowered = value.lower()
     return any(hint in lowered for hint in _PLACEHOLDER_HINTS)
+
+
+#: Email-shaped strings that are not participant addresses, ignored by **pattern**
+#: rather than by roster entry (roster "Scanner guidance", PROJ-011/T-129): the two
+#: documentation placeholder domains, and the ``git@host`` form left by pasted SSH
+#: remote URLs (``git@github.com:org/repo.git``). Placeholders are infinite; a roster
+#: enumerates people, not syntax, so these never belong in it.
+_RE_EMAIL_IGNORE = re.compile(r"@(?:example|customer)\.com$|^git@", re.IGNORECASE)
+
+
+def _is_ignored_email(address: str) -> bool:
+    return bool(_RE_EMAIL_IGNORE.search(address))
 
 
 #: The gate's own placeholder convention (§5): [CLAIMANT_A], [ID_001], [PHONE_001].
@@ -344,7 +423,8 @@ def scan_line_tier1(line: str, *, roster: Roster, boundaries: Sequence[str]) -> 
 
     for match in _RE_EMAIL.finditer(line):
         address = match.group(1)
-        if demo or _looks_like_placeholder(address) or address.lower().endswith(".example"):
+        if (demo or _looks_like_placeholder(address)
+                or address.lower().endswith(".example") or _is_ignored_email(address)):
             continue
         strict = any(b in CLASS_P_STRICT for b in boundaries)
         if roster.is_participant_email(address):
@@ -600,7 +680,11 @@ def parse_declaration(text: str) -> Declaration:
 
 # Tolerates both markdown habits: `**Extraction-gate:**` and `**Extraction-gate**:`.
 _RE_CLAUSE_GATE = re.compile(r"\*\*Extraction-gate\s*:?\s*\*\*\s*:?", re.IGNORECASE)
-_RE_CLAUSE_AUTH = re.compile(r"^\s*[-*]\s*Boundaries authorised\s*:\s*(.+)$", re.IGNORECASE)
+# The bullet marker is optional: a compliant brief can carry the line as bare prose
+# straight under the `**Extraction-gate:**` heading, not just as a `- ` list item (the
+# T-129 rev-2 brief did exactly this and the strict-bullet regex false-negatived on
+# its own compliant line — banked as the nit that motivated this fix).
+_RE_CLAUSE_AUTH = re.compile(r"^\s*(?:[-*]\s*)?Boundaries authorised\s*:\s*(.+)$", re.IGNORECASE)
 
 
 @dataclass
