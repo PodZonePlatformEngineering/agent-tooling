@@ -157,6 +157,17 @@ Never write task files into an agent's repo yourself; materialise does that.
      in the final response if fully done; raise-to-lead-and-exit if operator-blocked.
      A subscription-limit exit is the **preferred** failure mode — re-launch fresh from
      committed state, never resume (resume pays the full prompt-cache reload).
+     **Headless prep gate (T-132/T-103):** before emitting the command, verify the
+     launch clone grants headless write capability —
+     `python3 ~/workspace/agent-tooling/tools/ensure-local-settings.py --check --repo ~/workspace/{home_repo}`
+     — and **refuse to launch** on failure (a headless session cannot resolve a
+     permission prompt; the burned-dispatch class is Athena sid 2932eae9). The durable
+     mechanism is `permissions.defaultMode: bypassPermissions` in the clone's
+     gitignored `.claude/settings.local.json` (scaffold emits it; the same tool
+     without `--check` merges it in, preserving existing keys — an operator/Team-Lead
+     action at prep, never agent self-elevation mid-session). Emitted commands carry
+     **no** `--dangerously-skip-permissions` flag — the 2026-07-20 per-command interim
+     is retired; settings-level bypass is the single mechanism.
    - **interactive** — for team-lead or high-uncertainty work; emits
      `claude` without `-p`, operator drives.
 
