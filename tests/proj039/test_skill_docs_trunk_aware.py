@@ -44,6 +44,35 @@ class TestNoDeadBranchRoutingInstruction(unittest.TestCase):
         )
 
 
+class TestBriefFirstLockUsesBriefId(unittest.TestCase):
+    """PROJ-039/T-119 — the launcher's Step 3 lock loop must key a brief-first
+    launch's ``$SID`` on the ``brief_id`` string, not a generated uuid. A uuid
+    here can never match T-054's release-side ``owned_sids=[brief_id]`` (a
+    permanent mismatch), so finalise's release always reports False and the
+    lock is left wedged — hit ten times on 2026-07-30/31. Doc-consistency
+    grep, matching the shape of :class:`TestNoDeadBranchRoutingInstruction`
+    above: the prose is the artifact here, there's no fixture to execute."""
+
+    def test_step3_names_brief_id_as_the_lock_sid(self):
+        text = LAUNCH_SKILL.read_text(encoding="utf-8")
+        self.assertIn(
+            'brief-first path: "{brief_id}"',
+            text,
+            "launch-session/SKILL.md Step 3 no longer tells the brief-first "
+            "path to lock with the brief_id string — PROJ-039/T-119 regression",
+        )
+
+    def test_variant_table_calls_out_step3_sid_delta(self):
+        text = LAUNCH_SKILL.read_text(encoding="utf-8")
+        self.assertIn(
+            "PROJ-039/T-119",
+            text,
+            "brief-first variant table should cross-reference T-119 where it "
+            "documents the Step 3 lock-sid delta",
+        )
+        self.assertIn("`$SID` = the `brief_id` string", text)
+
+
 class TestLifecycleModeForkInBothSkills(unittest.TestCase):
     """`lifecycle_mode` must be mentioned in both Step 3 (launch) and Step 0c (consolidate)."""
 

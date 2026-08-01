@@ -86,6 +86,7 @@ legacy/one-shot dispatches). The deltas against the migrated pinned-sid steps:
 
 | step | pinned-sid path (above) | **brief-first variant** |
 |------|--------------------------|--------------------------|
+| Step 3 (lock `$SID`) | `uuidgen`-pinned Step 4 uuid | **`$SID` = the `brief_id` string** — not a fresh `uuidgen` (PROJ-039/T-119: a synthetic sid here can never match T-054's `owned_sids=[brief_id]` release, so finalise always reports the release as failed and the lock never clears) |
 | Step 4 (pin sid) | `uuidgen` → `--session-id`, persist | **skip** — no pinned sid; the runtime/sidebar auto-id is safe (materialise keys the session point to it) |
 | Step 5 (author point) | `create-session-point.py` (session point, keyed to pinned sid) | **`create-brief.py`** — author/approve the `briefs` point from the committed brief file (keyed to `brief_id`); verify read-back |
 | Step 6 (wiring) | materialise resolves by pinned sid | materialise resolves by **`BRIEF_ID`** env var → stands up the session point under the **runtime** sid, appends the sid to `briefs.session_ids[]` |
@@ -379,7 +380,15 @@ replaces the old worktree + ff + exclude bash with one call each:
 > nothing.
 
 ```bash
-SID=…            # the pinned runtime UUID (Step 4)
+# Pinned-sid launch: SID is the Step 4 uuid (pinned below, but the value is already
+# known at this point in that variant — carry it forward).
+# Brief-first launch (T-043): Step 4 is skipped (no pinned runtime id yet — see the
+# variant table above), so SID here MUST be the brief_id string itself, not a fresh
+# uuidgen throwaway. T-054's release-side owned_sids=[brief_id] only matches a lock
+# that was actually taken under brief_id — a generated uuid here permanently wedges
+# the lock (PROJ-039/T-119). The lock file is a plain JSON blob keyed on an arbitrary
+# string; brief_id round-trips cleanly (session_guard.py has no UUID-shape assumption).
+SID=…            # pinned-sid path: the Step 4 uuid · brief-first path: "{brief_id}"
 for repo in {home_repo} {task_repos…}; do
   CLONE=~/workspace/$repo
   # Start guard: clone must be clean + on a ff'd main, else HALT (recovers only a
