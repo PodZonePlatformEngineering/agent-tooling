@@ -112,6 +112,20 @@ Three rules the Team Lead applies when filling it in:
 2. **`none` is the normal answer** and must still be written. Most briefs build
    tooling, fix defects, or ship code, and carry no session content anywhere. Saying so
    explicitly is what makes the clause's absence detectable.
+   **`none` in the brief does NOT excuse the artefact from carrying a §7 declaration if
+   the artefact itself lands inside a scanned destination path** (e.g. anything under
+   `PROJ-011-academy/`). The CI extraction-scan checks the declaration block's
+   *presence*, mechanically, on any commit into a scanned path — it does not (and
+   cannot) judge whether the content is actually session-content-derived, and it does
+   not read the brief's authorisation clause at all. Found the hard way on T-209
+   (2026-08-06): a design doc built from external market-research material, correctly
+   marked `Boundaries authorised: none` in its own header, still failed CI for a missing
+   §7 block. **If the deliverable lands in a scanned path, write the declaration** —
+   with genuinely empty values (`Class A: none present`, `Class P: none`, judgement
+   calls: `none`) if that's the honest answer — rather than reasoning that the gate
+   "doesn't formally apply" and omitting the block. Only skip the declaration entirely
+   when the deliverable lands somewhere the scanner doesn't check (a working-repo code
+   change, most `agent-tooling` PRs, etc.).
 3. **If the brief authorises anything but `none`,** it also states which data classes
    are expected (Class A third-party / Class P participant) and points at the gate's
    §6 checklist. The agent then owes a §7 declaration in every artefact it lands.
