@@ -89,12 +89,14 @@ case "${BRIEF_STATUS_FIELD}" in
 esac
 
 AGENT_CAP="$(python3 -c "print('${ASSIGNEE}'.capitalize())")"
-DATE_SLUG="$(date +%Y-%m-%d)"
+# brief_id is `{team}/{date}-{slug}` — its last path segment is ALREADY
+# date-prefixed, so the branch name is `{agent}/{that segment}` verbatim
+# (not `{agent}/{today}-{that segment}`, which would double the date).
 SLUG="$(python3 -c "
 s = '${BRIEF_ID}'.split('/')[-1]
 print(s)
 ")"
-BRANCH_NAME="${ASSIGNEE}/${DATE_SLUG}-${SLUG}"
+BRANCH_NAME="${ASSIGNEE}/${SLUG}"
 
 if [[ -z "${HOME_REPO_DIR}" ]]; then
   HOME_REPO_DIR="$(git rev-parse --show-toplevel 2>/dev/null || true)"
