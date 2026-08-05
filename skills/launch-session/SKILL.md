@@ -6,6 +6,19 @@ description: Launch an agent session — migrated home-repo default is serial si
 This skill is for **the Team Lead** of each team. It creates an isolated working environment
 for an agent session and registers it so the Team Lead can track it during consolidation.
 
+> **Preferred path for a headless build dispatch (PROJ-039/T-108):** `tools/launch.sh
+> <brief-id>` collapses Steps 3–8 below into one invocation — preflight-abort, pull,
+> working-repo branch+PR pre-creation, lock, then an auto-rotating retry loop across the
+> four subscription tokens, all before/around a minimal `claude -p "Hi {Agent}. Continue
+> with the brief."` The wrapper owns 100% of git ceremony (commit+push every touched repo
+> at every loop-exit boundary and at final cleanup) — the inner session runs no git itself,
+> so its prompt drops the "commit early and often" clause (see `docs/brief-authoring.md`
+> item 5). Run it from the home repo: `cd ~/workspace/{home_repo} && tools/launch.sh
+> {brief_id} --repos {repo1},{repo2}`. The manual Steps 3–8 below remain the documented
+> reference for what the wrapper automates, and are still the path for **interactive**
+> (team-lead / high-uncertainty) launches, which `launch.sh` does not cover (headless
+> one-shot only — no queue/scheduler, single-shot per invocation).
+
 It has **two launch shapes**, selected per-agent by mode (see Step 1):
 
 - **Legacy (standard / fissioned)** — generates a VS Code `.code-workspace`, opens it in a
@@ -836,6 +849,11 @@ cd ~/workspace/{home_repo} && claude --session-id {pinned-uuid}
 ```
 
 #### headless (default for autonomous / build briefs — one-shot, non-interactive)
+
+> **Prefer `tools/launch.sh {brief_id}` over hand-emitting the command below** (T-108) —
+> it runs this section's gate + staging + launch automatically and adds subscription-token
+> rotation on a limit-stop. Use the manual steps below only for an interactive launch, or
+> when `launch.sh` genuinely doesn't cover the case at hand.
 
 **Write-capability gate (MANDATORY headless prep, PROJ-039/T-132 — fail loud, before
 emitting the command).** A headless session has no interactive permission prompt: if the

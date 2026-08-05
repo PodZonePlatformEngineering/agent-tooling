@@ -38,11 +38,19 @@ Run this before authoring any headless brief:
    subtasks *inside* a reasoning brief should be delegated by the agent to
    sonnet/haiku subagents instead of a separate dispatch — the expensive model
    keeps the core reasoning. Say so in the brief if you want it.
-5. **Self-banking furniture is mandatory.** Every headless prompt carries
-   "commit early and often so a limit-stop self-banks". Post-T-060, session-branch
-   commits survive finalise (the result PR forks from the session branch), so a
-   banked limit-stop needs zero Team Lead rescue — re-launch fresh with the same
-   `BRIEF_ID` and the brief accumulates the new sid.
+5. **Self-banking furniture is mandatory — for a directly-emitted `claude -p`
+   launch.** Every prompt emitted by hand (Step 8 of `skills/launch-session/
+   SKILL.md`) carries "commit early and often so a limit-stop self-banks".
+   Post-T-060, session-branch commits survive finalise (the result PR forks
+   from the session branch), so a banked limit-stop needs zero Team Lead
+   rescue — re-launch fresh with the same `BRIEF_ID` and the brief accumulates
+   the new sid. **This does NOT apply to a `launch.sh <brief-id>` dispatch**
+   (PROJ-039/T-108) — the wrapper itself owns 100% of git ceremony (add,
+   commit, push, branch, PR) for the home repo and every working repo, at
+   every loop-exit boundary and at final cleanup, so the inner session never
+   needs to run git at all. Drop the "commit early and often" clause entirely
+   from a wrapper-launched brief's prompt furniture — the minimal prompt stays
+   `"Hi {Agent}. Continue with the brief."`, nothing about git.
 
 ## Brief skeleton conventions
 
