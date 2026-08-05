@@ -195,6 +195,14 @@ for r in "${REPOS[@]:-}"; do
   fi
 done
 
+# Write-capability gate (MANDATORY headless prep, PROJ-039/T-132 — fail loud).
+# A headless `claude -p` has no interactive prompt to grant Write/Bash; without
+# this, every dispatch through the wrapper would be silently denied by the
+# auto-mode classifier, which defeats the whole point of this script.
+log "checking headless write-capability gate on home repo"
+python3 "${TOOLING_ROOT}/tools/ensure-local-settings.py" --check --repo "${HOME_REPO_DIR}" \
+  || abort "home repo ${HOME_REPO_DIR} does not grant headless write capability — operator/Team Lead action required (see message above), not something this wrapper can fix in-session"
+
 # Lock (home repo), held across all retry attempts, released only at final exit.
 log "acquiring session lock on home repo"
 python3 "${TOOLING_ROOT}/lib/session_guard.py" lock --repo "${HOME_REPO_DIR}" --sid "${BRIEF_ID}" \
