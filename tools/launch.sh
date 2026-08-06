@@ -301,7 +301,7 @@ while true; do
   # own environment for the `claude` child process only, the same exposure
   # surface any env-var secret injection already carries; never echoed.
   set +e
-  LAST_STDOUT="$(cd "${HOME_REPO_DIR}" && CLAUDE_CODE_OAUTH_TOKEN="$(python3 -c "import json; print(json.load(open('${TOKENS_FILE}'))[${i}]['token'])")" \
+  LAST_STDOUT="$(cd "${HOME_REPO_DIR}" && BRIEF_ID="${BRIEF_ID}" CLAUDE_CODE_OAUTH_TOKEN="$(python3 -c "import json; print(json.load(open('${TOKENS_FILE}'))[${i}]['token'])")" \
     claude -p "Hi ${AGENT_CAP}. Continue with the brief." 2>&1)"
   EXIT_CODE=$?
   set -e
