@@ -156,5 +156,81 @@ class TestClaudeInvocationCarriesBriefId(unittest.TestCase):
         )
 
 
+class TestTokenRotationCursor(unittest.TestCase):
+    """PROJ-039/T-216: every launch.sh invocation used to start at token index
+    0 unconditionally (confirmed live -- every dispatch this session hit
+    'colleym' first, and two invocations launched in parallel would both
+    authenticate against the same subscription concurrently). Extracts and
+    runs the actual cursor-read/advance snippet from launch.sh via bash -c
+    (not a full script run -- that needs claude/gh/qdrant) to prove the
+    arithmetic and the --token-index override bypass, both against real bash,
+    not a Python reimplementation that could silently drift from the script.
+    """
+
+    def _extract_cursor_block(self):
+        lines = (REPO_ROOT / "tools" / "launch.sh").read_text().splitlines()
+        start = next(
+            i for i, l in enumerate(lines)
+            if l.strip() == 'if [[ -n "${TOKEN_INDEX_OVERRIDE}" ]]; then'
+        )
+        end = next(i for i, l in enumerate(lines[start:], start) if l.strip() == "fi") + 1
+        return "\n".join(lines[start:end])
+
+    def _run(self, cursor_initial, token_count, override=""):
+        with tempfile.TemporaryDirectory() as td:
+            cursor_file = Path(td) / "cursor"
+            if cursor_initial is not None:
+                cursor_file.write_text(str(cursor_initial))
+            script = f"""
+set -euo pipefail
+CURSOR_FILE="{cursor_file}"
+TOKEN_COUNT={token_count}
+TOKEN_INDEX_OVERRIDE="{override}"
+log() {{ :; }}
+{self._extract_cursor_block()}
+echo "i=$i"
+"""
+            result = _run("bash", "-c", script)
+            i = int(result.stdout.strip().split("i=")[1])
+            next_cursor = cursor_file.read_text().strip() if cursor_file.exists() else None
+            return i, next_cursor
+
+    def test_no_cursor_file_starts_at_zero_and_advances(self):
+        i, next_cursor = self._run(cursor_initial=None, token_count=4)
+        self.assertEqual(i, 0)
+        self.assertEqual(next_cursor, "1")
+
+    def test_cursor_advances_round_robin(self):
+        i, next_cursor = self._run(cursor_initial=2, token_count=4)
+        self.assertEqual(i, 2)
+        self.assertEqual(next_cursor, "3")
+
+    def test_cursor_wraps_at_token_count(self):
+        i, next_cursor = self._run(cursor_initial=3, token_count=4)
+        self.assertEqual(i, 3)
+        self.assertEqual(next_cursor, "0")
+
+    def test_malformed_cursor_falls_back_to_zero(self):
+        with tempfile.TemporaryDirectory() as td:
+            cursor_file = Path(td) / "cursor"
+            cursor_file.write_text("not-a-number")
+            script = f"""
+set -euo pipefail
+CURSOR_FILE="{cursor_file}"
+TOKEN_COUNT=4
+TOKEN_INDEX_OVERRIDE=""
+log() {{ :; }}
+{self._extract_cursor_block()}
+echo "i=$i"
+"""
+            result = _run("bash", "-c", script)
+            self.assertEqual(result.stdout.strip(), "i=0")
+
+    def test_explicit_override_bypasses_cursor_entirely(self):
+        i, next_cursor = self._run(cursor_initial=1, token_count=4, override="3")
+        self.assertEqual(i, 3)
+        self.assertEqual(next_cursor, "1", "override must not advance or touch the cursor file")
+
+
 if __name__ == "__main__":
     unittest.main()

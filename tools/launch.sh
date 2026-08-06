@@ -39,8 +39,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOOLING_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# --- tokens (proposal §4 — deterministic order; rotation-fairness cursor is a
-# noted follow-up, not built here) ---
+# --- tokens (proposal §4 — deterministic order) ---
 # PROJ-039/T-210: `secretctl run`'s raw CLI has no non-interactive auth path
 # (only `secretctl mcp-server` reads SECRETCTL_PASSWORD) — confirmed live,
 # it always tries to open a TTY for the master-password prompt and fails
@@ -51,6 +50,19 @@ TOOLING_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # at all any more.
 TOKENS_FILE="${HOME}/.claude/launch-tokens.resolved.json"
 
+# PROJ-039/T-216: rotation-fairness cursor. Every invocation used to start at
+# index 0 unconditionally (confirmed live: every dispatch this session hit
+# 'colleym' first) — harmless for one dispatch at a time, but two invocations
+# launched in parallel would both authenticate against the SAME subscription
+# concurrently. A persistent cursor file makes successive invocations start on
+# the next token round-robin; --token-index overrides it explicitly (the right
+# tool for a deliberately staggered parallel launch, vs. relying on the
+# auto-advancing cursor's read-then-write, which is not race-proof under true
+# simultaneous launches — good enough for this fleet's actual concurrency, not
+# a distributed lock).
+CURSOR_FILE="${HOME}/.claude/launch-token-cursor"
+TOKEN_INDEX_OVERRIDE=""
+
 ORG="PodZonePlatformEngineering"
 HOME_REPO_DIR=""
 REPOS_CSV=""
@@ -59,7 +71,7 @@ API_RETRY_BACKOFF_S=30
 BRIEF_ID=""
 
 usage() {
-  echo "Usage: $0 <brief-id> [--repos repo1,repo2,...] [--home-repo <path>] [--org <org>] [--api-retry-cap N] [--api-retry-backoff-s N] [--tokens-file <path>]" >&2
+  echo "Usage: $0 <brief-id> [--repos repo1,repo2,...] [--home-repo <path>] [--org <org>] [--api-retry-cap N] [--api-retry-backoff-s N] [--tokens-file <path>] [--token-index N]" >&2
   exit 1
 }
 
@@ -73,6 +85,7 @@ while [[ $# -gt 0 ]]; do
     --api-retry-cap)        API_RETRY_CAP="${2:?}"; shift 2 ;;
     --api-retry-backoff-s)  API_RETRY_BACKOFF_S="${2:?}"; shift 2 ;;
     --tokens-file)          TOKENS_FILE="${2:?}"; shift 2 ;;
+    --token-index)          TOKEN_INDEX_OVERRIDE="${2:?}"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
   esac
 done
@@ -281,7 +294,16 @@ bank_all_repos() { # $1 = attempt number
 # ---------------------------------------------------------------------------
 # Phase 2 — the run loop (proposal §3.3, classify_exit per §5)
 # ---------------------------------------------------------------------------
-i=0
+if [[ -n "${TOKEN_INDEX_OVERRIDE}" ]]; then
+  i="${TOKEN_INDEX_OVERRIDE}"
+  log "starting token index ${i} (explicit --token-index override, cursor untouched)"
+else
+  i="$(cat "${CURSOR_FILE}" 2>/dev/null || echo 0)"
+  [[ "${i}" =~ ^[0-9]+$ ]] || i=0
+  i=$(( i % TOKEN_COUNT ))
+  log "starting token index ${i} (rotation cursor)"
+  echo "$(( (i + 1) % TOKEN_COUNT ))" > "${CURSOR_FILE}"
+fi
 attempt=0
 api_retries=0
 LAST_STDOUT=""
