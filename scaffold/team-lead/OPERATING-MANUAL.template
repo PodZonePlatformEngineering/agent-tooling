@@ -148,8 +148,23 @@ Never write task files into an agent's repo yourself; materialise does that.
    `--approve` is required before launch: materialise refuses an unapproved brief.
    **Verify read-back** (body present, `status` ∈ {approved, in_progress, complete})
    before launching — a missing/unapproved brief HALTs the agent at SessionStart.
-3. **Launch** via `/launch-session`. The launcher runs the preflight + lock (and, on a
-   branch-mode repo, creates the session branch). Two modes:
+3. **Launch.** Default path for a headless brief-first build: `cd
+   ~/workspace/{home_repo} && tools/launch.sh {brief_id} --repos {repo1},{repo2}` — this
+   runs the preflight/gate/branch/PR-pre-creation/lock below AND the token-rotation
+   retry loop automatically. The numbered steps that follow are the reference for what
+   it automates and the fallback for an interactive or pinned-sid launch. Scope caveat:
+   `launch.sh` is brief-first only (no pinned-`--session-id` path) and does not yet read
+   a working repo's `lifecycle_mode` (T-215) — launch a `trunk`-mode working repo through
+   the manual steps instead. One-time prerequisite: before the first `launch.sh` dispatch
+   in a subscription rotation, run `resolve-launch-tokens.py` (via the secrets MCP) once
+   to produce `~/.claude/launch-tokens.resolved.json`. Successive dispatches rotate which
+   subscription they start on automatically (a persistent cursor file, T-216, v1.29.0);
+   pass `--token-index N` to force a specific starting token for a staggered parallel
+   launch.
+
+   **Manual launch (fallback / interactive / pinned-sid) via `/launch-session`.** The
+   launcher runs the preflight + lock (and, on a branch-mode repo, creates the session
+   branch). Two modes:
    - **headless** (default for builds) — one-shot
      `cd ~/workspace/{home_repo} && BRIEF_ID="__TEAM__/{date}-{slug}" claude -p "<continue+escalate prompt>"`.
      The prompt always carries: work the hardest/blocking task first; the deferrable

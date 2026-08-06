@@ -6,7 +6,9 @@ description: Manually finalise this session — the /exit equivalent for environ
 Thin wrapper over the resident SessionEnd finalise hook (PROJ-039/T-100). Some
 session surfaces (the IDE sidebar) have no `/exit` built-in, so the harness
 SessionEnd fires only at window close — this skill triggers the **same finalise,
-deliberately, now**. It duplicates NO finalise logic: everything (response +
+deliberately, now**. It is IDE-sidebar-specific and orthogonal to headless `launch.sh`
+dispatches (those exit via `claude -p` completion, which fires SessionEnd automatically —
+this skill is never invoked in that path). It duplicates NO finalise logic: everything (response +
 rollup upsert, result authoring, lifecycle-mode-aware landing [trunk: direct
 commit on main; branch: result PR], telemetry push, end-guard, lock release) is
 `.claude/hooks/session-end-finalise.py`, invoked exactly as the harness invokes it.

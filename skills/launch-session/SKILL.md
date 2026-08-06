@@ -6,18 +6,44 @@ description: Launch an agent session — migrated home-repo default is serial si
 This skill is for **the Team Lead** of each team. It creates an isolated working environment
 for an agent session and registers it so the Team Lead can track it during consolidation.
 
-> **Preferred path for a headless build dispatch (PROJ-039/T-108):** `tools/launch.sh
-> <brief-id>` collapses Steps 3–8 below into one invocation — preflight-abort, pull,
-> working-repo branch+PR pre-creation, lock, then an auto-rotating retry loop across the
-> four subscription tokens, all before/around a minimal `claude -p "Hi {Agent}. Continue
-> with the brief."` The wrapper owns 100% of git ceremony (commit+push every touched repo
-> at every loop-exit boundary and at final cleanup) — the inner session runs no git itself,
-> so its prompt drops the "commit early and often" clause (see `docs/brief-authoring.md`
-> item 5). Run it from the home repo: `cd ~/workspace/{home_repo} && tools/launch.sh
-> {brief_id} --repos {repo1},{repo2}`. The manual Steps 3–8 below remain the documented
-> reference for what the wrapper automates, and are still the path for **interactive**
-> (team-lead / high-uncertainty) launches, which `launch.sh` does not cover (headless
-> one-shot only — no queue/scheduler, single-shot per invocation).
+> **Default path for a headless brief-first build dispatch (PROJ-039/T-108):** `tools/launch.sh
+> <brief-id> --repos repo1,repo2`. Use this; the manual Steps 3–8 below are the documented
+> fallback and reference for what it automates. `launch.sh` collapses Steps 3–8 into one
+> invocation — preflight-abort, pull, working-repo branch+PR pre-creation, lock, then an
+> auto-rotating retry loop across the subscription tokens, all before/around a minimal
+> `claude -p "Hi {Agent}. Continue with the brief."` The wrapper owns 100% of git ceremony
+> (commit+push every touched repo at every loop-exit boundary and at final cleanup) — the
+> inner session runs no git itself, so its prompt drops the "commit early and often" clause
+> (see `docs/brief-authoring.md` item 5). Run it from the home repo: `cd
+> ~/workspace/{home_repo} && tools/launch.sh {brief_id} --repos {repo1},{repo2}`.
+>
+> **Scope caveat:** `launch.sh` is **brief-first only** (`BRIEF_ID`, `create-brief.py
+> --approve`) — it has no pinned-`--session-id` path. A pinned-`--session-id` launch (rare;
+> only when a session must be resumable against a specific id pre-registered elsewhere)
+> still uses the manual Steps 4–8 below. It also does not read `lifecycle_mode` from a
+> working repo's `.claude/tooling-manifest.json` (T-215) — it branches every named working
+> repo unconditionally, so a `trunk`-mode repo launched through `launch.sh` today gets an
+> unwanted branch+PR instead of its declared direct-to-main behaviour. Until T-215 lands,
+> launch a `trunk`-mode working repo through the manual Steps 3–8 ceremony instead, which
+> reads the flag correctly.
+>
+> **One-time prerequisite:** before the first `launch.sh` dispatch in a subscription
+> rotation, the Team Lead runs `resolve-launch-tokens.py` (via the secrets MCP) once to
+> produce `~/.claude/launch-tokens.resolved.json` — reusable across dispatches until it
+> goes stale. Successive `launch.sh` invocations rotate which subscription they start on
+> automatically (a persistent cursor file, T-216, `agent-tooling` v1.29.0); pass
+> `--token-index N` to force a specific starting token for a deliberately staggered
+> parallel launch.
+>
+> **Registration prerequisite:** `launch.sh` never writes to `planning/sessions/active.md`
+> itself — a `launch.sh` dispatch is registered there today only if the Team Lead does it
+> manually, before calling `launch.sh` (see `/consolidate-tasks` Step 0a). Register the
+> dispatch first if you want it visible to the sessions registry.
+>
+> The manual Steps 3–8 below remain the documented reference for what the wrapper
+> automates, and are still the path for **interactive** (team-lead / high-uncertainty)
+> launches, which `launch.sh` does not cover (headless one-shot only — no
+> queue/scheduler, single-shot per invocation).
 
 It has **two launch shapes**, selected per-agent by mode (see Step 1):
 
@@ -136,9 +162,12 @@ either inline on the launch command (simplest, headless) or via a `settings.loca
 `BRIEF_ID` unset → the resident materialise runs its legacy session-point-keyed path unchanged
 (backwards compatible; a no-op when there is no matching point).
 
-**Launch (Step 8, brief-first) — headless:** first the mandatory write-capability
-gate (see Step 8 — it applies identically here, and a failure means **do not emit
-the launch command**):
+**Launch (Step 8, brief-first) — headless:** both of the blocks below (the write-capability
+gate and the manual launch-command) are unnecessary when using `launch.sh` — it runs the
+gate and assembles/exports `BRIEF_ID` itself. This block is the reference for what
+`launch.sh` automates, and the fallback for a hand-emitted launch. First the mandatory
+write-capability gate (see Step 8 — it applies identically here, and a failure means **do
+not emit the launch command**):
 
 ```bash
 python3 ~/workspace/agent-tooling/tools/ensure-local-settings.py \

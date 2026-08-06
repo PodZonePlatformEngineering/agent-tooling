@@ -25,12 +25,22 @@ Read `planning/sessions/active.md`.
 
 ### 0a — Session status sync
 
+**`launch.sh` prerequisite:** `launch.sh` never writes to `active.md` itself — a
+`launch.sh` dispatch is registered here today only if the Team Lead does so manually,
+before calling `launch.sh`. If a `launch.sh` dispatch was never registered, this sync has
+nothing to transition for it and the dispatch is invisible to the sessions registry.
+
 For each session with status `in-flight`:
 - Check whether the agent's outbox contains a session file dated on or after the launch date
 - If a concluded outbox file exists: update status to `concluded` in `active.md`
 - If no outbox file and session launched more than 2 days ago: flag to Martin as lost session
 
 ### 0b — podzoneTeam session PR review
+
+For a `launch.sh` dispatch, this PR-review loop runs once **per working repo** named in
+the brief's `--repos` list, not just against podzoneTeam — each working repo gets its own
+`{assignee}/{brief-slug}` PR (pre-created by `launch.sh` Phase 1), and the home repo has
+no PR at all (see the Step 0c callout above).
 
 For each session with status `concluded`, find the podzoneTeam session PR:
 ```bash
@@ -93,6 +103,15 @@ Mark session `concluded-merged` in `active.md`.
 `/launch-session` use):
 
 - **`branch` (default)** — the sweep below runs as written.
+
+  > **`launch.sh`-dispatched briefs use a different branch shape (T-108/T-210/T-212).**
+  > A `launch.sh`-dispatched brief uses a different branch shape than the manual
+  > `/launch-session` ceremony: the **home repo is never branched** (it stays on `main`
+  > throughout, `launch.sh` pushes its own commits there directly), and each **working
+  > repo** is branched `{assignee}/{brief-slug}` (no `session/` prefix, no date segment)
+  > — check for a PR under that name on each working repo named in `--repos`, not a
+  > `session/…` PAT branch on podzoneTeam. `return-to-main` still applies to any working
+  > repo left on that branch after its PR merges.
 - **`trunk`** — **skip this step for that repo.** A trunk-mode session never created a
   session branch (Step 3 of `/launch-session`'s lifecycle-mode fork ran lock-only), so
   there is nothing for `session_guard.return-to-main` to return — the clone was on `main`
