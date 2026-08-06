@@ -129,7 +129,8 @@ SLUG="$(python3 -c "
 s = '${BRIEF_ID}'.split('/')[-1]
 print(s)
 ")"
-BRANCH_NAME="${ASSIGNEE}/${SLUG}"
+ASSIGNEE_LOWER="$(python3 -c "print('${ASSIGNEE}'.lower())")"
+BRANCH_NAME="${ASSIGNEE_LOWER}/${SLUG}"
 
 if [[ -z "${HOME_REPO_DIR}" ]]; then
   HOME_REPO_DIR="$(git rev-parse --show-toplevel 2>/dev/null || true)"
