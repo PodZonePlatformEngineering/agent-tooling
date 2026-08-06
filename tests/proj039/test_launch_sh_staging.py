@@ -126,5 +126,35 @@ class TestWorkingRepoStaging(_GitFixture):
         self.assertEqual(commits_ahead, "1")
 
 
+class TestClaudeInvocationCarriesBriefId(unittest.TestCase):
+    """PROJ-039/T-212 regression: launch.sh resolved BRIEF_ID for its own use
+    (team/assignee lookup, branch naming, lock sid) but never exported it to
+    the `claude -p` subprocess it launches -- the SessionStart materialise
+    hook had nothing to key off, so every real launch.sh dispatch halted with
+    "MATERIALISE FAILED ... .workspace is empty/stale", misread on first
+    sighting as a stale-brief artifact rather than this bug. Not exercisable
+    as a live subprocess test (needs a real subscription token + Qdrant), so
+    this asserts the fix textually: the exact line invoking `claude -p` must
+    export BRIEF_ID in the same env-var assignment as the token.
+    """
+
+    def test_claude_invocation_line_exports_brief_id(self):
+        lines = (REPO_ROOT / "tools" / "launch.sh").read_text().splitlines()
+        matches = [i for i, line in enumerate(lines) if "LAST_STDOUT=" in line and "claude" in line.lower()]
+        self.assertEqual(
+            len(matches), 1,
+            f"expected exactly one LAST_STDOUT=...claude invocation, found {len(matches)}",
+        )
+        # The invocation spans a `\`-continued line pair; join both.
+        idx = matches[0]
+        invocation_block = lines[idx] + "\n" + lines[idx + 1]
+        self.assertIn("claude -p", invocation_block)
+        self.assertIn(
+            'BRIEF_ID="${BRIEF_ID}"', invocation_block,
+            "claude -p invocation must export BRIEF_ID or SessionStart materialise "
+            "halts on every real dispatch (T-212)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
