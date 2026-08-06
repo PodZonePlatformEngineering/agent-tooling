@@ -12,9 +12,20 @@
 # ("wip: {brief-id} attempt {n}") and pushes whatever the inner session
 # touched. The inner `claude -p` session should never need to run git itself.
 #
+# PROJ-039/T-210: this script does NOT call secretctl itself — `secretctl
+# run`'s raw CLI has no non-interactive auth path (confirmed live: it always
+# tries to open a TTY for the master-password prompt and fails headless).
+# Before calling this script, the Team Lead must resolve the four
+# subscription tokens via `resolve-launch-tokens.py` run through the secrets
+# MCP tool (the one path that IS non-interactive) into a local, gitignored,
+# 0600 file (default `~/.claude/launch-tokens.resolved.json`, override with
+# `--tokens-file`) — see that script's own docstring. This wrapper then reads
+# tokens from that file BY INDEX; it never re-derives a secretctl key name.
+#
 # Usage:
 #   launch.sh <brief-id> [--repos repo1,repo2,...] [--home-repo <path>]
 #              [--org <github-org>] [--api-retry-cap N] [--api-retry-backoff-s N]
+#              [--tokens-file <path>]
 #
 # `<brief-id>` must already be an APPROVED brief in the `briefs` Qdrant
 # collection (create-brief.py --approve). Everything else the wrapper needs
@@ -30,7 +41,15 @@ TOOLING_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 # --- tokens (proposal §4 — deterministic order; rotation-fairness cursor is a
 # noted follow-up, not built here) ---
-TOKEN_NAMES=(colleym martinjcolley podzone norma)
+# PROJ-039/T-210: `secretctl run`'s raw CLI has no non-interactive auth path
+# (only `secretctl mcp-server` reads SECRETCTL_PASSWORD) — confirmed live,
+# it always tries to open a TTY for the master-password prompt and fails
+# under a detached/backgrounded script. Tokens are pre-resolved by the Team
+# Lead via `resolve-launch-tokens.py` (run through the secrets MCP tool,
+# the one path that IS non-interactive) into a local, gitignored, 0600 file
+# this script reads BY INDEX — no secretctl call happens inside this script
+# at all any more.
+TOKENS_FILE="${HOME}/.claude/launch-tokens.resolved.json"
 
 ORG="PodZonePlatformEngineering"
 HOME_REPO_DIR=""
@@ -40,7 +59,7 @@ API_RETRY_BACKOFF_S=30
 BRIEF_ID=""
 
 usage() {
-  echo "Usage: $0 <brief-id> [--repos repo1,repo2,...] [--home-repo <path>] [--org <org>] [--api-retry-cap N] [--api-retry-backoff-s N]" >&2
+  echo "Usage: $0 <brief-id> [--repos repo1,repo2,...] [--home-repo <path>] [--org <org>] [--api-retry-cap N] [--api-retry-backoff-s N] [--tokens-file <path>]" >&2
   exit 1
 }
 
@@ -53,6 +72,7 @@ while [[ $# -gt 0 ]]; do
     --org)                  ORG="${2:?}"; shift 2 ;;
     --api-retry-cap)        API_RETRY_CAP="${2:?}"; shift 2 ;;
     --api-retry-backoff-s)  API_RETRY_BACKOFF_S="${2:?}"; shift 2 ;;
+    --tokens-file)          TOKENS_FILE="${2:?}"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
   esac
 done
@@ -203,6 +223,27 @@ log "checking headless write-capability gate on home repo"
 python3 "${TOOLING_ROOT}/tools/ensure-local-settings.py" --check --repo "${HOME_REPO_DIR}" \
   || abort "home repo ${HOME_REPO_DIR} does not grant headless write capability — operator/Team Lead action required (see message above), not something this wrapper can fix in-session"
 
+# Pre-resolved tokens gate (PROJ-039/T-210 — fail loud, same philosophy as the
+# write-capability gate above). This script never calls secretctl itself; the
+# Team Lead must have already run resolve-launch-tokens.py via the secrets MCP
+# tool. A stale-but-present file is not re-validated here (freshness is the
+# Team Lead's call, per the tool's own reusable-while-valid design) — only
+# existence and shape.
+log "checking pre-resolved tokens file"
+TOKEN_COUNT="$(python3 -c "
+import json, sys
+try:
+    d = json.load(open('${TOKENS_FILE}'))
+except FileNotFoundError:
+    sys.exit('missing')
+except json.JSONDecodeError:
+    sys.exit('malformed')
+if not isinstance(d, list) or not d:
+    sys.exit('empty')
+print(len(d))
+")" || abort "tokens file ${TOKENS_FILE} is ${TOKEN_COUNT:-missing} — run resolve-launch-tokens.py via the secrets MCP tool first (see tools/resolve-launch-tokens.py's own docstring), this wrapper cannot resolve secrets itself"
+log "tokens file ok — ${TOKEN_COUNT} token(s) available"
+
 # Lock (home repo), held across all retry attempts, released only at final exit.
 log "acquiring session lock on home repo"
 python3 "${TOOLING_ROOT}/lib/session_guard.py" lock --repo "${HOME_REPO_DIR}" --sid "${BRIEF_ID}" \
@@ -247,21 +288,21 @@ LAST_STDOUT=""
 
 while true; do
   attempt=$((attempt + 1))
-  token_name="${TOKEN_NAMES[$i]}"
-  secret_key="claude-oath-token-${token_name}"
-  log "attempt ${attempt}: launching with subscription '${token_name}' (${secret_key})"
+  if [[ ${i} -ge ${TOKEN_COUNT} ]]; then
+    log "all ${TOKEN_COUNT} resolved subscription(s) exhausted — exiting"
+    echo "${LAST_STDOUT}"
+    exit 3
+  fi
+  token_name="$(python3 -c "import json; print(json.load(open('${TOKENS_FILE}'))[${i}]['name'])")"
+  log "attempt ${attempt}: launching with subscription '${token_name}' (index ${i})"
 
-  # secretctl's own env-naming rule (uppercase, '-'/'/' → '_') tells us what
-  # env var `secretctl run -k` will inject the secret as — never echoed.
-  secret_env_var="CLAUDE_OATH_TOKEN_$(echo "${token_name}" | tr '[:lower:]' '[:upper:]')"
-
-  cd "${HOME_REPO_DIR}"
+  # Read by INDEX from the pre-resolved file (PROJ-039/T-210) — no secretctl
+  # call in this script at all. The value briefly exists in this subshell's
+  # own environment for the `claude` child process only, the same exposure
+  # surface any env-var secret injection already carries; never echoed.
   set +e
-  LAST_STDOUT="$(secretctl run -k "${secret_key}" -- bash -c "
-    export CLAUDE_CODE_OAUTH_TOKEN=\"\${${secret_env_var}}\"
-    unset ${secret_env_var}
-    claude -p \"Hi ${AGENT_CAP}. Continue with the brief.\"
-  " 2>&1)"
+  LAST_STDOUT="$(cd "${HOME_REPO_DIR}" && CLAUDE_CODE_OAUTH_TOKEN="$(python3 -c "import json; print(json.load(open('${TOKENS_FILE}'))[${i}]['token'])")" \
+    claude -p "Hi ${AGENT_CAP}. Continue with the brief." 2>&1)"
   EXIT_CODE=$?
   set -e
 
@@ -280,8 +321,8 @@ print(classify_exit(sys.stdin.read(), exit_code=${EXIT_CODE}))
   case "${CLASS}" in
     session_limit)
       i=$((i + 1))
-      if [[ ${i} -ge ${#TOKEN_NAMES[@]} ]]; then
-        log "all subscriptions limited — exiting"
+      if [[ ${i} -ge ${TOKEN_COUNT} ]]; then
+        log "all ${TOKEN_COUNT} resolved subscription(s) limited — exiting"
         echo "${LAST_STDOUT}"
         exit 3
       fi
