@@ -1,0 +1,6 @@
+[
+  {"name": "colleym", "secret": "claude-oath-token-colleym"},
+  {"name": "martinjcolley", "secret": "claude-oath-token-martinjcolley"},
+  {"name": "podzone", "secret": "claude-oath-token-podzone"},
+  {"name": "norma", "secret": "claude-oath-token-norma"}
+]
