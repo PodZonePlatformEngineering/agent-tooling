@@ -33,6 +33,24 @@ writes the same ack itself; ``--ack`` remains for briefs that carry no
 before anything is written, and the ack is still what the trainer sees. Only
 *where the write happens* moved: conversation → hook.
 
+``--checkpoint "<summary>"`` mode (agent-invoked, same T-121 #14 precedent —
+PROJ-011/T-122 #15): writes a ``message_type: progress`` write-back point to
+``training_briefs`` (thread ``training/{trainee}/continuity``, ``channel:
+training``) so the trainee's *position* survives a crash the local
+``Trainee/training-state.md`` checkpoint never got written for. Alex calls
+this at the same ~10-prompt cadence ``AGENTS.md`` already specifies for the
+local checkpoint — the hook, not the tutor, talks to Qdrant. Always degrades
+soft: an unconfigured or unreachable substrate is a silent no-op (exit 0),
+never a trainee-visible error — ``training-state.md`` is still the local
+record either way.
+
+SessionStart also reads the latest such checkpoint back (any session, this
+trainee) and — only when it is newer than the local
+``Trainee/training-state.md`` ``**Last session:**`` date — surfaces it as
+additional context, explicitly labelled as a database record, so Alex can
+fold it into "Welcome back" and so a human reading the transcript later isn't
+confused about provenance.
+
 Always exits 0 in hook mode. Reads stdin JSON: ``session_id``, ``cwd``.
 Tested by tests/proj011/test_trainee_routing.py.
 """
@@ -41,6 +59,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -195,6 +214,106 @@ def write_ack(cfg: dict, *, session_id: str, revision: int,
         timeout=QDRANT_TIMEOUT, **training_config.qdrant_kwargs(cfg))
 
 
+def _checkpoint_brief_id(trainee: str) -> str:
+    """The continuity-checkpoint thread key — a dedicated training-channel
+    thread, not the operational channel (T-122 #15)."""
+    from lib import training_substrate
+    return training_substrate.brief_id_for(trainee, channel="training",
+                                            slug="continuity")
+
+
+def _next_checkpoint_seq(cfg: dict, *, brief_id: str, session_id: str) -> int:
+    """Count of this session's checkpoint messages already written — the
+    ``seq`` that keeps ``message_point_id`` retry-idempotent (a failed write
+    retried with identical args converges; a genuinely new checkpoint gets
+    the next slot)."""
+    from lib import qdrant_http, training_config
+    body = {
+        "filter": {"must": [
+            {"key": "point_type", "match": {"value": "message"}},
+            {"key": "brief_id", "match": {"value": brief_id}},
+            {"key": "session_id", "match": {"value": session_id}},
+        ]},
+        "limit": 200,
+        "with_payload": False,
+    }
+    resp = qdrant_http.scroll(
+        collection=cfg["briefs_collection"], body=body,
+        timeout=QDRANT_TIMEOUT, **training_config.qdrant_kwargs(cfg))
+    return len(resp.get("result", {}).get("points", []))
+
+
+def write_checkpoint(cfg: dict, *, session_id: str, summary: str) -> dict:
+    """Write the T-122 #15 continuity checkpoint — a ``message_type:
+    progress`` point on the trainee's continuity thread."""
+    from lib import qdrant_http, training_config, training_substrate
+
+    brief_id = _checkpoint_brief_id(cfg["trainee"])
+    seq = _next_checkpoint_seq(cfg, brief_id=brief_id, session_id=session_id)
+    point = training_substrate.build_message_point(
+        brief_id=brief_id, trainee=cfg["trainee"], session_id=session_id,
+        seq=seq, message_type="progress", channel="training", body=summary,
+        summary=summary if len(summary) <= 120 else summary[:117] + "...")
+    return qdrant_http.upsert_points(
+        [point], collection=cfg["briefs_collection"],
+        timeout=QDRANT_TIMEOUT, **training_config.qdrant_kwargs(cfg))
+
+
+def fetch_continuity_checkpoint(cfg: dict) -> dict | None:
+    """The latest T-122 #15 continuity checkpoint for this trainee (any
+    session), or ``None``. A crashed session's last checkpoint is exactly
+    what the *next* session needs — it is read across the whole thread, not
+    scoped to one session_id."""
+    from lib import qdrant_http, training_config
+
+    body = {
+        "filter": {"must": [
+            {"key": "point_type", "match": {"value": "message"}},
+            {"key": "channel", "match": {"value": "training"}},
+            {"key": "message_type", "match": {"value": "progress"}},
+            {"key": "trainee", "match": {"value": cfg["trainee"]}},
+        ]},
+        "order_by": {"key": "created_at", "direction": "desc"},
+        "limit": 1,
+        "with_payload": True,
+    }
+    resp = qdrant_http.scroll(
+        collection=cfg["briefs_collection"], body=body,
+        timeout=QDRANT_TIMEOUT, **training_config.qdrant_kwargs(cfg))
+    points = resp.get("result", {}).get("points", [])
+    return points[0].get("payload") if points else None
+
+
+_LAST_SESSION_RE = re.compile(r"\*\*Last session:\*\*\s*(\d{4}-\d{2}-\d{2})")
+
+
+def _local_last_session_date(repo_root: str) -> str | None:
+    """The date out of ``Trainee/training-state.md``'s ``**Last session:**``
+    line, or ``None`` if the file/field doesn't exist yet (first session, or
+    a scaffold that has never been checkpointed)."""
+    path = Path(repo_root) / "Trainee" / "training-state.md"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = _LAST_SESSION_RE.search(text)
+    return match.group(1) if match else None
+
+
+def _checkpoint_is_newer(db_created_at: str, local_date: str | None) -> bool:
+    """The #15 reconciliation rule: DB newer than local → surface it.
+
+    No local record at all counts as "DB is newer" — that is precisely the
+    crash case #15 targets (the DB write landed, the local one never did).
+    """
+    db_date = (db_created_at or "")[:10]
+    if not db_date:
+        return False
+    if not local_date:
+        return True
+    return db_date > local_date
+
+
 def _load_config(repo_root: str, session_id: str = ""):
     """Config, or None with the reason logged — every caller degrades soft."""
     from lib import training_config
@@ -303,12 +422,37 @@ def _apply_main(revision_arg: str) -> int:
     return 0
 
 
+def _checkpoint_main(summary_arg: str) -> int:
+    """T-122 #15 write side. Degrades soft (unlike --ack/--apply): a
+    checkpoint is a best-effort periodic call, not an approved action the
+    trainee is waiting on, so an unconfigured/unreachable substrate is a
+    silent exit 0 — training-state.md is still the local record either way.
+    """
+    summary = summary_arg.strip()
+    if not summary:
+        print("--checkpoint needs a non-empty summary", file=sys.stderr)
+        return 1
+    session_id = os.environ.get("CLAUDE_SESSION_ID", "")
+    cfg = _load_config(_repo_root(""), session_id)
+    if cfg is None:
+        return 0
+    try:
+        write_checkpoint(cfg, session_id=session_id or "no-session", summary=summary)
+    except Exception as exc:
+        _log(f"continuity checkpoint write failed (soft): {exc}", session_id)
+        return 0
+    print("continuity checkpoint recorded.")
+    return 0
+
+
 def main() -> int:
     argv = sys.argv[1:]
     if argv and argv[0] == "--ack":
         return _ack_main(argv[1] if len(argv) > 1 else "")
     if argv and argv[0] == "--apply":
         return _apply_main(argv[1] if len(argv) > 1 else "")
+    if argv and argv[0] == "--checkpoint":
+        return _checkpoint_main(argv[1] if len(argv) > 1 else "")
 
     try:
         data = json.loads(sys.stdin.read() or "{}")
@@ -317,74 +461,105 @@ def main() -> int:
     session_id = str(data.get("session_id", ""))
     cwd = str(data.get("cwd", "") or "")
 
-    cfg = _load_config(_repo_root(cwd), session_id)
+    repo_root = _repo_root(cwd)
+    cfg = _load_config(repo_root, session_id)
     if cfg is None:
         return 0
 
+    operational_context = ""
     try:
         brief = fetch_operational_brief(cfg, session_id=session_id)
     except Exception as exc:
         # Qdrant unreachable / auth drift — offline-first, one quiet line.
         _log(f"operational brief unavailable (soft): {exc}", session_id)
-        _emit_context(
+        operational_context = (
             "ℹ️  Operational brief channel unavailable (offline or not "
             "configured) — proceed with AGENTS.md + trainee-brief.md alone; "
             "that is normal, not an error.")
-        return 0
+        brief = None
 
-    if brief is None:
-        _log("no active operational brief — offline-first proceed", session_id)
-        return 0
+    if brief is not None:
+        revision = brief.get("revision", 1)
+        summary = brief.get("summary") or "repo update instruction"
+        files = brief_files(brief)
 
-    revision = brief.get("revision", 1)
-    summary = brief.get("summary") or "repo update instruction"
-    files = brief_files(brief)
-
-    # Already on disk from an earlier session? Recurring briefs stay `active`
-    # forever, so stay silent rather than re-asking for approval of a change
-    # the trainee already approved.
-    if files and files_already_applied(_repo_root(cwd), files):
-        _log(f"operational brief revision {revision} already applied — quiet",
-             session_id)
-        return 0
-
-    _log(f"operational brief materialised: {cfg['operational_brief_id']} "
-         f"revision {revision}"
-         f"{' (hook-apply, %d file(s))' % len(files) if files else ''}",
-         session_id)
-
-    if files:
-        # T-121 #14: the HOOK writes these files, not the tutor. Alex's job is
-        # one plain-language sentence and a yes/no — a beginner is never asked
-        # to reason about AGENTS.md/CLAUDE.md they have not been taught yet.
-        listing = "\n".join(f"  - {spec['path']}" for spec in files)
-        _emit_context(
-            f"📋 REPO UPDATE PENDING (revision {revision}, from the training "
-            f"team, updated {brief.get('updated_at', 'unknown')}) — {summary}\n\n"
-            "DO NOT edit any of these files yourself, and do not show the "
-            "trainee their contents or discuss what they are for — that is a "
-            "curriculum topic, not a session interruption. The hook applies "
-            "them.\n\n"
-            f"Files the update will replace:\n{listing}\n\n"
-            f"Trainer's note (context for you, not a script to read out):\n"
-            f"{brief.get('body', '')}\n\n"
-            "Do this, before starting the programme content:\n"
-            "  1. Tell the trainee in ONE plain sentence what the update is "
-            f"for (\"{summary}\") and ask if they're happy to apply it.\n"
-            "  2. If they say yes, run exactly:\n"
-            f"       python3 .claude/hooks/trainee-materialise.py --apply {revision}\n"
-            "     That writes the files and records their approval in one step.\n"
-            "  3. If they say no, apply nothing, tell them that's fine, and "
-            "carry on with the session — it will be offered again next time.")
+        # Already on disk from an earlier session? Recurring briefs stay
+        # `active` forever, so stay silent rather than re-asking for
+        # approval of a change the trainee already approved.
+        if files and files_already_applied(repo_root, files):
+            _log(f"operational brief revision {revision} already applied — quiet",
+                 session_id)
+        else:
+            _log(f"operational brief materialised: {cfg['operational_brief_id']} "
+                 f"revision {revision}"
+                 f"{' (hook-apply, %d file(s))' % len(files) if files else ''}",
+                 session_id)
+            if files:
+                # T-121 #14: the HOOK writes these files, not the tutor.
+                # Alex's job is one plain-language sentence and a yes/no —
+                # a beginner is never asked to reason about AGENTS.md/
+                # CLAUDE.md they have not been taught yet.
+                listing = "\n".join(f"  - {spec['path']}" for spec in files)
+                operational_context = (
+                    f"📋 REPO UPDATE PENDING (revision {revision}, from the training "
+                    f"team, updated {brief.get('updated_at', 'unknown')}) — {summary}\n\n"
+                    "DO NOT edit any of these files yourself, and do not show the "
+                    "trainee their contents or discuss what they are for — that is a "
+                    "curriculum topic, not a session interruption. The hook applies "
+                    "them.\n\n"
+                    f"Files the update will replace:\n{listing}\n\n"
+                    f"Trainer's note (context for you, not a script to read out):\n"
+                    f"{brief.get('body', '')}\n\n"
+                    "Do this, before starting the programme content:\n"
+                    "  1. Tell the trainee in ONE plain sentence what the update is "
+                    f"for (\"{summary}\") and ask if they're happy to apply it.\n"
+                    "  2. If they say yes, run exactly:\n"
+                    f"       python3 .claude/hooks/trainee-materialise.py --apply {revision}\n"
+                    "     That writes the files and records their approval in one step.\n"
+                    "  3. If they say no, apply nothing, tell them that's fine, and "
+                    "carry on with the session — it will be offered again next time.")
+            else:
+                operational_context = (
+                    f"📋 OPERATIONAL BRIEF (revision {revision}, updated "
+                    f"{brief.get('updated_at', 'unknown')}) — {summary}\n\n"
+                    f"{brief.get('body', '')}\n\n"
+                    "This brief carries no files for the hook to apply — it is a prose "
+                    "instruction. Apply it WITH the trainee's in-session approval "
+                    "before continuing the programme. Once applied, acknowledge with:\n"
+                    f"  python3 .claude/hooks/trainee-materialise.py --ack {revision}")
     else:
-        _emit_context(
-            f"📋 OPERATIONAL BRIEF (revision {revision}, updated "
-            f"{brief.get('updated_at', 'unknown')}) — {summary}\n\n"
-            f"{brief.get('body', '')}\n\n"
-            "This brief carries no files for the hook to apply — it is a prose "
-            "instruction. Apply it WITH the trainee's in-session approval "
-            "before continuing the programme. Once applied, acknowledge with:\n"
-            f"  python3 .claude/hooks/trainee-materialise.py --ack {revision}")
+        _log("no active operational brief — offline-first proceed", session_id)
+
+    # T-122 #15 — continuity read, independent of the operational-brief
+    # outcome above: a checkpoint may exist (and be worth surfacing) whether
+    # or not there's also a pending repo update.
+    continuity_context = ""
+    try:
+        checkpoint = fetch_continuity_checkpoint(cfg)
+    except Exception as exc:
+        _log(f"continuity checkpoint unavailable (soft): {exc}", session_id)
+        checkpoint = None
+    if checkpoint:
+        local_date = _local_last_session_date(repo_root)
+        if _checkpoint_is_newer(checkpoint.get("created_at", ""), local_date):
+            continuity_context = (
+                "🗂️  CONTINUITY CHECKPOINT (database record, session "
+                f"{checkpoint.get('session_id', 'unknown')}, "
+                f"{checkpoint.get('created_at', 'unknown')}) — this is newer "
+                "than Trainee/training-state.md, which may not reflect the "
+                "most recent session (it likely ended without a clean "
+                "close):\n\n"
+                f"{checkpoint.get('body', '')}\n\n"
+                "Fold this into your \"Welcome back\" summary as the more "
+                "current record of where the trainee left off; the local "
+                "file will catch up at your next training-state.md checkpoint.")
+        else:
+            _log("continuity checkpoint present but not newer than local — quiet",
+                 session_id)
+
+    combined = "\n\n".join(c for c in (operational_context, continuity_context) if c)
+    if combined:
+        _emit_context(combined)
     return 0
 
 
