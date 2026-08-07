@@ -109,6 +109,65 @@ class TestTrainingCollectionRouting(unittest.TestCase):
             mat.write_ack(cfg, session_id=SID, revision=4)
         self._assert_training_only(cap.urls)
 
+    def test_checkpoint_write_urls_training_only(self):
+        """T-122 #15 write side."""
+        mat = _load_hook("trainee-materialise")
+        from lib import training_config
+        cfg = training_config.load(str(self.repo))
+        urls: list[str] = []
+
+        def fake(method, url, *, payload=None, api_key=None, timeout=None):
+            urls.append(url)
+            if url.endswith("/points/scroll"):
+                return {"result": {"points": []}}
+            return {"result": {"status": "acknowledged"}}
+
+        with mock.patch.object(qdrant_http, "request_json", fake):
+            mat.write_checkpoint(cfg, session_id=SID, summary="covered module 2")
+        self._assert_training_only(urls)
+
+    def test_checkpoint_write_seq_accounts_for_existing_messages(self):
+        """seq = count of this session's checkpoint messages already
+        written, so a re-authored/retried write converges idempotently."""
+        mat = _load_hook("trainee-materialise")
+        from lib import training_config, training_substrate
+        cfg = training_config.load(str(self.repo))
+        sent_payloads: list[dict] = []
+
+        def fake(method, url, *, payload=None, api_key=None, timeout=None):
+            if url.endswith("/points/scroll"):
+                return {"result": {"points": [{"id": "a"}, {"id": "b"}]}}
+            if method.upper() == "PUT":
+                sent_payloads.append(payload)
+            return {"result": {"status": "acknowledged"}}
+
+        with mock.patch.object(qdrant_http, "request_json", fake):
+            mat.write_checkpoint(cfg, session_id=SID, summary="covered module 2")
+        self.assertEqual(len(sent_payloads), 1)
+        brief_id = mat._checkpoint_brief_id(cfg["trainee"])
+        expected_id = training_substrate.message_point_id(brief_id, SID, 2)
+        self.assertEqual(sent_payloads[0]["points"][0]["id"], expected_id)
+
+    def test_continuity_read_urls_training_only(self):
+        """T-122 #15 read side."""
+        mat = _load_hook("trainee-materialise")
+        from lib import training_config
+        cfg = training_config.load(str(self.repo))
+        urls: list[str] = []
+        point = {"id": "x", "payload": {
+            "body": "covered module 2",
+            "created_at": "2026-08-07T00:00:00+00:00",
+            "session_id": SID}}
+
+        def fake(method, url, *, payload=None, api_key=None, timeout=None):
+            urls.append(url)
+            return {"result": {"points": [point]}}
+
+        with mock.patch.object(qdrant_http, "request_json", fake):
+            got = mat.fetch_continuity_checkpoint(cfg)
+        self.assertEqual(got["body"], "covered module 2")
+        self._assert_training_only(urls)
+
     def test_telemetry_urls_training_only_all_events(self):
         tel = _load_hook("trainee-telemetry")
         cap = _UrlCapture()
@@ -382,6 +441,119 @@ class TestOfflineDegradation(unittest.TestCase):
             repo = self._repo(tmp, CONFIG)
             cp = self._run_hook("trainee-finalise", {}, repo, args=("--guard",))
         self.assertEqual(cp.returncode, 0, cp.stderr)
+
+    def test_checkpoint_and_continuity_soft_fail_offline(self):
+        """T-122 #15 (a): Qdrant unreachable during both the checkpoint
+        write and the continuity read — silence (no trainee-visible error),
+        exit 0."""
+        offline = CONFIG.replace("https://training.example.cloud:6333",
+                                 "http://127.0.0.1:9")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp, offline)
+            env = dict(os.environ, CLAUDE_PROJECT_DIR=str(repo),
+                       CLAUDE_SESSION_ID=SID)
+            env.pop("PODZONE_QDRANT_APIKEY", None)
+
+            cp_write = subprocess.run(
+                [sys.executable, str(HOOKS / "trainee-materialise.py"),
+                 "--checkpoint", "covered module 2"],
+                input="", capture_output=True, text=True, env=env, timeout=60)
+            self.assertEqual(cp_write.returncode, 0, cp_write.stderr)
+            self.assertEqual(cp_write.stdout.strip(), "")
+            self.assertNotIn("Traceback", cp_write.stderr)
+
+            cp_read = self._run_hook(
+                "trainee-materialise", {"session_id": SID, "cwd": str(repo)}, repo)
+            self.assertEqual(cp_read.returncode, 0, cp_read.stderr)
+            self.assertNotIn("CONTINUITY CHECKPOINT", cp_read.stdout)
+            self.assertNotIn("Traceback", cp_read.stderr)
+
+    def test_checkpoint_config_unfilled_is_a_silent_noop(self):
+        """A credential-less trainee device: the write is a permanent no-op
+        from session one, exactly like the operational-brief read."""
+        placeholder = CONFIG.replace('"scoped-key"', '"{{TRAINING_DB_API_KEY}}"')
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp, placeholder)
+            env = dict(os.environ, CLAUDE_PROJECT_DIR=str(repo),
+                       CLAUDE_SESSION_ID=SID)
+            env.pop("PODZONE_QDRANT_APIKEY", None)
+            cp = subprocess.run(
+                [sys.executable, str(HOOKS / "trainee-materialise.py"),
+                 "--checkpoint", "covered module 2"],
+                input="", capture_output=True, text=True, env=env, timeout=60)
+            self.assertEqual(cp.returncode, 0, cp.stderr)
+            self.assertEqual(cp.stdout.strip(), "")
+
+
+class TestContinuityCheckpoint(unittest.TestCase):
+    """PROJ-011/T-122 #15 (b) — SessionStart continuity read + last-write-
+    wins reconciliation against Trainee/training-state.md."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self.tmp.name)
+        (self.repo / "training-config.yaml").write_text(CONFIG, encoding="utf-8")
+        (self.repo / "Trainee").mkdir()
+        self.addCleanup(self.tmp.cleanup)
+        self.mat = _load_hook("trainee-materialise")
+
+    def _run_sessionstart(self, *, checkpoint_payload=None):
+        def fake(method, url, *, payload=None, api_key=None, timeout=None):
+            if method.upper() == "GET":
+                return {"result": None}  # no active operational brief
+            if url.endswith("/points/scroll"):
+                pts = ([{"id": "x", "payload": checkpoint_payload}]
+                       if checkpoint_payload else [])
+                return {"result": {"points": pts}}
+            return {"result": {"status": "acknowledged"}}
+
+        stdin = json.dumps({"session_id": SID, "cwd": str(self.repo)})
+        buf = io.StringIO()
+        with mock.patch.object(qdrant_http, "request_json", fake), \
+                mock.patch.object(sys, "stdin", io.StringIO(stdin)), \
+                mock.patch.object(sys, "stdout", buf), \
+                mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(self.repo)}):
+            rc = self.mat.main()
+        self.assertEqual(rc, 0)
+        out = buf.getvalue().strip()
+        if not out:
+            return ""
+        return json.loads(out)["hookSpecificOutput"]["additionalContext"]
+
+    def _write_local_state(self, text: str) -> None:
+        (self.repo / "Trainee" / "training-state.md").write_text(
+            text, encoding="utf-8")
+
+    def test_db_newer_than_local_injects_context(self):
+        self._write_local_state("**Last session:** 2026-08-01 (session 3)\n")
+        checkpoint = {"body": "covered module 4, stuck on exercise 2",
+                      "created_at": "2026-08-06T10:00:00+00:00",
+                      "session_id": "prior-session"}
+        ctx = self._run_sessionstart(checkpoint_payload=checkpoint)
+        self.assertIn("CONTINUITY CHECKPOINT", ctx)
+        self.assertIn("covered module 4, stuck on exercise 2", ctx)
+        self.assertIn("database record", ctx)
+
+    def test_db_older_than_local_stays_quiet(self):
+        self._write_local_state("**Last session:** 2026-08-06 (session 5)\n")
+        checkpoint = {"body": "covered module 2",
+                      "created_at": "2026-08-01T10:00:00+00:00",
+                      "session_id": "prior-session"}
+        self.assertEqual(self._run_sessionstart(checkpoint_payload=checkpoint), "")
+
+    def test_no_checkpoint_stays_quiet(self):
+        self._write_local_state("**Last session:** 2026-08-01 (session 3)\n")
+        self.assertEqual(self._run_sessionstart(checkpoint_payload=None), "")
+
+    def test_no_local_record_treats_db_as_newer(self):
+        # Fresh scaffold — the file exists but has never been checkpointed.
+        self._write_local_state(
+            "# Training state\n\n- **Current module:** (not started)\n")
+        checkpoint = {"body": "covered module 1",
+                      "created_at": "2026-08-06T10:00:00+00:00",
+                      "session_id": "prior-session"}
+        ctx = self._run_sessionstart(checkpoint_payload=checkpoint)
+        self.assertIn("CONTINUITY CHECKPOINT", ctx)
 
 
 if __name__ == "__main__":

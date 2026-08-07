@@ -86,6 +86,36 @@ agent applies it by hand and closes with `--ack N`. Recurring briefs never
 expire, so the hook compares content on disk and stays silent once a revision
 has been applied — the trainee is asked exactly once.
 
+### The continuity checkpoint (`message_type: progress`, PROJ-011/T-122 #15)
+
+A dedicated `channel: training` thread, `training/{trainee}/continuity`,
+distinct from the trainee's curriculum brief thread(s) — a rolling record of
+"where the trainee is", written by the trainee's agent and read back at the
+*next* SessionStart, so a session that crashes before its local
+`Trainee/training-state.md` write still leaves a durable position record.
+
+- **Write** — `python3 .claude/hooks/trainee-materialise.py --checkpoint
+  "<summary>"`, called by Alex at the same ~10-prompt cadence `AGENTS.md`
+  already specifies for the local `training-state.md` checkpoint. The hook
+  builds the point (never the tutor — same T-121 #14 precedent); `seq` is
+  the count of this session's checkpoint messages already on the thread, so
+  a failed write retried with identical args converges on the same point.
+- **Read** — `trainee-materialise.py`'s `SessionStart` query: latest point
+  where `point_type=message`, `channel=training`, `message_type=progress`,
+  `trainee={trainee}`, `order_by created_at desc`, `limit 1` — across the
+  whole thread, not scoped to one session_id, since the point that matters
+  is the *last* one written regardless of which session wrote it.
+- **Reconciliation** — last-write-wins by timestamp against the local
+  `Trainee/training-state.md` `**Last session:**` date. DB point newer (or
+  no local date recorded yet) → surfaced as `SessionStart` context,
+  explicitly labelled a database record. Local newer, or DB
+  unreachable/absent → today's behavior, unchanged — including for any
+  trainee device with no credentials at all, where both the write and the
+  read are permanent no-ops from session one.
+- **Closes PROJ-011/T-120 #2/#3 only jointly with the per-`Stop` transcript
+  mirror (T-122 Build A)** — this closes the *position-drift* half; the
+  mirror closes the *content-loss* half. Neither alone is the full fix.
+
 ### Vectors & embedding split
 
 Single named vector `brief` (768, cosine, nomic-embed-text over `body`).
