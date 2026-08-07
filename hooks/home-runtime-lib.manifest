@@ -40,3 +40,4 @@ session_guard.py
 lifecycle_mode.py
 training_substrate.py
 training_config.py
+session_log_mirror.py

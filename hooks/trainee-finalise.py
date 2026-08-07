@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -62,18 +61,11 @@ def _repo_root(cwd: str = "") -> str:
 
 def _copy_session_log(transcript_path: str, repo_dir: str, session_id: str) -> bool:
     """R-14: the session log rides the session PR in the trainee's own repo —
-    there is no fleet telemetry remote to push to. Best-effort."""
-    if not (transcript_path and repo_dir and os.path.isfile(transcript_path)):
-        return False
-    sid8 = (session_id or "session")[:8]
-    logs_dir = os.path.join(repo_dir, "logs")
-    try:
-        os.makedirs(logs_dir, exist_ok=True)
-        shutil.copyfile(transcript_path,
-                        os.path.join(logs_dir, f"session-{sid8}.jsonl"))
-        return True
-    except Exception:
-        return False
+    there is no fleet telemetry remote to push to. The final, authoritative
+    overwrite — ``trainee-telemetry.py``'s Stop handler mirrors the same file
+    incrementally between now and the previous close (T-122 Build A)."""
+    from lib import session_log_mirror
+    return session_log_mirror.mirror_session_log(transcript_path, repo_dir, session_id)
 
 
 def _write_close_telemetry(repo_dir: str, session_id: str, reason: str) -> bool:

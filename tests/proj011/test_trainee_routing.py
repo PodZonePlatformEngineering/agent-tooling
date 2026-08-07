@@ -166,6 +166,27 @@ class TestTrainingCollectionRouting(unittest.TestCase):
             tel.write_event({"hook_event_name": "SessionStart", "session_id": SID})
         self.assertEqual(seen_keys, ["scoped-key"])
 
+    def test_telemetry_stop_mirrors_session_log(self):
+        """T-122 Build A: a Stop event mirrors the transcript into
+        logs/session-{sid8}.jsonl and stamps a heartbeat, independent of the
+        telemetry point write."""
+        tel = _load_hook("trainee-telemetry")
+        transcript = self.repo / "transcript.jsonl"
+        transcript.write_text('{"type":"assistant"}\n', encoding="utf-8")
+        cap = _UrlCapture()
+        with mock.patch.object(qdrant_http, "request_json", cap), \
+                mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(self.repo)}):
+            tel.write_event({"hook_event_name": "Stop", "session_id": SID,
+                             "cwd": str(self.repo),
+                             "transcript_path": str(transcript)})
+        sid8 = SID[:8]
+        mirrored = self.repo / "logs" / f"session-{sid8}.jsonl"
+        heartbeat = self.repo / "logs" / f"session-{sid8}.heartbeat"
+        self.assertTrue(mirrored.is_file())
+        self.assertEqual(mirrored.read_text(encoding="utf-8"),
+                         '{"type":"assistant"}\n')
+        self.assertTrue(heartbeat.is_file())
+
 
 class TestHookAppliedBriefFiles(unittest.TestCase):
     """PROJ-011/T-121 #14 — the HOOK writes the brief's files, not the tutor.
@@ -336,6 +357,25 @@ class TestOfflineDegradation(unittest.TestCase):
                                      f"{name} (config={bool(config)}): {cp.stderr}")
                     self.assertEqual(cp.stdout.strip(), "",
                                      f"{name} must stay quiet when unconfigured")
+
+    def test_stop_mirror_never_raises_missing_or_unreadable_transcript(self):
+        """T-122 Build A: the Stop-triggered mirror degrades soft (same
+        contract as every other trainee hook) when the transcript path is
+        missing or not a file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._repo(tmp, CONFIG)
+            sid8 = SID[:8]
+            for transcript_path in (
+                str(repo / "no-such-transcript.jsonl"),  # missing
+                str(repo),                                # not a file
+                "",                                       # absent from stdin
+            ):
+                stdin = {"session_id": SID, "cwd": str(repo),
+                         "hook_event_name": "Stop",
+                         "transcript_path": transcript_path}
+                cp = self._run_hook("trainee-telemetry", stdin, repo)
+                self.assertEqual(cp.returncode, 0, cp.stderr)
+                self.assertFalse((repo / "logs" / f"session-{sid8}.jsonl").exists())
 
     def test_finalise_guard_exits_zero_with_no_ledger(self):
         with tempfile.TemporaryDirectory() as tmp:

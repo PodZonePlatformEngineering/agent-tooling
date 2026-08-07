@@ -24,6 +24,11 @@ Degrades soft when Qdrant is unreachable or the config is unfilled (log +
 continue, R2-4). Always exits 0. Reads the hook stdin JSON (needs
 ``hook_event_name``, ``session_id``). Tested by
 tests/proj011/test_trainee_routing.py.
+
+On ``Stop`` this module additionally mirrors the live transcript into the
+trainee's own ``logs/session-{sid8}.jsonl`` via ``lib.session_log_mirror``
+(PROJ-011/T-122 Build A) — local-file-only, no Qdrant write, independent of
+the telemetry point write below.
 """
 
 from __future__ import annotations
@@ -100,6 +105,24 @@ def build_event(hook_input: dict) -> tuple[dict, str] | None:
     return payload, _uuid5(f"training-compact/{sid}/{trigger}/{minute}")
 
 
+def _mirror_session_log(hook_input: dict, repo_root: str) -> None:
+    """T-122 Build A: on every Stop, overwrite the trainee's own
+    ``logs/session-{sid8}.jsonl`` from the current transcript path (plus a
+    ``.heartbeat`` stamp) so a hang after turn N leaves turns 1..N
+    diagnosable, instead of only the thin per-hook summary log. Interim
+    safety net between here and ``trainee-finalise.py``'s SessionEnd copy,
+    which remains the final, authoritative overwrite. Soft — never raises."""
+    sid = str(hook_input.get("session_id", ""))
+    transcript_path = str(hook_input.get("transcript_path", "") or "")
+    try:
+        from lib import session_log_mirror
+        wrote = session_log_mirror.mirror_session_log(
+            transcript_path, repo_root, sid)
+        _log(f"session log {'mirrored' if wrote else 'mirror skipped'}", sid)
+    except Exception as exc:
+        _log(f"session log mirror failed (soft): {exc}", sid)
+
+
 def write_event(hook_input: dict) -> bool:
     """Build + upsert one telemetry point. True on a write, False on any
     soft-skip (unhandled event, config unfilled, Qdrant unreachable)."""
@@ -108,6 +131,10 @@ def write_event(hook_input: dict) -> bool:
     sid = str(hook_input.get("session_id", ""))
     repo_root = os.environ.get("CLAUDE_PROJECT_DIR") or \
         str(hook_input.get("cwd", "") or "") or os.getcwd()
+
+    if str(hook_input.get("hook_event_name", "")) == "Stop":
+        _mirror_session_log(hook_input, repo_root)
+
     try:
         cfg = training_config.load(repo_root)
     except training_config.TrainingConfigError as exc:
