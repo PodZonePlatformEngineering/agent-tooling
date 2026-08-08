@@ -1,0 +1,117 @@
+# provenance — Qdrant collection schema (PROJ-029/plannerapi §3.3)
+#
+# A first-class, typed/tagged/timestamped/supersedable store for decisions
+# (today buried in STATUS.md prose), roadmap-synthesis evidence, and — designed
+# for but NOT built now — a future candidate home for agent memory (each
+# agent's ~/.claude/projects/*/memory/*.md + MEMORY.md index system). The
+# operator's framing: a decision, a piece of memory, and a roadmap evidence
+# citation are the same kind of object — a timestamped, typed, taggable claim
+# that can later be superseded and should stay queryable by relevance, not
+# just by exact key lookup. One collection, not three ad-hoc mechanisms.
+#
+# `type` is a deliberately OPEN vocabulary, not a fixed enum — do not add a
+# CHECK constraint or closed list anywhere against this field. Known values in
+# use as of this writing (illustrative, NOT exhaustive):
+#   decision | memory-user | memory-feedback | memory-project | memory-reference
+#   | roadmap-evidence
+# New values are expected to emerge as the collection's use cases grow
+# (that's the point of generalising instead of hardcoding).
+#
+# Snake_case plural, sibling to `briefs` / `work_items` / `sessions`.
+#
+# Spec: podzoneTeam/planning/projects/PROJ-029-plannerapi/spec-v2-neon-primary.md §3.3
+# Lib:  agent-tooling/lib/provenance_substrate.py
+# Setup: agent-tooling/hooks/setup-provenance-collection.sh (indexes-before-ingest)
+
+collection: provenance
+scope: programme-wide
+
+# Named `provenance` vector — 768-dim nomic-embed-text over `title` + `body`
+# concatenated (matches the fleet convention: brief_substrate embeds `body`
+# alone because a brief has no separate title; provenance points are usually
+# short claims where the title carries real retrieval signal, so both are
+# concatenated into the embed input).
+vectors:
+  provenance:
+    size: 768
+    distance: Cosine
+    embed_field: "title\n\nbody"  # concatenation of title + body, blank-line joined
+    embed_model: nomic-embed-text
+    embed_via: ollama-workstation
+
+# Point ID: uuid5(NAMESPACE_DNS, f"provenance/{team_slug}/{type}/{slug-or-date}")
+# — deterministic, re-upsert-convergent (same construction family as a brief's
+# uuid5(NAMESPACE_DNS, brief_id)). `team_slug` is "global" for a null team_id
+# (cross-team/apex-level provenance). The migration script (build item 4) that
+# backfills STATUS.md's existing "Key Decisions" into this collection depends
+# on being able to reconstruct this same id deterministically from the source
+# markdown, so the human-key components (team_slug, type, slug-or-date) must
+# stay stable and documented here, not just inline in the lib.
+
+payload_fields:
+  # --- Identity ---
+  - name: point_type
+    type: keyword
+    index: true
+    description: Always "provenance" (point-class discriminator, shared-collection convention).
+
+  - name: id
+    type: keyword
+    index: true
+    description: The human-constructed key the point id is derived from — "provenance/{team_slug}/{type}/{slug-or-date}" — stored alongside the point id so it is human-legible in payload dumps without reversing the uuid5.
+
+  - name: type
+    type: keyword
+    index: true
+    description: Open vocabulary (NOT a fixed enum) — e.g. decision, memory-user, memory-feedback, memory-project, memory-reference, roadmap-evidence, and others as they emerge. Filterable.
+
+  - name: tags
+    type: keyword[]
+    index: true
+    description: Freeform tag array for filtering beyond `type` (operator's explicit ask — types, tags, inactive support).
+
+  - name: team_id
+    type: keyword
+    index: true
+    description: Owning team uuid, nullable. Null = cross-team/global (e.g. an apex-level decision that isn't any one team's). Multi-tenancy per spec §3.2.
+
+  - name: title
+    type: string
+    index: false
+    description: Short title of the claim/decision/memory. Half of the embed input.
+
+  - name: body
+    type: string
+    index: false
+    description: The actual decision/memory/evidence content. Half of the embed input.
+
+  - name: agent
+    type: keyword
+    index: false
+    description: Who authored this point (agent name or operator).
+
+  - name: linked_ref
+    type: keyword
+    index: false
+    description: Optional cross-reference this provenance point informs — a planning.task ref, planning.roadmap id, or similar. Nullable.
+
+  - name: inactive
+    type: bool
+    index: true
+    description: Default false. Set true together with `superseded_by` when a point is superseded — never delete a superseded point, it stays retrievable by id.
+
+  - name: superseded_by
+    type: keyword
+    index: false
+    description: Point-id (uuid) of the point that replaced this one. Set together with inactive=true, in the same write. Null while active.
+
+  # --- Temporal ---
+  - name: created_at
+    type: datetime
+    index: false
+    description: ISO-8601 when the point was authored.
+
+  - name: updated_at
+    type: datetime
+    index: false
+    description: ISO-8601 of the most recent write to this point (any field).
