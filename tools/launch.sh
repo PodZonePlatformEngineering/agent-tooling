@@ -12,6 +12,16 @@
 # ("wip: {brief-id} attempt {n}") and pushes whatever the inner session
 # touched. The inner `claude -p` session should never need to run git itself.
 #
+# PROJ-029/T-019 Fork 1: this wrapper also owns the planning.session finalise
+# — at every terminal exit path (complete / session_limit exhausted / other
+# failure) it calls conclude_session(..., p_task_status => 'ready_for_review')
+# unconditionally via conclude-planning-session.py (finalise_planning_session
+# below). This is the mechanical "a session touched this, go review it"
+# breadcrumb the operator ruling requires infrastructure — not the agent's
+# own judgment — to set. Best-effort: a dispatch that was never registered
+# (register-planning-session.py is an optional pre-step, T-018) or a missing
+# PLANNING_DATABASE_URL degrades to a silent no-op, never blocks the launch.
+#
 # PROJ-039/T-210: this script does NOT call secretctl itself — `secretctl
 # run`'s raw CLI has no non-interactive auth path (confirmed live: it always
 # tries to open a TTY for the master-password prompt and fails headless).
@@ -293,6 +303,34 @@ bank_all_repos() { # $1 = attempt number
 }
 
 # ---------------------------------------------------------------------------
+# planning.session finalise (PROJ-029/T-019 Fork 1) — called unconditionally
+# at every terminal exit path below, regardless of whether the BRIEF itself
+# is fully done (that's the separate Brief-Status: complete marker). This is
+# the mechanical "a session touched this, go review it" breadcrumb the
+# operator ruling requires infrastructure, not the agent, to set — best-effort
+# (never aborts the launch): if the dispatch was never registered
+# (register-planning-session.py is an optional pre-step, T-018) or
+# PLANNING_DATABASE_URL isn't configured, this is a silent no-op.
+# ---------------------------------------------------------------------------
+finalise_planning_session() {
+  local pr_refs=()
+  local r n
+  for r in "${REPOS[@]:-}"; do
+    [[ -n "${r}" ]] || continue
+    n="$(gh pr list --repo "${ORG}/${r}" --head "${BRANCH_NAME}" --json number --jq '.[0].number' 2>/dev/null || true)"
+    [[ -n "${n}" ]] && pr_refs+=(--pr-ref "${r}#${n}")
+  done
+  local note_file
+  note_file="$(mktemp)"
+  printf '%s' "${LAST_STDOUT}" > "${note_file}"
+  python3 "${TOOLING_ROOT}/tools/conclude-planning-session.py" \
+    --brief-id "${BRIEF_ID}" --status concluded --task-status ready_for_review \
+    --outcome-note-file "${note_file}" "${pr_refs[@]}" 2>&1 | sed 's/^/    /' \
+    || log "WARNING: conclude-planning-session failed (non-fatal, board visibility only)"
+  rm -f "${note_file}"
+}
+
+# ---------------------------------------------------------------------------
 # Phase 2 — the run loop (proposal §3.3, classify_exit per §5)
 # ---------------------------------------------------------------------------
 if [[ -n "${TOKEN_INDEX_OVERRIDE}" ]]; then
@@ -346,6 +384,7 @@ print(classify_exit(sys.stdin.read(), exit_code=${EXIT_CODE}))
       i=$((i + 1))
       if [[ ${i} -ge ${TOKEN_COUNT} ]]; then
         log "all ${TOKEN_COUNT} resolved subscription(s) limited — exiting"
+        finalise_planning_session
         echo "${LAST_STDOUT}"
         exit 3
       fi
@@ -357,6 +396,7 @@ print(classify_exit(sys.stdin.read(), exit_code=${EXIT_CODE}))
       if [[ ${api_retries} -gt ${API_RETRY_CAP} ]]; then
         log "api-retry cap (${API_RETRY_CAP}) exceeded on token '${token_name}' — falling through to other-failure"
         log "OTHER FAILURE — exiting non-zero"
+        finalise_planning_session
         echo "${LAST_STDOUT}"
         exit 1
       fi
@@ -366,11 +406,13 @@ print(classify_exit(sys.stdin.read(), exit_code=${EXIT_CODE}))
       ;;
     complete)
       log "COMPLETE — exiting 0"
+      finalise_planning_session
       git -C "${HOME_REPO_DIR}" checkout main >/dev/null 2>&1 || true
       exit 0
       ;;
     other|*)
       log "OTHER FAILURE — exiting non-zero"
+      finalise_planning_session
       echo "${LAST_STDOUT}"
       exit 1
       ;;
