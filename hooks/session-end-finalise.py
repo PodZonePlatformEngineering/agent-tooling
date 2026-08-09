@@ -19,16 +19,17 @@ Ordered contract realised here — **order is load-bearing** (§ 2.4):
      suffix keys result idempotency on session_id (T-039), so a re-set-up session on
      the same date+slug authors its own result instead of skipping on the prior one.
 
-Step 6/7 ownership splits by repo kind (the load-bearing T-035 decision):
+Step 6/7 ownership (the load-bearing T-035 decision — PROJ-029/T-024: every fleet
+agent is now migrated, so the legacy non-migrated apex path this used to describe
+has been removed):
   * **Migrated home repo** (resolved home-repo basename `home-*`, T-054) — hooks-only by design (there is
     NO `/session-end` skill). Step 6 (apex tasklist/STATUS) is DEFERRED to Hermes
     `/consolidate-tasks` (driven by the session point in Qdrant); the hook must
     never branch/commit in the apex clone. Step 7 is OWNED HERE: the hook authors
     the home-repo result + PR on a branch off home `main`, decoupled from any work
     PR (`lib.session_finalise.author_home_result`). PROJ-039/T-035.
-  * **Apex model** (non-migrated) — step 6 applies to the apex tasklist/STATUS in
-    PODZONETEAM_REPO and step 7 raises the brief-result PR there. Best-effort;
-    skipped if PODZONETEAM_REPO is unset.
+  * **Trainee** — Step 6 is skipped (no apex tasklist/STATUS); Step 7 authors the
+    trainee session PR (R-3).
 
 Robustness (PROJ-039/T-030, CC-329 — load-bearing for T-035: the home-repo result
 now rides ENTIRELY on this hook completing):
@@ -400,7 +401,6 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
         )
         _step("cst_prune", "skipped")
 
-    agent_repo = os.environ.get("PODZONETEAM_REPO", "")
     migrated = _is_migrated(home_repo)
     trainee = _is_trainee()
 
@@ -409,14 +409,15 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
     #   * Step 6 (apex tasklist/STATUS) stays DEFERRED to Hermes /consolidate-tasks
     #     (driven by the session point in Qdrant). The hook MUST NOT branch/commit in
     #     the resident apex clone — that would dirty it / move it off main, exactly
-    #     what the launch-session + consolidate-tasks apex-on-main guards forbid. We
-    #     never reference agent_repo on this path, so the apex clone stays on main,
-    #     untouched (acceptance c).
+    #     what the launch-session + consolidate-tasks apex-on-main guards forbid.
     #   * Step 7 is OWNED HERE: the hook authors the home-repo result + PR off home
     #     `main`, decoupled from any work PR (PROJ-039/T-035). This replaces the old
     #     deferral to a `/session-end` skill that does not exist in a migrated repo.
-    # The non-migrated apex path (env PODZONETEAM_REPO) is unchanged. ``home_repo``
-    # is the resolved authoritative home repo (T-054) — every step below binds to it.
+    # ``home_repo`` is the resolved authoritative home repo (T-054) — every step
+    # below binds to it. PROJ-029/T-024: the non-migrated apex path (env
+    # PODZONETEAM_REPO) was removed once every fleet agent reached `migrated` status
+    # (`podzoneTeam/planning/projects/PROJ-032-agent-home-repos/migrated-agents.md`);
+    # the `else` branches below are a defensive fallback, not an expected path.
 
     # 6. session-finalise (§ 1.4): apply the 4 per-session consolidation steps
     #    from the session point (tasklist + STATUS). Idempotent. (Apex model only.)
@@ -429,35 +430,9 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
              "/consolidate-tasks (from session point); apex clone untouched",
              session_id=session_id)
         _step("session_finalise", "skipped")
-    elif agent_repo:
-        try:
-            from pathlib import Path as _Path
-            from lib import session_substrate, session_finalise
-
-            point = session_substrate.get_session_point(session_id)
-            if point:
-                tasklist = _Path(agent_repo) / "planning" / "team-tasklist.md"
-                status_md = _Path(agent_repo) / "planning" / "STATUS.md"
-                res = session_finalise.apply_from_point(
-                    point, tasklist_path=tasklist, status_path=status_md
-                )
-                _log(
-                    f"session-finalise: tasklist_changed={res['tasklist_changed']} "
-                    f"status_changed={res['status_changed']} "
-                    f"work_item={res['work_item']} new_status={res['new_status']}",
-                    session_id=session_id,
-                )
-                _step("session_finalise", "done")
-            else:
-                _log("session-finalise skipped: session point not found",
-                     session_id=session_id, level="WARN")
-                _step("session_finalise", "skipped")
-        except Exception as exc:
-            _log(f"session-finalise skipped: {exc}", session_id=session_id, level="WARN")
-            _step("session_finalise", "failed")
     else:
-        _log("session-finalise skipped: PODZONETEAM_REPO not set",
-             session_id=session_id)
+        _log("session-finalise skipped: not a migrated home repo or trainee "
+             "session", session_id=session_id, level="WARN")
         _step("session_finalise", "skipped")
 
     # 7. Session result + PR. NON-IDEMPOTENT raise — guard against a duplicate on
@@ -572,39 +547,9 @@ def finalise_session(session_id: str, transcript_path: str, home_repo: str = "")
                 _log(f"home result deferred-cancelled: {exc}",
                      session_id=session_id, level="WARN")
                 _step("brief_pr", "deferred-cancelled")
-    elif agent_repo:
-        try:
-            from lib import session_finalise as _sf, session_substrate as _ss
-            from datetime import datetime, timezone as _tz
-
-            point = _ss.get_session_point(session_id)
-            if point:
-                date = datetime.now(_tz.utc).strftime("%Y-%m-%d")
-                result_text = _sf.generate_brief_result(point, date=date)
-                pr_res = _sf.commit_brief_result(
-                    result_text,
-                    session_id=session_id,
-                    work_item=point.get("work_item", "unknown"),
-                    date=date,
-                    repo_dir=agent_repo,
-                    raise_pr=True,
-                )
-                _log(
-                    f"brief-result PR: ok={pr_res['ok']} branch={pr_res['branch']} "
-                    f"pr_url={pr_res['pr_url'] or '(none)'} {pr_res.get('reason') or ''}",
-                    session_id=session_id,
-                )
-                _step("brief_pr", "done" if pr_res.get("ok") else "failed")
-            else:
-                _log("brief-result PR skipped: session point not found",
-                     session_id=session_id, level="WARN")
-                _step("brief_pr", "skipped")
-        except Exception as exc:
-            _log(f"brief-result PR skipped: {exc}", session_id=session_id, level="WARN")
-            _step("brief_pr", "failed")
     else:
-        _log("brief-result PR skipped: PODZONETEAM_REPO not set",
-             session_id=session_id)
+        _log("brief-result PR skipped: not a migrated home repo or trainee "
+             "session", session_id=session_id, level="WARN")
         _step("brief_pr", "skipped")
 
     # Session-end main-guard (PROJ-039/T-045): in serial simple-repo mode the session
