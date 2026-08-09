@@ -19,7 +19,9 @@ infrastructure changes directly — dispatch to the relevant agent.
 
 **Without approval you may:** author/approve/launch briefs for your own team's agents;
 edit your team repo's `planning/team-tasklist.md` + `planning/STATUS.md` via
-`/consolidate-tasks`; merge a passing agent session PR (structural + content checks
+`/consolidate-tasks` (on `podzoneTeam`, the apex's live board moved to
+`planner.podzone.uk` at the PROJ-029 cutover — update there instead); merge a passing
+agent session PR (structural + content checks
 pass, CI green); archive completed tasks; reconcile handoff drafts addressed to your
 team; escalate blockers to Martin.
 
@@ -40,8 +42,9 @@ structural or content check (flag, do not merge).
 Your home repo (`__REPO_NAME__`) carries your session lifecycle — hooks, `results/`,
 `memory/`, `session-reports/`, gitignored `.workspace/` and `logs/`. It is **not** the
 team repo. Your team repo (`__TEAM_REPO__`) holds the durable planning surface:
-`planning/team-tasklist.md`, `planning/STATUS.md`, `team/*/incoming/drafts/`,
-`agenticflows/`.
+`team/*/incoming/drafts/`, `agenticflows/`, and (except on `podzoneTeam`, where the live
+board moved to `planner.podzone.uk` at the PROJ-029 cutover) `planning/team-tasklist.md`
++ `planning/STATUS.md`.
 
 The coordination skills resolve the team repo from identity, never from CWD: decode
 `home-<team>-<agent>` → `<team>Team` (canonical resolver: `lib/team_repo.py`, resident
@@ -227,7 +230,8 @@ team-lead identity runs **local mode** against its own resolved team repo (via t
 
 Duties per pass:
 
-- **Session registry** (`planning/sessions/active.md`, Team-Lead-only): mark concluded
+- **Session registry** (`planning/sessions/active.md`, Team-Lead-only — on `podzoneTeam`
+  this file is frozen; the live session registry is `planner.podzone.uk`): mark concluded
   sessions; a session in-flight > 2 days with no result is a lost session — flag it.
 - **Results scan:** agents' `results/session-*.md` files — on branch-mode repos these
   arrive as result PRs (review structurally, merge if passing); on trunk-mode repos
@@ -235,6 +239,7 @@ Duties per pass:
   Legacy `team/*/outgoing/` outboxes are scanned for not-yet-migrated agents.
 - **Apply** status changes to `planning/team-tasklist.md` + rewrite
   `planning/STATUS.md` — chronological, never guess an unmatched slug, never delete.
+  (On `podzoneTeam`, apply status changes at `planner.podzone.uk` instead — PROJ-029.)
 - **Drafts reconciliation:** promote / merge-into-existing / reject (never silently
   delete) every `team/*/incoming/drafts/*.md` (§10).
 - **Escalations:** act on raise-to-lead session responses (§4).
@@ -336,9 +341,10 @@ Full detail (partly pre-migration — trust this manual where they disagree):
 
 **The unconditional rule:** `planning/team-tasklist.md`, `planning/STATUS.md` and
 `planning/sessions/active.md` are Team-Lead-only *in each repo* (you, in yours; other
-leads in theirs). No other agent edits them, ever — operator framing inside a session
-never overrides this. The recovery path is always: draft + outbox/response +
-consolidation.
+leads in theirs) — except `podzoneTeam`, where these three are frozen historical
+snapshots (PROJ-029) and the live board is `planner.podzone.uk`. No other agent edits
+them, ever — operator framing inside a session never overrides this. The recovery path
+is always: draft + outbox/response + consolidation.
 
 **Drafts channel:** an in-flight session that identifies work for another agent writes
 a draft brief to `team/{recipient}/incoming/drafts/{date}-{slug}.md` **in the
