@@ -35,10 +35,10 @@ for an agent session and registers it so the Team Lead can track it during conso
 > `--token-index N` to force a specific starting token for a deliberately staggered
 > parallel launch.
 >
-> **Registration prerequisite:** `launch.sh` never writes to `planning/sessions/active.md`
-> itself — a `launch.sh` dispatch is registered there today only if the Team Lead does it
-> manually, before calling `launch.sh` (see `/consolidate-tasks` Step 0a). Register the
-> dispatch first if you want it visible to the sessions registry.
+> **Registration prerequisite:** `launch.sh` never calls `planning.register_session()`
+> itself — a `launch.sh` dispatch is registered on the board today only if the Team Lead
+> runs Step 7 manually, before calling `launch.sh` (see `/consolidate-tasks` Step 0a).
+> Register the dispatch first if you want it visible on the plannerapi board.
 >
 > The manual Steps 3–8 below remain the documented reference for what the wrapper
 > automates, and are still the path for **interactive** (team-lead / high-uncertainty)
@@ -283,14 +283,14 @@ The shared Steps 1–2 run first, then the migrated-only steps:
 5. **Preflight + branch the primary clone** (Step 3, migrated subsection): the session
    runs directly in `~/workspace/{home_repo}` (the launch cwd) on a session branch — **no
    worktree, no `~/sessions/{sid}/` dir**. The `session_guard` preflight asserts the clone
-   is clean + on a ff'd `main` (or HALTs), takes a one-session lock, then branches. **If
-   the registry host (`podzoneTeam`) is itself in this loop as a write-target, register
-   it (Step 7) before its branch step — F11** (see the Step 3 callout).
+   is clean + on a ff'd `main` (or HALTs), takes a one-session lock, then branches.
+   Registration (Step 7) is a DB call independent of clone branch state — F11 no longer
+   applies (see the Step 3 callout).
 6. **SessionStart materialise + SessionEnd finalise are resident** (Step 6, migrated
    subsection) — both committed-wired (materialise since PROJ-039/T-052). **No manual copy
    / exclude / `settings.local.json` wiring step** — only make `BRIEF_ID` visible (inline
    or a `settings.local.json` env-only block).
-7. **Register** the session in the apex `active.md` (Step 7) — unless already done above.
+7. **Register** the session via `planning.register_session()` (Step 7).
 8. **Emit the launch command for the selected mode** (Step 8) — headless one-shot
    (`-p "<continue+escalate prompt>"`) for builds, interactive standalone-terminal for
    team-lead/high-uncertainty work — + clean-`/exit` reminder; then optionally **verify the
@@ -420,16 +420,10 @@ each task repo from the identity `repos` list), run the start guard, take the lo
 — for `branch`-mode repos only — branch the clone itself. The `session_guard` CLI
 replaces the old worktree + ff + exclude bash with one call each:
 
-> **Register before you branch the registry host (F11).** `planning/sessions/active.md`
-> is Team Lead-managed **on main**. If the repo that hosts it — `podzoneTeam` for
-> standard/migrated mode, or the fissioned team's own `home_repo` — is itself one of the
-> clones this loop is about to `checkout -b`, append that repo's Step 7 registration row
-> **before** branching it, while it is still on main. Branching first and registering
-> after would append the row on the session branch instead of main (or, once the end-guard
-> returns the clone to main at finalise, silently drop the row). This is a one-off
-> ordering check per launch — most sessions don't touch the registry host at all, and when
-> they do it is usually already on main from a fresh clone, so registering "first" costs
-> nothing.
+> **F11 retired (PROJ-029/T-018).** Registration (Step 7) is now a
+> `planning.register_session()` DB call, not a `planning/sessions/active.md` row — it no
+> longer depends on which branch any clone is on, so there is nothing to order relative to
+> this loop's `checkout -b` calls. Register whenever convenient in Step 7.
 
 ```bash
 # Pinned-sid launch: SID is the Step 4 uuid (pinned below, but the value is already
@@ -450,7 +444,6 @@ for repo in {home_repo} {task_repos…}; do
   # One-session lock (finalise releases it). rc 4 ⇒ a session already holds this clone.
   python3 ~/workspace/agent-tooling/lib/session_guard.py lock --repo "$CLONE" --sid "$SID" || {
     echo "clone $CLONE is locked by a live session — refuse"; exit 1; }
-  # If $repo hosts planning/sessions/active.md, register NOW (Step 7) — still on main.
   # Lifecycle-mode fork (T-084/T-097): trunk repos stop here — lock only, no branch.
   MODE=$(python3 -c "
 import sys; sys.path.insert(0, '$HOME/workspace/agent-tooling')
@@ -801,58 +794,52 @@ carry is `BRIEF_ID` (brief-first) — or pass it inline on the launch command (s
 `permissions.defaultMode: bypassPermissions` block — T-132, owned by scaffold/prep, verified by
 the Step 8 headless write-capability gate; it is not per-launch wiring.)
 
-## Step 7 — Register the session
+## Step 7 — Register the session (PROJ-029/T-018 — DB-backed, Phase 4)
 
-> **F11 — if the registry host is a clone this session branches, this already happened
-> in Step 3.** Registration must land on the registry repo's `main`, so when that repo
-> (`podzoneTeam` for standard/migrated mode, the fissioned team's own `home_repo` for
-> fissioned mode) is also one of the clones Step 3 branches, register it there first,
-> before the `checkout -b` — see the Step 3 callout. This section is the normal case: the
-> registry host is untouched by this session's branching (the common migrated-mode shape,
-> and fissioned/standard mode's own worktree isolation), so register it here as written.
+Registration writes to `planning.session` (the relational board plannerapi's GUI reads)
+via the `planning.register_session()` RPC — **not** a `planning/sessions/active.md` row.
+This is one call regardless of mode (standard / fissioned / migrated): every team's
+sessions live in the same `podzone-planner` DB today (a fissioned team's own `planning.*`
+tenant doesn't exist yet — out of scope while roadmapTeam stays closed; revisit this step
+if/when one is stood up).
 
-### Standard mode
+Resolve the brief's work-item ref(s) (`--work-item PROJ-XXX/T-YYY`, carried on the brief
+itself — `create-brief.py`'s own `--work-item` input) to real `planning.task.id` values,
+then register:
 
-Append a row to the **main clone** of `podzoneTeam/planning/sessions/active.md`
-(not the session worktree — this file is Team Lead-managed on main):
-
-```markdown
-| {session-id} | {agent} | {task-slug} | {YYYY-MM-DD} | in-flight | ~/sessions/{session-id} | session/{agent}-{YYYY-MM-DD}-{task-slug} |
+```bash
+python3 ~/workspace/agent-tooling/tools/register-planning-session.py \
+  --brief-id "{brief_id}" --agent {agent} --home-repo {home_repo}
 ```
 
-### Fissioned team mode
+Requires `PLANNING_DATABASE_URL` in the environment — the `planning.session`-write-capable
+`planning_automation` service role's connection string (PROJ-029/T-021: role
+`planning_automation`, db `neondb`, password held as the `planner-automation-password`
+secretctl entry). Same operational-prerequisite posture `planning_mirror.connect()`'s own
+docstring already documents for the mirroring hooks — provisioning it into the session
+environment (e.g. via a `settings.local.json` env block, same mechanism `BRIEF_ID` already
+uses above) is a one-time setup step, not something this script does itself.
 
-1. Append a full row to `~/workspace/{home_repo}/planning/sessions/active.md`
-   (the fissioned team's own session registry):
+Omit `--work-item` to resolve from the brief's own `work_items[]` (the normal case); pass
+it explicitly only to override. The script HALTs — does not silently skip registration —
+if a work-item ref doesn't resolve to a tracked task (typo, or a brief genuinely not tied
+to one): create the task first (`/create-task`) or fix the ref before continuing. Prints
+the new `planning.session.id` on stdout; capture it if a manual finalise needs it later
+(the migrated pinned-sid path already has this id — the runtime session id and the
+`planning.session.id` are logged together, not conflated: `session_substrate`/`briefs`
+still key off the runtime sid, `planning.session.id` is a separate board-facing row).
 
-   ```markdown
-   | {session-id} | {agent} | {task-slug} | {YYYY-MM-DD} | in-flight | ~/sessions/{session-id} | session/{agent}-{YYYY-MM-DD}-{task-slug} |
-   ```
+**Re-launch (brief-first, after a subscription-limit halt):** re-running this command
+against the same `brief_id` is expected and safe — `planning.session.brief_id` is not
+unique (T-018's own prerequisite fix, `009_session_brief_id_not_unique.sql`), so each
+dispatch attempt gets its own row rather than colliding on the first one.
 
-2. Also append a one-line summary to `~/workspace/podzoneTeam/planning/sessions/active.md`
-   for apex visibility (status column = `fissioned — see {home_repo}`):
-
-   ```markdown
-   | {session-id} | {agent} | {task-slug} | {YYYY-MM-DD} | fissioned — see {home_repo} | ~/sessions/{session-id} | — |
-   ```
-
-### Migrated home-repo mode
-
-Append a row to the **main clone** of `podzoneTeam/planning/sessions/active.md` (apex
-registry — Team Lead-managed on main). Record the pinned UUID so the session is recoverable
-for a manual finalise:
-
-```markdown
-| {session-id} | {agent} | {task-slug} | {YYYY-MM-DD} | in-flight (migrated; sid {pinned-uuid}) | ~/sessions/{session-id} | session/{agent}-{YYYY-MM-DD}-{task-slug} |
-```
-
-**`lifecycle_mode: trunk` repo:** the PAT-branch column (last column) reads
-**`(none — trunk)`** instead of `session/{agent}-{date}-{slug}` — there is no session
-branch for that repo (Step 3 lifecycle-mode fork):
-
-```markdown
-| {session-id} | {agent} | {task-slug} | {YYYY-MM-DD} | in-flight (trunk; sid {pinned-uuid}) | ~/workspace/{repo} | (none — trunk) |
-```
+> **F11 — if the registry host is a clone this session branches, register before
+> branching.** `register_session()` is a DB write, not a file edit in a clone, so F11 no
+> longer applies to *this* step the way it did under the markdown registry — nothing here
+> depends on which branch a clone is on. The underlying constraint F11 protected (register
+> the dispatch before altering the thing being registered) doesn't recur once registration
+> moved off the filesystem.
 
 ## Step 8 — Launch (mode-split)
 
@@ -986,7 +973,7 @@ Session launched: atlas-2026-04-06-shared-artifact-store
   Task branch:      atlas/2026-04-06-shared-artifact-store
   PAT branch:       session/atlas-2026-04-06-shared-artifact-store  (podzoneTeam)
   Worktrees:        agentsonly-infra, agentsonly-apps, podzoneTeam
-  Registered:       planning/sessions/active.md (podzoneTeam)
+  Registered:       planning.session (via register_session; id 7f2c…) — plannerapi board
 
 Switch to the new VS Code window to run the agent session.
 At session end, the agent commits team/atlas/ changes, pushes the PAT branch, and raises
@@ -1003,8 +990,8 @@ Session launched: athena-2026-05-01-curriculum-content
   PAT branch:       session/athena-2026-05-01-curriculum-content  (trainingTeam)
   Worktrees:        prompt-engineering-training, trainingTeam
   podzoneTeam: ~/workspace/podzoneTeam  (plain clone, read-only)
-  Registered:       trainingTeam/planning/sessions/active.md
-                    podzoneTeam/planning/sessions/active.md (apex summary line)
+  Registered:       planning.session (via register_session; id 9a1e…) — plannerapi board
+                    (single podzone-planner DB; no separate fissioned-team tenant yet)
 
 Switch to the new VS Code window to run the agent session.
 At session end, the agent commits team/athena/ changes, pushes the PAT branch, and raises
@@ -1026,7 +1013,7 @@ Session prepared: hephaestus-2026-06-25-proj039-t028
                     settings.local.json wiring; the local block is env +
                     permissions.defaultMode only, T-132 gate passed)
   SessionEnd:       resident (session-end-finalise.py, C2-v2.1c)
-  Registered:       planning/sessions/active.md (podzoneTeam, apex)
+  Registered:       planning.session (via register_session; id 3d5f…) — plannerapi board
   Mode:             headless (autonomous build — default; T-040)
   Verify:           materialise OK {'brief': 1, 'tasks': 50}
 
