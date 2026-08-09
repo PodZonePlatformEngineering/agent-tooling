@@ -268,6 +268,18 @@ print(len(d))
 ")" || abort "tokens file ${TOKENS_FILE} is ${TOKEN_COUNT:-missing} — run resolve-launch-tokens.py via the secrets MCP tool first (see tools/resolve-launch-tokens.py's own docstring), this wrapper cannot resolve secrets itself"
 log "tokens file ok — ${TOKEN_COUNT} token(s) available"
 
+# PLANNING_DATABASE_URL visibility (informational only, never a gate — brief
+# T-026). finalise_planning_session() below degrades to a silent no-op without
+# it (board visibility is explicitly not allowed to block real work, T-021/
+# T-018's own design); surface that up front, same style as the two gates
+# above, instead of only inside conclude-planning-session.py's own stderr at
+# the very end of a long dispatch log.
+if [[ -n "${PLANNING_DATABASE_URL:-}" ]]; then
+  log "PLANNING_DATABASE_URL: set (board visibility enabled)"
+else
+  log "PLANNING_DATABASE_URL: not set (board visibility disabled for this dispatch — real work is unaffected)"
+fi
+
 # Lock (home repo), held across all retry attempts, released only at final exit.
 log "acquiring session lock on home repo"
 python3 "${TOOLING_ROOT}/lib/session_guard.py" lock --repo "${HOME_REPO_DIR}" --sid "${BRIEF_ID}" \
