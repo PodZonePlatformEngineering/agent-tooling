@@ -48,10 +48,14 @@ ORG_SLUG = "podzone"
 DATABASE_URL_ENV = "PLANNING_DATABASE_URL"
 RECONCILE_SUB_ENV = "PLANNING_RECONCILE_SUB"
 
-# One of the three placeholder subs seeded by 005_team_lead_auth.sql — all
-# three map to the same (only, for now) team, so any one works for the
-# interim impersonation posture used by call_rpc(). See call_rpc's docstring.
-DEFAULT_RECONCILE_SUB = "podzone-sub-placeholder"
+# The dedicated headless/automation identity created by 007_service_role.sql
+# (PROJ-029/T-021) specifically so tooling-driven writes (this module,
+# launch-session's register_session call, etc.) don't get attributed to a
+# human's sub. Prior to T-021 this defaulted to one of the three placeholder
+# subs seeded by 005_team_lead_auth.sql — those now resolve to real human
+# identities post-Phase-3, so they're no longer appropriate for automation.
+# See call_rpc's docstring.
+DEFAULT_RECONCILE_SUB = "fleet-automation-service"
 
 PENDING_CHANGES_REL = ".planning/pending-changes.jsonl"
 
@@ -379,11 +383,19 @@ _RPC_PARAMS = {
         "pr_refs",
         "task_status",
     ],
+    "create_task": [
+        "project_id",
+        "title",
+        "summary",
+        "owner",
+        "status",
+        "cc_ref",
+    ],
 }
 
 
 def call_rpc(conn, rpc: str, args: dict, *, sub: Optional[str] = None):
-    """Call one of the 4 write RPCs directly (bypassing the Data API, same
+    """Call one of the write RPCs directly (bypassing the Data API, same
     direct-connection posture as materialise) under a session-local JWT-claims
     impersonation.
 
@@ -391,12 +403,12 @@ def call_rpc(conn, rpc: str, args: dict, *, sub: Optional[str] = None):
     explicitly in its own body (not via RLS — 006_rpcs.sql's own header
     comment explains why), which resolves off the ``request.jwt.claims`` GUC
     via ``planning.jwt_user_id()``. With no real team-lead JWT to present
-    yet, this sets that GUC to one of the placeholder subs seeded by
-    005_team_lead_auth.sql for the duration of the call — the same
-    RLS-impersonation-then-rollback shape already proven for Academy
-    (PROJ-011/T-055). ``sub`` defaults to ``PLANNING_RECONCILE_SUB`` env or
-    :data:`DEFAULT_RECONCILE_SUB`; any of the 3 seeded placeholders works
-    today since they all map to the single ``podzone-apex`` team.
+    for headless/tooling callers, this sets that GUC to the
+    ``fleet-automation-service`` sub (PROJ-029/T-021's purpose-built
+    headless identity, ``planning_automation`` role) for the duration of the
+    call — the same RLS-impersonation-then-rollback shape already proven for
+    Academy (PROJ-011/T-055). ``sub`` defaults to ``PLANNING_RECONCILE_SUB``
+    env or :data:`DEFAULT_RECONCILE_SUB`.
 
     Raises on an unknown/unsupported RPC name, a param-count mismatch, or
     whatever the RPC itself raises — reconcile callers are expected to
@@ -410,8 +422,19 @@ def call_rpc(conn, rpc: str, args: dict, *, sub: Optional[str] = None):
     values = [args.get(name) for name in param_names]
     placeholders = ", ".join(["%s"] * len(values))
     sub = sub or os.environ.get(RECONCILE_SUB_ENV, DEFAULT_RECONCILE_SUB)
-    with conn.cursor() as cur:
-        cur.execute("SET LOCAL request.jwt.claims = %s", (json.dumps({"sub": sub}),))
+    # SET LOCAL does not accept bound parameters (parsed before bind, fails
+    # with a syntax error on $1) — the claims value is embedded as a safely
+    # quoted SQL literal instead. And SET LOCAL's scope is the current
+    # transaction: with connect()'s default autocommit=True, each cur.execute()
+    # is its own implicit transaction, so a bare SET LOCAL followed by a
+    # separate execute() would silently lose the impersonation before the RPC
+    # call ever saw it. conn.transaction() forces both statements into one
+    # real transaction regardless of the connection's autocommit setting.
+    import psycopg.sql  # lazy, mirrors connect()'s lazy psycopg import
+
+    claims_literal = psycopg.sql.Literal(json.dumps({"sub": sub})).as_string(conn)
+    with conn.transaction(), conn.cursor() as cur:
+        cur.execute(f"SET LOCAL request.jwt.claims = {claims_literal}")
         cur.execute(f"SELECT planning.{rpc}({placeholders})", values)
         return cur.fetchone()
 
@@ -426,8 +449,11 @@ def _replay_raw_sql(conn, args: dict, *, sub: Optional[str] = None):
     sub = sub or os.environ.get(RECONCILE_SUB_ENV, DEFAULT_RECONCILE_SUB)
     sql = args.get("sql") or ""
     statements = args.get("sql_statements") or ([sql] if sql else [])
-    with conn.cursor() as cur:
-        cur.execute("SET LOCAL request.jwt.claims = %s", (json.dumps({"sub": sub}),))
+    import psycopg.sql  # lazy, mirrors connect()'s lazy psycopg import
+
+    claims_literal = psycopg.sql.Literal(json.dumps({"sub": sub})).as_string(conn)
+    with conn.transaction(), conn.cursor() as cur:
+        cur.execute(f"SET LOCAL request.jwt.claims = {claims_literal}")
         result = None
         for stmt in statements:
             cur.execute(stmt)
