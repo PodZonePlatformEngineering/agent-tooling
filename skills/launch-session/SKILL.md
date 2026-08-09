@@ -6,16 +6,20 @@ description: Launch an agent session — migrated home-repo default is serial si
 This skill is for **the Team Lead** of each team. It creates an isolated working environment
 for an agent session and registers it so the Team Lead can track it during consolidation.
 
-> **Default path for a headless brief-first build dispatch (PROJ-039/T-108):** `tools/launch.sh
-> <brief-id> --repos repo1,repo2`. Use this; the manual Steps 3–8 below are the documented
-> fallback and reference for what it automates. `launch.sh` collapses Steps 3–8 into one
-> invocation — preflight-abort, pull, working-repo branch+PR pre-creation, lock, then an
-> auto-rotating retry loop across the subscription tokens, all before/around a minimal
-> `claude -p "Hi {Agent}. Continue with the brief."` The wrapper owns 100% of git ceremony
-> (commit+push every touched repo at every loop-exit boundary and at final cleanup) — the
-> inner session runs no git itself, so its prompt drops the "commit early and often" clause
-> (see `docs/brief-authoring.md` item 5). Run it from the home repo: `cd
-> ~/workspace/{home_repo} && tools/launch.sh {brief_id} --repos {repo1},{repo2}`.
+> **Default path for a headless brief-first build dispatch (PROJ-039/T-108):**
+> `agent-tooling/tools/launch.sh <brief-id> --repos repo1,repo2`. Use this; the manual Steps
+> 3–8 below are the documented fallback and reference for what it automates. `launch.sh`
+> collapses Steps 3–8 into one invocation — preflight-abort, pull, working-repo branch+PR
+> pre-creation, lock, then an auto-rotating retry loop across the subscription tokens, all
+> before/around a minimal `claude -p "Hi {Agent}. Continue with the brief."` The wrapper owns
+> 100% of git ceremony (commit+push every touched repo at every loop-exit boundary and at
+> final cleanup) — the inner session runs no git itself, so its prompt drops the "commit
+> early and often" clause (see `docs/brief-authoring.md` item 5). `launch.sh` lives only in
+> `agent-tooling/tools/` — it has never been scaffolded into home repos. Run it from the
+> home repo so its cwd-based `HOME_REPO_DIR` auto-resolve (`git rev-parse --show-toplevel`)
+> picks up the right clone, invoking it by path into `agent-tooling`: `cd
+> ~/workspace/{home_repo} && ~/workspace/agent-tooling/tools/launch.sh {brief_id} --repos
+> {repo1},{repo2}` (or pass `--home-repo ~/workspace/{home_repo}` explicitly from any cwd).
 >
 > **Scope caveat:** `launch.sh` is **brief-first only** (`BRIEF_ID`, `create-brief.py
 > --approve`) — it has no pinned-`--session-id` path. A pinned-`--session-id` launch (rare;
@@ -866,7 +870,7 @@ cd ~/workspace/{home_repo} && claude --session-id {pinned-uuid}
 
 #### headless (default for autonomous / build briefs — one-shot, non-interactive)
 
-> **Prefer `tools/launch.sh {brief_id}` over hand-emitting the command below** (T-108) —
+> **Prefer `agent-tooling/tools/launch.sh {brief_id}` over hand-emitting the command below** (T-108) —
 > it runs this section's gate + staging + launch automatically and adds subscription-token
 > rotation on a limit-stop. Use the manual steps below only for an interactive launch, or
 > when `launch.sh` genuinely doesn't cover the case at hand.
