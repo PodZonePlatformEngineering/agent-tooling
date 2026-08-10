@@ -1,0 +1,94 @@
+# session_results — Qdrant collection schema (PROJ-029/T-257, plannerapi
+# Design view v1 build; design doc PROJ-029-plannerapi/t250-design-view-design.md §3.3)
+#
+# A session result is a WHOLE DOCUMENT (results/{file}.md in an agent's home
+# repo), written exactly once at session close by session_finalise — unlike a
+# brief, it has no lifecycle mutation after that (no status transitions, no
+# accumulating session_ids[]). One-time backfill
+# (tools/session_results_ingest.py) plus an incremental upsert from the
+# SessionEnd finalise hook (lib/session_results_substrate.py) keep it current.
+#
+# Snake_case plural, sibling to `briefs` / `provenance` / `work_items`.
+#
+# Spec: podzoneTeam/planning/projects/PROJ-029-plannerapi/t250-design-view-design.md §3.3
+# Lib:  agent-tooling/lib/session_results_substrate.py
+# Setup: agent-tooling/hooks/setup-session-results-collection.sh (indexes-before-ingest)
+
+collection: session_results
+scope: programme-wide
+
+# Named `session_result` vector — 768-dim nomic-embed-text over `title` + `body`
+# concatenated (matches `provenance`'s embed-input convention — briefs embeds `body`
+# alone because a brief has no separate title; a session result's derived title
+# carries real retrieval signal the same way a provenance point's does).
+vectors:
+  session_result:
+    size: 768
+    distance: Cosine
+    embed_field: "title\n\nbody"
+    embed_model: nomic-embed-text
+    embed_via: ollama-workstation
+
+# Point ID: uuid5(NAMESPACE_DNS, f"{home_repo}/{filename}") — deterministic,
+# re-upsert-convergent. home_repo is folded into the key (not just filename,
+# which collides across agent home repos' results/ directories).
+
+payload_fields:
+  # --- Identity ---
+  - name: point_type
+    type: keyword
+    index: true
+    description: Always "session_result" (point-class discriminator, shared-collection convention).
+
+  - name: id
+    type: keyword
+    index: true
+    description: The human-constructed key the point id is derived from — "{home_repo}/{filename}" — stored alongside the point id so it is human-legible in payload dumps without reversing the uuid5.
+
+  - name: home_repo
+    type: keyword
+    index: true
+    description: The agent home repo the result file lives in, e.g. "home-podzone-hephaestus".
+
+  - name: filename
+    type: keyword
+    index: false
+    description: The results/{filename}.md basename.
+
+  # --- Links ---
+  - name: work_item
+    type: keyword
+    index: true
+    description: Canonical work-item ref (PROJ-XXX/T-YYY), or null when genuinely unparseable (surfaced loudly by the backfill, never silently guessed).
+
+  - name: project_ref
+    type: keyword
+    index: true
+    description: Derived from work_item's PROJ-XXX prefix — first-class field so the Design view's project filter is a plain payload match, not a client-side string split.
+
+  # --- Attribution / temporal ---
+  - name: agent
+    type: keyword
+    index: false
+    description: Authoring agent, from frontmatter or best-effort from filename/path.
+
+  - name: date
+    type: keyword
+    index: false
+    description: Author-typed date (frontmatter `date`, or parsed from the filename's leading date) — display only; NOT the recency-sort field (see created_at).
+
+  - name: created_at
+    type: datetime
+    index: false
+    description: ISO-8601 git commit date of the file — the recency-sort ground truth (frontmatter/author-typed `date` can lag or predate the actual commit).
+
+  # --- Content ---
+  - name: title
+    type: string
+    index: false
+    description: Derived title (filename stem, or a nicer summary line) — half of the embed input.
+
+  - name: body
+    type: string
+    index: false
+    description: Full markdown content of the result file — half of the embed input.
