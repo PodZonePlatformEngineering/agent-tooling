@@ -276,6 +276,19 @@ log "tokens file ok — ${TOKEN_COUNT} token(s) available"
 # the very end of a long dispatch log.
 if [[ -n "${PLANNING_DATABASE_URL:-}" ]]; then
   log "PLANNING_DATABASE_URL: set (board visibility enabled)"
+  # Auto-register (T-258): register-planning-session.py resolves task_ids from
+  # the brief's own work_items[] (no extra input needed beyond what's already
+  # known here) and is itself best-effort (soft-skips on a missing DB URL, so
+  # this is safe even if the env check above somehow raced) — never abort the
+  # launch over board visibility, matching finalise_planning_session()'s own
+  # posture below. This removes the manual pre-step the Team Lead previously
+  # had to remember before every dispatch (T-251/T-257 both shipped real,
+  # complete work invisibly because that step was forgotten).
+  REG_OUT="$(python3 "${TOOLING_ROOT}/tools/register-planning-session.py" \
+    --brief-id "${BRIEF_ID}" --agent "${ASSIGNEE}" \
+    --home-repo "$(basename "${HOME_REPO_DIR}")" 2>&1)" \
+    && log "registered on board: session $(echo "${REG_OUT}" | tail -1)" \
+    || log "WARNING: board auto-registration failed (non-fatal, board visibility only): $(echo "${REG_OUT}" | tail -1)"
 else
   log "PLANNING_DATABASE_URL: not set (board visibility disabled for this dispatch — real work is unaffected)"
 fi

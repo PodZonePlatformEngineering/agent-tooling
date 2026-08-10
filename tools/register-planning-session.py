@@ -13,6 +13,12 @@ refs). If no `--work-item` is given, reads the brief's own `work_items[]`
 payload (authored by create-brief.py --work-item) instead of requiring the
 caller to repeat it.
 
+Best-effort by design (matching conclude-planning-session.py's own contract,
+T-019): if `PLANNING_DATABASE_URL` is unset, this exits 0 with a note on
+stderr rather than failing — `launch.sh` calls this unconditionally at the
+start of every dispatch (T-258), and board visibility is explicitly not
+allowed to block real work.
+
 Usage:
     python3 register-planning-session.py \\
         --brief-id "hermes/2026-08-09-launch-session-planning-registration" \\
@@ -85,7 +91,12 @@ def main() -> int:
                   "least one task", file=sys.stderr)
             return 1
 
-    conn = planning_mirror.connect()
+    try:
+        conn = planning_mirror.connect()
+    except RuntimeError as e:
+        print(f"register-planning-session: skipping (soft) — {e}", file=sys.stderr)
+        return 0
+
     try:
         task_ids = _resolve_task_ids(conn, work_items)
         result = planning_mirror.call_rpc(
