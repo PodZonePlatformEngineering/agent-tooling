@@ -337,7 +337,7 @@ finalise_planning_session() {
   printf '%s' "${LAST_STDOUT}" > "${note_file}"
   python3 "${TOOLING_ROOT}/tools/conclude-planning-session.py" \
     --brief-id "${BRIEF_ID}" --status concluded --task-status ready_for_review \
-    --outcome-note-file "${note_file}" "${pr_refs[@]}" 2>&1 | sed 's/^/    /' \
+    --outcome-note-file "${note_file}" "${pr_refs[@]+"${pr_refs[@]}"}" 2>&1 | sed 's/^/    /' \
     || log "WARNING: conclude-planning-session failed (non-fatal, board visibility only)"
   rm -f "${note_file}"
 }
