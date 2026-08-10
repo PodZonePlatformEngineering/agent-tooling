@@ -11,8 +11,11 @@ safety — these three guards do, at the two lifecycle edges plus a lock:
     leftover (the end-guard's delete step didn't land) and is auto-recovered by
     resetting to ``main``.
   * :func:`return_to_main` — session-end (finalise), **after** PRs are pushed: ff the
-    clone to ``origin/main`` and delete the local session branch. A crash before this
-    leaves the branch in place — :func:`preflight` catches it at the next launch.
+    clone to ``origin/main`` and delete the session branch, local **and remote**
+    (PROJ-029, 2026-08-10 — the remote delete was missing for the whole life of this
+    function; every merged session branch piled up on GitHub indefinitely until
+    then). A crash before this leaves the branch in place — :func:`preflight`
+    catches it at the next launch.
   * :class:`SessionLock` — one-session-at-a-time per clone
     (``~/.claude/session-locks/{repo}.lock``), so a concurrent launch against the
     same clone refuses cleanly. Cheap insurance for the serial assumption.
@@ -411,8 +414,27 @@ def return_to_main(repo_dir: str, session_branch: Optional[str] = None) -> dict:
         # Only delete once the branch is pushed/merged, so a missed push cannot lose work.
         if _branch_pushed(repo_dir, branch):
             _git(repo_dir, "branch", "-D", branch)
-            result.update(ok=True, disposition="returned-branch-deleted",
-                          reason=f"returned to main; deleted pushed session branch '{branch}'")
+            # PROJ-029 (2026-08-10): this used to delete the LOCAL branch only —
+            # the disposition message said "deleted pushed session branch" but the
+            # remote ref was never touched, so every merged session branch piled up
+            # on GitHub forever. Confirmed live: dozens of merged branches going
+            # back months across every repo this touches, none actually cleaned up.
+            # Same safety gate as the local delete (_branch_pushed already confirms
+            # the tip is reachable from a remote ref before we get here) — no new
+            # risk, just finishing what this function already decided was safe.
+            # Best-effort: a 404 (already deleted, e.g. by "Delete branch" on the
+            # PR's own merge button) or a transient network failure must not raise.
+            remote_del = _git(repo_dir, "push", "origin", "--delete", branch)
+            remote_ok = remote_del.returncode == 0
+            result.update(
+                ok=True, disposition="returned-branch-deleted",
+                reason=(
+                    f"returned to main; deleted pushed session branch '{branch}' "
+                    f"(local + remote)" if remote_ok else
+                    f"returned to main; deleted local session branch '{branch}' — "
+                    f"remote delete failed (already gone?): {remote_del.stderr.strip()[:200]}"
+                ),
+            )
         else:
             result.update(ok=True, disposition="returned-branch-kept-unpushed",
                           reason=f"returned to main; kept '{branch}' — tip not on any remote "
