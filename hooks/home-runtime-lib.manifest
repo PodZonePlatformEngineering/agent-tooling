@@ -30,6 +30,7 @@ session_metadata.py
 session_substrate.py
 stop_telemetry.py
 brief_substrate.py
+session_results_substrate.py
 work_items_extract.py
 telemetry_repo.py
 cst_cleanup.py

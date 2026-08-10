@@ -35,6 +35,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -595,6 +596,41 @@ def generate_session_result(
     )
 
 
+def _index_session_result(
+    session_point: dict,
+    *,
+    repo_dir: str,
+    rel_path: str,
+    result_text: str,
+    date: str,
+) -> None:
+    """Upsert the just-committed result file into the `session_results` Qdrant
+    collection (design doc PROJ-029-plannerapi/t250-design-view-design.md §3.4:
+    "the write-time hook that produces the artefact is also the one that
+    indexes it" — the same shape brief_substrate already uses for briefs).
+
+    Best-effort and silent-on-failure by design: never raises, so a Qdrant
+    outage or missing API key degrades to "not yet indexed" (the backfill
+    script catches up later) rather than failing the result commit/PR that
+    already landed. Called AFTER the commit succeeds, using the exact text
+    that was written — the point's body always matches what's on disk.
+    """
+    try:
+        from lib import session_results_substrate as _srs
+
+        _srs.upsert_result(
+            home_repo=Path(repo_dir).name,
+            filename=Path(rel_path).name,
+            body=result_text,
+            work_item=session_point.get("work_item"),
+            agent=session_point.get("agent", "unknown"),
+            date=date,
+        )
+    except Exception as exc:  # never break finalise over an indexing failure
+        print(f"[session_finalise] session_results index skipped: {exc}",
+              file=sys.stderr)
+
+
 def _resolve_base_ref(repo_dir: str, base_branch: str) -> Optional[str]:
     """Prefer ``origin/{base}``; fall back to a local ``{base}`` branch."""
     if _git(repo_dir, "rev-parse", "--verify",
@@ -797,10 +833,16 @@ def author_home_result(
     date = date or _now_date()
     work_item = session_point.get("work_item", "unknown")
     text = generate_session_result(session_point, date=date)
-    return commit_home_result(
+    res = commit_home_result(
         text, session_id=session_id, work_item=work_item, date=date,
         repo_dir=repo_dir, raise_pr=raise_pr, session_branch=session_branch,
     )
+    if res.get("ok"):
+        _index_session_result(
+            session_point, repo_dir=repo_dir, rel_path=res["file_path"],
+            result_text=text, date=date,
+        )
+    return res
 
 
 # ---------------------------------------------------------------------------
@@ -922,10 +964,16 @@ def author_home_result_trunk(
     date = date or _now_date()
     work_item = session_point.get("work_item", "unknown")
     text = generate_session_result(session_point, date=date)
-    return commit_and_push_trunk(
+    res = commit_and_push_trunk(
         text, session_id=session_id, work_item=work_item, date=date,
         repo_dir=repo_dir,
     )
+    if res.get("ok"):
+        _index_session_result(
+            session_point, repo_dir=repo_dir, rel_path=res["file_path"],
+            result_text=text, date=date,
+        )
+    return res
 
 
 # ---------------------------------------------------------------------------
