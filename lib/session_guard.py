@@ -194,6 +194,54 @@ def _branch_pushed(repo_dir: str, branch: str) -> bool:
     return contains.returncode == 0 and bool(_out(contains))
 
 
+def _github_remote_slug(repo_dir: str) -> Optional[str]:
+    """Resolve ``org/repo`` from ``origin``'s remote URL (https or ssh form), or
+    ``None`` if it can't be parsed (e.g. no GitHub remote)."""
+    cp = _git(repo_dir, "remote", "get-url", "origin")
+    if cp.returncode != 0:
+        return None
+    url = _out(cp).strip()
+    m = re.search(r"github\.com[:/]([^/]+/[^/.]+?)(?:\.git)?$", url)
+    return m.group(1) if m else None
+
+
+def _close_empty_shell_pr(repo_dir: str, branch: str) -> Optional[str]:
+    """Best-effort (PROJ-039/T-262 automation): if ``branch`` has exactly one OPEN
+    GitHub PR with **zero changed files** — launch.sh's Phase-1 pre-staged
+    empty-commit PR, left dangling whenever a brief's real delivery bypassed it
+    (e.g. the T-250/T-258 direct-to-main doc-push pattern) — close it without
+    merging. Never touches a PR carrying any real content; that always stays for
+    human review, unchanged from today's manual process. Never raises. Returns a
+    short note for the caller's disposition message, or ``None`` if there was
+    nothing to do (no PR, more than one, or the PR has real files).
+    """
+    slug = _github_remote_slug(repo_dir)
+    if not slug:
+        return None
+    try:
+        cp = subprocess.run(
+            ["gh", "pr", "list", "--repo", slug, "--head", branch, "--state", "open",
+             "--json", "number,files"],
+            cwd=repo_dir, capture_output=True, text=True, timeout=30, check=False,
+        )
+        if cp.returncode != 0 or not cp.stdout.strip():
+            return None
+        prs = json.loads(cp.stdout)
+        if len(prs) != 1 or prs[0].get("files"):
+            return None
+        number = prs[0]["number"]
+        subprocess.run(
+            ["gh", "pr", "close", str(number), "--repo", slug, "--comment",
+             "Empty-shell PR (launch.sh's pre-staged branch — no real changes landed "
+             "here; the brief's actual delivery went elsewhere, e.g. a direct-to-main "
+             "commit). Closed automatically by session_guard.return_to_main."],
+            cwd=repo_dir, capture_output=True, text=True, timeout=30, check=False,
+        )
+        return f"closed empty-shell PR #{number}"
+    except Exception:  # never break teardown over a GitHub API hiccup
+        return None
+
+
 def ff_main(repo_dir: str) -> dict:
     """Fetch origin and fast-forward the local ``main`` to ``origin/main``.
 
@@ -413,6 +461,7 @@ def return_to_main(repo_dir: str, session_branch: Optional[str] = None) -> dict:
 
         # Only delete once the branch is pushed/merged, so a missed push cannot lose work.
         if _branch_pushed(repo_dir, branch):
+            empty_pr_note = _close_empty_shell_pr(repo_dir, branch)
             _git(repo_dir, "branch", "-D", branch)
             # PROJ-029 (2026-08-10): this used to delete the LOCAL branch only —
             # the disposition message said "deleted pushed session branch" but the
@@ -426,13 +475,15 @@ def return_to_main(repo_dir: str, session_branch: Optional[str] = None) -> dict:
             # PR's own merge button) or a transient network failure must not raise.
             remote_del = _git(repo_dir, "push", "origin", "--delete", branch)
             remote_ok = remote_del.returncode == 0
+            suffix = f"; {empty_pr_note}" if empty_pr_note else ""
             result.update(
                 ok=True, disposition="returned-branch-deleted",
                 reason=(
                     f"returned to main; deleted pushed session branch '{branch}' "
-                    f"(local + remote)" if remote_ok else
+                    f"(local + remote){suffix}" if remote_ok else
                     f"returned to main; deleted local session branch '{branch}' — "
-                    f"remote delete failed (already gone?): {remote_del.stderr.strip()[:200]}"
+                    f"remote delete failed (already gone?): "
+                    f"{remote_del.stderr.strip()[:200]}{suffix}"
                 ),
             )
         else:
