@@ -225,6 +225,21 @@ def materialise_brief_first(session_id: str, cwd: str, brief_id: str) -> dict:
         _write_status(workspace, status)
         return status
 
+    # 1.5. Pop any pending session-stash entry (PROJ-039/T-257, design doc
+    #      §5.4) — immediately after the brief resolves, before the session
+    #      point/reverse-link steps below. Best-effort: a pop failure is loud
+    #      on stderr but never blocks SessionStart (unlike the brief-resolve
+    #      failures above, this is resume convenience, not the tasking gate).
+    stash_content = None
+    try:
+        from lib import session_stash_substrate
+        stash = session_stash_substrate.pop(brief_id, session_id)
+        if stash is not None:
+            stash_content = stash.get("content")
+    except Exception as exc:
+        print(f"[session-materialise] session-stash pop failed (non-fatal): {exc}",
+              file=sys.stderr)
+
     body = brief["body"]
     agent = brief.get("assignee", "unknown")
     work_items = brief.get("work_items") or []
@@ -278,6 +293,8 @@ def materialise_brief_first(session_id: str, cwd: str, brief_id: str) -> dict:
         "brief_id": brief_id,
         "counts": {"brief": 1, "tasks": len(tasks)},
     }
+    if stash_content:
+        status["stash_content"] = stash_content
     _write_status(workspace, status)
     return status
 
@@ -395,13 +412,20 @@ def main() -> int:
         status = materialise_brief_first(session_id, cwd, brief_id)
         if status.get("ok"):
             counts = status.get("counts", {})
-            _emit_context(
+            context = (
                 f"✅ Session materialised from brief `{brief_id}` "
                 f"(briefs collection) — .workspace populated (brief + "
                 f"{counts.get('tasks', 0)} active tasks), session point keyed to "
                 f"the runtime sid, sid appended to session_ids[]. "
                 f"Authoritative context is .workspace/, not this digest."
             )
+            stash_content = status.get("stash_content")
+            if stash_content:
+                context = (
+                    f"📌 Resuming from a stashed session handoff (PROJ-039/T-257):\n\n"
+                    f"{stash_content}\n\n---\n\n{context}"
+                )
+            _emit_context(context)
         else:
             _emit_context(f"{HALT_MESSAGE}\n(reason: {status.get('reason')})")
         return 0

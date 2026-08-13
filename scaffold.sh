@@ -144,8 +144,12 @@ DEP_DIRS="primitives"
 # create-brief.py, that must never land in a home repo). update-tooling.py is
 # the brief-gated self-update entry point, wired as the FIRST SessionStart hook
 # command; wire-update-tooling.py is the settings.json wiring patcher/verifier
-# the sync drives (PROJ-039/T-069). Kept byte-identical with sync-agent-tooling.sh.
-TOOLS_FILES="update-tooling.py wire-update-tooling.py"
+# the sync drives (PROJ-039/T-069). session-stash-push.py/session-stash-pop.py
+# (PROJ-039/T-255/T-256/T-257) are the session-stash primitives — post-compact.sh
+# shells out to the push script (design doc §5.1), and an agent invokes either
+# directly for the §5.3 explicit-handoff / manual-inspection path. Kept
+# byte-identical with sync-agent-tooling.sh.
+TOOLS_FILES="update-tooling.py wire-update-tooling.py session-stash-push.py session-stash-pop.py"
 
 role_title() {
   case "$1" in

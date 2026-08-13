@@ -39,3 +39,25 @@ print(json.dumps({
 }))" "${SESSION_ID}" "${TIMESTAMP}" "${REPO_NAME}" "${GIT_BRANCH}" "${COMMIT_SHA}" "${OS_USER}" "${PLATFORM}" "${SUMMARY}")"
 
 "${PRIMITIVES}/qdrant/add-qdrant-point.sh" "${COLLECTION}" "${POINT_ID}" "${VECTOR_JSON}" "${PAYLOAD}"
+
+# Session-stash push (PROJ-039/T-257, design doc §5.1) — best-effort resume
+# scratch for the next session materialising this same brief, keyed off the
+# retained-summary block Claude Code already produced above. Brief-first
+# sessions only (design doc §1: brief_id is the addressing key) — a session
+# with no BRIEF_ID is a silent no-op, not an error. Never blocks this hook:
+# matches conclude-planning-session.py's own "best-effort... exits 0 with a
+# note on stderr rather than failing the whole launch" posture.
+if [[ -n "${BRIEF_ID:-}" && -n "${SUMMARY}" ]]; then
+  IDENTITY_AGENT="$(python3 -c "
+import json
+from pathlib import Path
+try:
+    print(json.loads(Path('${CWD}/.workspace/identity.json').read_text()).get('agent', 'unknown'))
+except Exception:
+    print('unknown')
+")"
+  python3 "${SCRIPT_DIR}/../tools/session-stash-push.py" \
+    --brief-id "${BRIEF_ID}" --session-id "${SESSION_ID}" --agent "${IDENTITY_AGENT}" \
+    --trigger compaction --content "${SUMMARY}" >/dev/null 2>&1 \
+    || echo "post-compact: session-stash push skipped (soft, best-effort, non-fatal)" >&2
+fi

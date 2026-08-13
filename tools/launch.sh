@@ -406,6 +406,20 @@ print(classify_exit(sys.stdin.read(), exit_code=${EXIT_CODE}))
 
   case "${CLASS}" in
     session_limit)
+      # Session-stash push (PROJ-039/T-257, design doc §5.2) — best-effort
+      # resume scratch, before looping to the next token under the same
+      # BRIEF_ID. content-file (not a raw arg) mirrors finalise_planning_
+      # session()'s own note_file pattern above — LAST_STDOUT can be large.
+      # Never blocks this branch: a stash push has no bearing on whether the
+      # limit-stop retry loop continues.
+      stash_note_file="$(mktemp)"
+      printf '%s' "${LAST_STDOUT}" > "${stash_note_file}"
+      python3 "${TOOLING_ROOT}/tools/session-stash-push.py" \
+        --brief-id "${BRIEF_ID}" --session-id "${BRIEF_ID}#attempt${attempt}" \
+        --agent "${ASSIGNEE}" --trigger limit_stop \
+        --content-file "${stash_note_file}" >/dev/null 2>&1 \
+        || log "WARNING: session-stash push failed (non-fatal, best-effort resume scratch)"
+      rm -f "${stash_note_file}"
       i=$((i + 1))
       if [[ ${i} -ge ${TOKEN_COUNT} ]]; then
         log "all ${TOKEN_COUNT} resolved subscription(s) limited — exiting"
