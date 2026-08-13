@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -22,11 +23,15 @@ from lib import qdrant_http, session_stash_substrate as sss  # noqa: E402
 
 
 class RecordingQdrant:
-    def __init__(self, initial: dict | None = None) -> None:
+    def __init__(
+        self, initial: dict | None = None, scroll_points: list[dict] | None = None
+    ) -> None:
         self.calls: list[tuple[str, str]] = []
         self.payload: dict = dict(initial or {})
         self.exists = initial is not None
         self.last_vector = None
+        self.scroll_points = scroll_points or []
+        self.last_scroll_body: dict | None = None
 
     def __call__(self, method, url, *, payload=None, api_key=None, timeout=None):
         suffix = url.split("/collections/", 1)[-1]
@@ -43,6 +48,9 @@ class RecordingQdrant:
                 raise QdrantHTTPError(404, url, "not found")
             self.payload.update(payload["payload"])
             return {"result": {"status": "acknowledged"}}
+        if method.upper() == "POST" and suffix.endswith("/points/scroll"):
+            self.last_scroll_body = payload
+            return {"result": {"points": list(self.scroll_points)}}
         if method.upper() == "GET":
             if not self.exists:
                 from lib.qdrant_http import QdrantHTTPError
@@ -247,6 +255,83 @@ class TestPop(unittest.TestCase):
         self.assertFalse(
             any(c[1].endswith("/points/delete") for c in rec.calls)
         )
+
+
+class TestListStale(unittest.TestCase):
+    def _point(self, brief_id, pushed_at, **overrides):
+        payload = dict(
+            point_type="session_stash",
+            brief_id=brief_id,
+            session_id="sid-1",
+            agent="hephaestus",
+            work_item="PROJ-039/T-258",
+            trigger="compaction",
+            content="resume here",
+            pushed_at=pushed_at,
+            status="active",
+            consumed_at=None,
+            consumed_by_session_id=None,
+        )
+        payload.update(overrides)
+        return {"id": sss.point_id_for(brief_id), "payload": payload}
+
+    def test_filters_by_threshold(self) -> None:
+        now = datetime.now(timezone.utc)
+        stale_ts = (now - timedelta(hours=48)).isoformat()
+        fresh_ts = (now - timedelta(hours=1)).isoformat()
+        rec = RecordingQdrant(
+            scroll_points=[
+                self._point("team/stale-one", stale_ts),
+                self._point("team/fresh-one", fresh_ts),
+            ]
+        )
+        with patch.object(qdrant_http, "request_json", rec):
+            result = sss.list_stale(threshold_hours=24)
+        self.assertEqual([r["brief_id"] for r in result], ["team/stale-one"])
+        self.assertEqual(result[0]["agent"], "hephaestus")
+        self.assertEqual(result[0]["work_item"], "PROJ-039/T-258")
+        self.assertEqual(result[0]["trigger"], "compaction")
+        self.assertEqual(result[0]["pushed_at"], stale_ts)
+
+    def test_exactly_at_threshold_is_not_stale(self) -> None:
+        now = datetime.now(timezone.utc)
+        boundary_ts = (now - timedelta(hours=24) + timedelta(seconds=5)).isoformat()
+        rec = RecordingQdrant(scroll_points=[self._point("team/boundary", boundary_ts)])
+        with patch.object(qdrant_http, "request_json", rec):
+            result = sss.list_stale(threshold_hours=24)
+        self.assertEqual(result, [])
+
+    def test_no_stale_entries_returns_empty_list(self) -> None:
+        now = datetime.now(timezone.utc)
+        fresh_ts = (now - timedelta(minutes=5)).isoformat()
+        rec = RecordingQdrant(scroll_points=[self._point("team/fresh", fresh_ts)])
+        with patch.object(qdrant_http, "request_json", rec):
+            result = sss.list_stale()
+        self.assertEqual(result, [])
+
+    def test_query_filters_on_point_type_and_active_status(self) -> None:
+        rec = RecordingQdrant(scroll_points=[])
+        with patch.object(qdrant_http, "request_json", rec):
+            sss.list_stale()
+        must = rec.last_scroll_body["filter"]["must"]
+        self.assertIn({"key": "point_type", "match": {"value": "session_stash"}}, must)
+        self.assertIn({"key": "status", "match": {"value": "active"}}, must)
+
+    def test_missing_pushed_at_is_skipped_not_errored(self) -> None:
+        rec = RecordingQdrant(
+            scroll_points=[self._point("team/no-ts", pushed_at=None)]
+        )
+        with patch.object(qdrant_http, "request_json", rec):
+            result = sss.list_stale()
+        self.assertEqual(result, [])
+
+    def test_custom_threshold_hours(self) -> None:
+        now = datetime.now(timezone.utc)
+        two_hours_ago = (now - timedelta(hours=2)).isoformat()
+        rec = RecordingQdrant(scroll_points=[self._point("team/recent", two_hours_ago)])
+        with patch.object(qdrant_http, "request_json", rec):
+            result = sss.list_stale(threshold_hours=1)
+        self.assertEqual([r["brief_id"] for r in result], ["team/recent"])
 
 
 if __name__ == "__main__":

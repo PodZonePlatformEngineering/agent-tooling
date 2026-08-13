@@ -68,6 +68,45 @@ If none, print "No sessions ready for consolidation." and skip to Step 6.
 role's connection string (PROJ-029/T-021) into the session env before running any query in
 this skill.
 
+**Sibling query — stale session-stash entries (PROJ-039/T-258).** A `session_stash`
+entry (design doc `t254-session-stash-design.md` §6) is a "resume here" scratch a session
+pushes on compaction, a headless `limit_stop` retry, or a deliberate explicit handoff, keyed
+by `brief_id`. One still `status = 'active'` more than 24h after `pushed_at` was pushed but
+never popped and never superseded by a later push — worth a look in the same pass that
+already reviews concluded sessions:
+
+```bash
+mcp__secrets__secret_run -k podzone_qdrant_apikey -- python3 -c "
+import sys; sys.path.insert(0, '$HOME/workspace/agent-tooling')
+from lib import planning_mirror, session_stash_substrate
+
+stale = session_stash_substrate.list_stale()  # default 24h threshold, design doc §6
+if not stale:
+    print('No stale session-stash entries.')
+else:
+    conn = planning_mirror.connect()
+    with conn.cursor() as cur:
+        for entry in stale:
+            cur.execute(
+                'SELECT status FROM planning.session WHERE brief_id = %s '
+                'ORDER BY launched_at DESC LIMIT 1',
+                (entry['brief_id'],),
+            )
+            row = cur.fetchone()
+            entry['session_status'] = row[0] if row else None
+            print(entry)
+    conn.close()
+"
+```
+
+Read `entry['session_status']` before treating a hit as a miss: `cleaned_up` (or no row at
+all) means the session that pushed this entry has already ended and nothing ever came back
+for it — a genuine miss, worth naming in this pass's outcome notes or a follow-up task.
+`in_flight` means a session is still actively running against that brief and simply hasn't
+popped yet — note it, but don't treat it as a failure; it may still resume normally before
+its own session ends. This is detection and surfacing only (design doc §6) — no delete, no
+archive; `session_stash_substrate.list_stale` never touches the points it finds.
+
 ## Step 0b — podzoneTeam session PR review
 
 For a `launch.sh` dispatch, this PR-review loop runs once **per working repo** named in
