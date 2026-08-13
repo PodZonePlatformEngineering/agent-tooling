@@ -1,0 +1,92 @@
+# session_stash — Qdrant collection schema (PROJ-039/T-255)
+#
+# Transient cross-session context banking: a session mid-flight (compaction,
+# a headless limit-stop retry, or a deliberate explicit handoff) stashes a
+# "resume here" narrative keyed by brief_id, so the next session materialising
+# that same brief can pick it up. Push is a full replace at the deterministic
+# point id — never an append (a brief has exactly one live stash entry at a
+# time; see design doc §3). Pop (T-256) marks the entry consumed rather than
+# deleting it.
+#
+# Payload-only — no named vector. This is short-lived machine-read scratch
+# consulted by exact brief_id lookup, not a semantic-search corpus the way
+# `briefs`/`session_results` are; the embed-optional machinery those two
+# carry is deliberately skipped entirely (design doc §2). Collection is
+# created with an EMPTY named-vector map (`"vectors": {}`), matching the
+# `training_token_registry` payload-only precedent
+# (hooks/setup-training-collections.sh) — points are written with
+# `"vector": {}` too, never an omitted `vector` key (Qdrant 400s on that).
+#
+# Snake_case plural, sibling to `briefs` / `session_results`.
+#
+# Spec: podzoneTeam/planning/projects/PROJ-039-unified-session-substrate/t254-session-stash-design.md
+# Lib:  agent-tooling/lib/session_stash_substrate.py
+# Setup: agent-tooling/hooks/setup-session-stash-collection.sh (indexes-before-ingest)
+
+collection: session_stash
+scope: programme-wide
+
+# No `vectors` section — payload-only collection (design doc §2).
+
+# Point ID: uuid5(NAMESPACE_DNS, f"stash/{brief_id}") — deterministic,
+# re-upsert-convergent (design doc §2/§3), same construction
+# `session_substrate.point_id_for` / `session_results_substrate.point_id_for`
+# already use for their own keys. `stash/` prefix keeps this key out of the
+# same uuid5 namespace bucket the bare brief_id already maps to in `briefs`.
+
+payload_fields:
+  # --- Identity ---
+  - name: point_type
+    type: keyword
+    index: true
+    description: Always "session_stash" (point-class discriminator, shared-collection convention).
+
+  - name: brief_id
+    type: keyword
+    index: true
+    description: The stable addressing key (design doc §1) — never overwritten as payload across pushes for the same brief, only read as the lookup filter/point-id input.
+
+  - name: session_id
+    type: keyword
+    index: false
+    description: The runtime sid that authored this entry. Overwritten on every push — a limit_stop retry under the same brief_id gets a brand-new sid each attempt (design doc §1), so this is NOT a stable join key.
+
+  - name: agent
+    type: keyword
+    index: false
+    description: Denormalised from the brief for filtering without a join, mirroring session_result's own project_ref denormalisation.
+
+  - name: work_item
+    type: keyword
+    index: false
+    description: Denormalised from the brief (PROJ-XXX/T-YYY), or null.
+
+  - name: trigger
+    type: keyword
+    index: true
+    description: "Which wiring point produced this entry: compaction | limit_stop | explicit (design doc §5). Indexed so a stale-entry sweep (T-258) can filter/report by trigger."
+
+  - name: content
+    type: string
+    index: false
+    description: The resume-here narrative — free text. Overwritten (never appended to) on every push (design doc §3).
+
+  - name: pushed_at
+    type: datetime
+    index: true
+    description: ISO-8601 timestamp of the most recent push. Indexed — T-258's stale-entry sweep filters on pushed_at < now() - 24h (design doc §6).
+
+  - name: status
+    type: keyword
+    index: true
+    description: "active | consumed. Reset to \"active\" on every push (design doc §3); set to \"consumed\" by pop (T-256) without deleting the point (design doc §4). Indexed — needed by pop's client-side filter and T-258's stale sweep."
+
+  - name: consumed_at
+    type: datetime
+    index: false
+    description: ISO-8601 timestamp of the pop that consumed this entry, or null while active.
+
+  - name: consumed_by_session_id
+    type: keyword
+    index: false
+    description: The runtime sid that popped (consumed) this entry, or null while active.
