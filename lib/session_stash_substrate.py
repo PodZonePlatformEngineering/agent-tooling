@@ -29,6 +29,7 @@ dependency, loud on a missing API key.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from . import qdrant_http, session_substrate
@@ -36,6 +37,8 @@ from . import qdrant_http, session_substrate
 COLLECTION = "session_stash"
 
 VALID_TRIGGERS = ("compaction", "limit_stop", "explicit")
+
+DEFAULT_STALE_THRESHOLD_HOURS = 24
 
 
 def point_id_for(brief_id: str) -> str:
@@ -153,3 +156,64 @@ def pop(
         api_key=api_key,
     )
     return payload
+
+
+def list_stale(
+    threshold_hours: float = DEFAULT_STALE_THRESHOLD_HOURS,
+    *,
+    api_key: Optional[str] = None,
+    limit: int = 200,
+) -> list[dict]:
+    """List `session_stash` entries still `status == "active"` whose
+    `pushed_at` is older than `threshold_hours` (default 24, design doc §6) —
+    pushed but never popped and never superseded by a later push.
+
+    Used by `consolidate-tasks` Step 0a as a sibling query to the existing
+    `planning.session` query: this function only surfaces the stash side
+    (`brief_id`/`agent`/`work_item`/`trigger`/`pushed_at`) — cross-referencing
+    each `brief_id` against `planning.session.status` (to tell a genuine miss,
+    session already `cleaned_up`, from a false positive, session still
+    `in_flight`) is a separate Postgres query left to the caller, per design
+    doc §6.
+
+    Scrolls with a server-side `status == "active"` filter, then applies the
+    `pushed_at` cutoff client-side by parsing each candidate's ISO-8601
+    timestamp — `pushed_at` carries no payload index here, so a Qdrant-side
+    datetime range filter isn't available; client-side comparison is simple
+    and testable at this collection's expected scale.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=threshold_hours)
+    body = {
+        "filter": {
+            "must": [
+                {"key": "point_type", "match": {"value": "session_stash"}},
+                {"key": "status", "match": {"value": "active"}},
+            ]
+        },
+        "limit": limit,
+        "with_payload": True,
+    }
+    resp = qdrant_http.scroll(collection=COLLECTION, body=body, api_key=api_key)
+    points = resp.get("result", {}).get("points", [])
+
+    stale = []
+    for point in points:
+        payload = point.get("payload", {})
+        pushed_at = payload.get("pushed_at")
+        if not pushed_at:
+            continue
+        try:
+            pushed_dt = datetime.fromisoformat(pushed_at)
+        except ValueError:
+            continue
+        if pushed_dt < cutoff:
+            stale.append(
+                {
+                    "brief_id": payload.get("brief_id"),
+                    "agent": payload.get("agent"),
+                    "work_item": payload.get("work_item"),
+                    "trigger": payload.get("trigger"),
+                    "pushed_at": pushed_at,
+                }
+            )
+    return stale
