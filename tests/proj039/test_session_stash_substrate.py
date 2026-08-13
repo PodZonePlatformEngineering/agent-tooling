@@ -37,6 +37,12 @@ class RecordingQdrant:
             self.last_vector = pts[0].get("vector")
             self.exists = True
             return {"result": {"status": "acknowledged"}}
+        if method.upper() == "POST" and suffix.endswith("/points/payload"):
+            if not self.exists:
+                from lib.qdrant_http import QdrantHTTPError
+                raise QdrantHTTPError(404, url, "not found")
+            self.payload.update(payload["payload"])
+            return {"result": {"status": "acknowledged"}}
         if method.upper() == "GET":
             if not self.exists:
                 from lib.qdrant_http import QdrantHTTPError
@@ -46,6 +52,9 @@ class RecordingQdrant:
 
     def full_upserts(self):
         return [c for c in self.calls if c[0] == "PUT" and c[1].endswith("/points")]
+
+    def set_payload_calls(self):
+        return [c for c in self.calls if c[0] == "POST" and c[1].endswith("/points/payload")]
 
 
 class TestPointId(unittest.TestCase):
@@ -161,6 +170,83 @@ class TestGetStash(unittest.TestCase):
         rec = RecordingQdrant(None)
         with patch.object(qdrant_http, "request_json", rec):
             self.assertIsNone(sss.get_stash("team/nope"))
+
+
+class TestPop(unittest.TestCase):
+    def _active_payload(self, **overrides):
+        payload = dict(
+            point_type="session_stash",
+            brief_id="team/2026-08-13-foo",
+            session_id="sid-1",
+            agent="hephaestus",
+            work_item="PROJ-039/T-255",
+            trigger="explicit",
+            content="resume here: step 3",
+            pushed_at="2026-08-13T09:00:00+00:00",
+            status="active",
+            consumed_at=None,
+            consumed_by_session_id=None,
+        )
+        payload.update(overrides)
+        return payload
+
+    def test_no_point_returns_none(self) -> None:
+        rec = RecordingQdrant(None)
+        with patch.object(qdrant_http, "request_json", rec):
+            result = sss.pop("team/2026-08-13-foo", "sid-2")
+        self.assertIsNone(result)
+        self.assertEqual(rec.set_payload_calls(), [])
+
+    def test_already_consumed_returns_none(self) -> None:
+        rec = RecordingQdrant(self._active_payload(status="consumed"))
+        with patch.object(qdrant_http, "request_json", rec):
+            result = sss.pop("team/2026-08-13-foo", "sid-2")
+        self.assertIsNone(result)
+        self.assertEqual(rec.set_payload_calls(), [])
+
+    def test_active_entry_returns_original_payload_and_marks_consumed(self) -> None:
+        rec = RecordingQdrant(self._active_payload())
+        with patch.object(qdrant_http, "request_json", rec):
+            result = sss.pop("team/2026-08-13-foo", "sid-2")
+        self.assertEqual(result["content"], "resume here: step 3")
+        self.assertEqual(result["trigger"], "explicit")
+        self.assertEqual(result["pushed_at"], "2026-08-13T09:00:00+00:00")
+        self.assertEqual(result["status"], "active")  # returned payload is pre-consume
+
+        self.assertEqual(len(rec.set_payload_calls()), 1)
+        self.assertEqual(rec.payload["status"], "consumed")
+        self.assertEqual(rec.payload["consumed_by_session_id"], "sid-2")
+        self.assertTrue(rec.payload["consumed_at"])
+
+    def test_consume_preserves_other_fields(self) -> None:
+        rec = RecordingQdrant(self._active_payload())
+        with patch.object(qdrant_http, "request_json", rec):
+            sss.pop("team/2026-08-13-foo", "sid-2")
+        self.assertEqual(rec.payload["content"], "resume here: step 3")
+        self.assertEqual(rec.payload["trigger"], "explicit")
+        self.assertEqual(rec.payload["pushed_at"], "2026-08-13T09:00:00+00:00")
+        self.assertEqual(rec.payload["agent"], "hephaestus")
+        self.assertEqual(rec.payload["work_item"], "PROJ-039/T-255")
+        self.assertEqual(rec.payload["brief_id"], "team/2026-08-13-foo")
+
+    def test_second_pop_is_idempotent_noop(self) -> None:
+        rec = RecordingQdrant(self._active_payload())
+        with patch.object(qdrant_http, "request_json", rec):
+            first = sss.pop("team/2026-08-13-foo", "sid-2")
+            second = sss.pop("team/2026-08-13-foo", "sid-3")
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(len(rec.set_payload_calls()), 1)
+        # the first consumer wins the record
+        self.assertEqual(rec.payload["consumed_by_session_id"], "sid-2")
+
+    def test_no_delete_calls_ever(self) -> None:
+        rec = RecordingQdrant(self._active_payload())
+        with patch.object(qdrant_http, "request_json", rec):
+            sss.pop("team/2026-08-13-foo", "sid-2")
+        self.assertFalse(
+            any(c[1].endswith("/points/delete") for c in rec.calls)
+        )
 
 
 if __name__ == "__main__":
