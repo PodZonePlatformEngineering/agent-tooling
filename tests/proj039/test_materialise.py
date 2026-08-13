@@ -25,7 +25,7 @@ _spec = importlib.util.spec_from_file_location(
 sm = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sm)  # type: ignore
 
-from lib import session_substrate, brief_substrate  # noqa: E402
+from lib import session_substrate, brief_substrate, session_stash_substrate  # noqa: E402
 
 
 def write_identity_yaml(cwd: str, *, agent: str = "someone",
@@ -111,6 +111,64 @@ class TestBriefFirstMaterialise(unittest.TestCase):
             self.assertFalse(status["ok"])
             self.assertIn("brief-not-found", status["reason"])
 
+    def test_pop_surfaces_stash_content_into_status(self) -> None:
+        """PROJ-039/T-257 §5.4: an active stash entry's content rides on the
+        returned status so main() can prepend it to the emitted context."""
+        popped = {}
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(brief_substrate, "get_brief", lambda *a, **k: self._brief()), \
+             patch.object(session_substrate, "get_session_point", lambda *a, **k: None), \
+             patch.object(session_substrate, "create_session_point",
+                          lambda **k: {"ok": True}), \
+             patch.object(brief_substrate, "append_session_id", lambda *a, **k: {"ok": True}), \
+             patch.object(brief_substrate, "start_brief", lambda *a, **k: {"ok": True}), \
+             patch.object(session_substrate, "active_work_items", lambda *a, **k: []), \
+             patch.object(session_stash_substrate, "pop",
+                          lambda bid, sid, **k: popped.update(brief=bid, sid=sid) or
+                          {"content": "resume here — mid-refactor of X.", "trigger": "limit_stop"}):
+            status = sm.materialise_brief_first("runtime-sid-9", td, "podzone/2026-07-02-t043")
+            self.assertTrue(status["ok"])
+            self.assertEqual(status["stash_content"], "resume here — mid-refactor of X.")
+            # popped with the resolved brief_id and the RUNTIME sid, not some
+            # other identifier.
+            self.assertEqual(popped, {"brief": "podzone/2026-07-02-t043", "sid": "runtime-sid-9"})
+
+    def test_no_stash_entry_is_a_normal_noop(self) -> None:
+        """pop() returning None (the common case — no pending stash) must not
+        surface a stash_content key or otherwise change materialise's success
+        shape."""
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(brief_substrate, "get_brief", lambda *a, **k: self._brief()), \
+             patch.object(session_substrate, "get_session_point", lambda *a, **k: None), \
+             patch.object(session_substrate, "create_session_point",
+                          lambda **k: {"ok": True}), \
+             patch.object(brief_substrate, "append_session_id", lambda *a, **k: {"ok": True}), \
+             patch.object(brief_substrate, "start_brief", lambda *a, **k: {"ok": True}), \
+             patch.object(session_substrate, "active_work_items", lambda *a, **k: []), \
+             patch.object(session_stash_substrate, "pop", lambda *a, **k: None):
+            status = sm.materialise_brief_first("runtime-sid-9", td, "podzone/2026-07-02-t043")
+            self.assertTrue(status["ok"])
+            self.assertNotIn("stash_content", status)
+
+    def test_pop_failure_is_soft_materialise_still_succeeds(self) -> None:
+        """A pop failure (Qdrant blip) must never block SessionStart — the
+        brief-first materialise path completes normally regardless."""
+        def boom(*a, **k):
+            raise RuntimeError("qdrant unreachable")
+
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(brief_substrate, "get_brief", lambda *a, **k: self._brief()), \
+             patch.object(session_substrate, "get_session_point", lambda *a, **k: None), \
+             patch.object(session_substrate, "create_session_point",
+                          lambda **k: {"ok": True}), \
+             patch.object(brief_substrate, "append_session_id", lambda *a, **k: {"ok": True}), \
+             patch.object(brief_substrate, "start_brief", lambda *a, **k: {"ok": True}), \
+             patch.object(session_substrate, "active_work_items", lambda *a, **k: []), \
+             patch.object(session_stash_substrate, "pop", boom):
+            status = sm.materialise_brief_first("runtime-sid-9", td, "podzone/2026-07-02-t043")
+            self.assertTrue(status["ok"])
+            self.assertNotIn("stash_content", status)
+
 
 class TestMaterialiseSuccess(unittest.TestCase):
     def test_dt010_populates_workspace_and_status_ok(self) -> None:
@@ -187,6 +245,51 @@ class TestMainEmitsContext(unittest.TestCase):
             out = json.loads(buf.getvalue())
             ctx = out["hookSpecificOutput"]["additionalContext"]
             self.assertIn("MATERIALISE FAILED", ctx)
+
+
+class TestMainPrependsStashContent(unittest.TestCase):
+    """PROJ-039/T-257 §5.4: main() prepends a popped stash entry's content
+    ahead of the normal brief-first success context, on the same
+    `additionalContext` channel — never a separate emission."""
+
+    def _brief(self):
+        return {
+            "brief_id": "podzone/2026-07-02-t043", "body": "Build the briefs collection.",
+            "status": "approved", "assignee": "hephaestus",
+            "work_items": ["PROJ-039/T-043"], "session_ids": [],
+        }
+
+    def test_stash_content_prepended_ahead_of_success_message(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+
+        with tempfile.TemporaryDirectory() as td, \
+             patch.dict(os.environ, clear=False), \
+             patch.object(brief_substrate, "get_brief", lambda *a, **k: self._brief()), \
+             patch.object(session_substrate, "get_session_point", lambda *a, **k: None), \
+             patch.object(session_substrate, "create_session_point", lambda **k: {"ok": True}), \
+             patch.object(brief_substrate, "append_session_id", lambda *a, **k: {"ok": True}), \
+             patch.object(brief_substrate, "start_brief", lambda *a, **k: {"ok": True}), \
+             patch.object(session_substrate, "active_work_items", lambda *a, **k: []), \
+             patch.object(session_stash_substrate, "pop",
+                          lambda *a, **k: {"content": "was mid-way through the launch.sh wiring."}), \
+             patch.object(sys, "stdin", io.StringIO(
+                 json.dumps({"session_id": "runtime-sid-9", "cwd": td}))):
+            os.environ["BRIEF_ID"] = "podzone/2026-07-02-t043"
+            try:
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = sm.main()
+            finally:
+                os.environ.pop("BRIEF_ID", None)
+            self.assertEqual(rc, 0)
+            ctx = json.loads(buf.getvalue())["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("was mid-way through the launch.sh wiring.", ctx)
+            self.assertIn("Session materialised from brief", ctx)
+            # the stash content leads, the normal success message follows.
+            self.assertLess(
+                ctx.index("was mid-way through"), ctx.index("Session materialised from brief")
+            )
 
 
 class TestTeamLeadNoBriefSkip(unittest.TestCase):

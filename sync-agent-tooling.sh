@@ -185,8 +185,12 @@ DEP_DIRS="primitives"
 # Role-neutral resident tools (PROJ-039/T-056): single files under tools/ that
 # ship to .claude/tools/ for EVERY role. Not a whole-dir DEP_DIRS copy — tools/
 # upstream also carries workstation/Hermes-only scripts (create-brief.py etc.)
-# that must never land in a home repo. Kept byte-identical with scaffold.sh.
-TOOLS_FILES="update-tooling.py wire-update-tooling.py"
+# that must never land in a home repo. session-stash-push.py/session-stash-pop.py
+# (PROJ-039/T-255/T-256/T-257) are the session-stash primitives — post-compact.sh
+# shells out to the push script (design doc §5.1), and an agent invokes either
+# directly for the §5.3 explicit-handoff / manual-inspection path. Kept
+# byte-identical with scaffold.sh.
+TOOLS_FILES="update-tooling.py wire-update-tooling.py session-stash-push.py session-stash-pop.py"
 TOOLS_SRC="${AGENT_TOOLING_DIR}/tools"
 TOOLS_DST="${HOME_REPO}/.claude/tools"
 
