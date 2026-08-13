@@ -110,3 +110,46 @@ def get_stash(brief_id: str, *, api_key: Optional[str] = None) -> Optional[dict]
     return qdrant_http.get_point(
         point_id_for(brief_id), collection=COLLECTION, api_key=api_key
     )
+
+
+def pop(
+    brief_id: str,
+    session_id: str,
+    *,
+    api_key: Optional[str] = None,
+) -> Optional[dict]:
+    """Consume and return the active session-stash entry for `brief_id`, or
+    None if there is nothing to resume (design doc §4).
+
+    No point, or a point whose `status` is not `"active"` (already
+    `"consumed"` by an earlier pop): returns ``None`` — this makes a second
+    consecutive pop call an idempotent no-op (the
+    `resumed_after_finalise` re-arm scenario), never a re-consume of stale
+    content.
+
+    On an active entry: marks it consumed via a read-preserving
+    `set_payload` partial update — `{"status", "consumed_at",
+    "consumed_by_session_id"}` only — mirroring
+    `session_substrate.append_session_stop`'s call shape
+    (`lib/session_substrate.py:311-333`). Never a full-payload `upsert_points`
+    replace, which would null out `content`/`trigger`/`pushed_at`/etc., and
+    never `delete_points` (reserved for T-258's stale-entry sweep, design doc
+    §4). Returns the original active payload — pop's whole purpose is
+    handing that content back to the resuming session.
+    """
+    payload = get_stash(brief_id, api_key=api_key)
+    if not payload or payload.get("status") != "active":
+        return None
+
+    pid = point_id_for(brief_id)
+    qdrant_http.set_payload(
+        {
+            "status": "consumed",
+            "consumed_at": session_substrate._now_iso(),
+            "consumed_by_session_id": session_id,
+        },
+        [pid],
+        collection=COLLECTION,
+        api_key=api_key,
+    )
+    return payload
