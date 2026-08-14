@@ -213,6 +213,92 @@ surface it to Martin rather than force-deleting.
 > then `rmdir ~/sessions/{session-id}` if empty. Default (primary-clone) sessions never
 > need this.
 
+## Step 0d — Fleet-wide open-PR sweep (PLA-279)
+
+Independent of Step 0a/0b, and does **not** replace either — this sweep runs every
+consolidation pass regardless of which sessions concluded, catching stray open PRs that
+Step 0b's session-scoped `pr_refs` review would never see (a PR from a session Step 0a
+never surfaced, or one whose task/session link is broken). Run it once per pass.
+
+**Enumerate the fleet.** Drive this off the live org listing, not
+`planning/repo-catalogue.md` alone — the catalogue is Hermes-maintained by hand and has
+been observed to lag badly (as of this writing it still doesn't list any `academy-*` or
+`home-*` repo, which is exactly the repo class that motivated this brief). Cross-check
+against the catalogue for repos that carry special local-path/setup notes, but the sweep
+itself must be driven by the live list so fleet-wide coverage actually holds:
+
+```bash
+gh repo list PodZonePlatformEngineering --no-archived --limit 300 --json name --jq '.[].name'
+```
+
+For each repo, list open PRs:
+
+```bash
+gh pr list --repo PodZonePlatformEngineering/{repo} --state open \
+  --json number,title,headRefName,commits,createdAt
+```
+
+Skip any PR already covered by Step 0b this pass (its branch traces to a session/task
+`pr_ref` already collected in Step 0a) — this step only needs to classify PRs *outside*
+that set. For each remaining PR:
+
+**Empty-shell pattern** — the PR carries only the single placeholder commit
+`chore: open session branch for {brief_id}` and nothing else (PROJ-039/USS-261 should
+mostly resolve this class at source once merged; this is the fleet-wide backstop for
+whatever it doesn't catch, plus older PRs pre-dating that fix). Close with an
+explanatory comment and delete the branch:
+
+```bash
+gh pr close {number} --repo PodZonePlatformEngineering/{repo} --delete-branch \
+  --comment "Closing — empty-shell session-open placeholder with no further work, found by /consolidate-tasks fleet-wide sweep (PLA-279). No corresponding task or session content."
+```
+
+**Real content, task already complete** — the PR's branch name or commits resolve to a
+`planning.task` row already `status = 'complete'`: merge it (Outcome A, same rule Step 2b
+already applies) — do not require the task to still be `ready_for_review`:
+
+```bash
+gh pr merge {number} --repo PodZonePlatformEngineering/{repo} --merge
+```
+
+**Real content, task status unclear or PR doesn't map to any known task**: flag to
+Martin (Outcome B pattern) — do not merge or close.
+
+Record every disposition for the Step 7 report's "Fleet PR sweep" section.
+
+## Step 0e — Dependabot fleet check (PLA-279)
+
+Same fleet repo list as Step 0d, independent sweep. For each repo, check for open
+Dependabot alerts:
+
+```bash
+gh api repos/PodZonePlatformEngineering/{repo}/dependabot/alerts --jq \
+  '[.[] | select(.state=="open")] | length' 2>/dev/null
+```
+
+If a repo's alerts endpoint 404s or errors (Dependabot not enabled on that repo): skip
+silently — not every repo has it enabled. If the count is nonzero, list the alerts:
+
+```bash
+gh api repos/PodZonePlatformEngineering/{repo}/dependabot/alerts --jq \
+  '.[] | select(.state=="open") | {number, package: .dependency.package.name, severity: .security_advisory.severity, summary: .security_advisory.summary}'
+```
+
+Cross-check for a corresponding open PR (alerts and PRs don't always map 1:1 — verify
+against whichever surfaces more reliably for the live case, per the `gitopsapi`#43/#49
+precedent T-050 tracks):
+
+```bash
+gh pr list --repo PodZonePlatformEngineering/{repo} --state open --search 'label:dependencies' \
+  --json number,title,url
+```
+
+For each alert/PR with no corresponding tracked task (no `planning.task` row referencing
+the repo + package), surface it in the Step 7 report's "Dependabot findings" section:
+repo, alert number, severity, summary, PR link if one exists. **Do not auto-merge
+Dependabot PRs** — major-version bumps need deliberate review (per the existing T-050
+handling); this step's job is surfacing, not disposing.
+
 ## Step 2 — Read and extract from each session's `outcome_note`
 
 For each session from Step 0a, read `outcome_note` (already fetched in the Step 0a query)
@@ -525,6 +611,15 @@ or `gh` is unavailable: skip silently and note in Step 7.
 
 ```
 Sessions ready for consolidation (Step 0a): N concluded
+
+Fleet PR sweep (Step 0d) — N repos scanned, N stray PRs found:
+  closed (empty-shell): {repo}#{number}
+  merged (task already complete): {repo}#{number} — {task-ref}
+  flagged for Martin (unclear/unmapped): {repo}#{number} — {reason}
+
+Dependabot findings (Step 0e) — N repos scanned, N untracked alerts:
+  {repo}#{alert-number} ({severity}) — {summary}
+    PR: {repo}#{pr-number} — {title}   (or "no PR yet")
 
 Sessions refreshed (Step 6):
   Upserted: {N}  ({M} newly transitioned to status: ended)
