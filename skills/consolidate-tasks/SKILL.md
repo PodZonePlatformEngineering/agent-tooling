@@ -429,10 +429,29 @@ since 2026-08-09)** — no more manual ref/CC-counter allocation, no `team-taskl
 **Merge** — draft aligns with an existing pending task:
 1. Append the draft's context as an addendum to the existing brief at
    `team/{recipient}/incoming/{existing-brief}.md`.
-2. If the addendum changes scope, update the task's `summary` via a direct
-   `UPDATE planning.task SET summary = ...` is **not** available as an RPC — flag to Martin
-   rather than hand-editing the row; this is a known gap, not yet decided whether summary
-   edits get their own RPC or stay Team-Lead-via-Neon-MCP.
+2. Fold the same addendum into the task row so a reader checking `summary` alone (the
+   normal path — provenance isn't surfaced anywhere near the task view) doesn't miss it:
+   - **Pure additive context** (the common case — new detail, doesn't change what the task
+     is asking for): **RPC-backed now (PLA-280's `append_task_note`, live since
+     2026-08-14)** — appends a timestamped block onto `summary` directly, no manual
+     escalation needed:
+     ```bash
+     mcp__secrets__secret_run -k podzone_qdrant_apikey -- python3 -c "
+     import sys; sys.path.insert(0, '$HOME/workspace/agent-tooling')
+     from lib import planning_mirror
+     conn = planning_mirror.connect()
+     result = planning_mirror.call_rpc(conn, 'append_task_note', {
+         'p_task_id': '{existing-task-uuid}',
+         'p_note': '{draft context, verbatim or lightly summarised}',
+     })
+     print(result)
+     conn.close()
+     "
+     ```
+   - **Genuine scope change** (the addendum redefines what the task is asking for, not
+     just adds context to it): still flag to Martin rather than hand-editing the row —
+     `append_task_note` only appends, it doesn't let you rewrite the original ask, and
+     that's a judgment call this skill shouldn't make unattended.
 3. Delete the draft file.
 
 **Reject** — out of scope, duplicate, or stale:
