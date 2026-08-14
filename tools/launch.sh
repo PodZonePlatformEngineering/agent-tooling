@@ -356,6 +356,54 @@ finalise_planning_session() {
 }
 
 # ---------------------------------------------------------------------------
+# Empty-shell PR auto-close (PROJ-039/USS-261). BRANCH_NAME is deterministic
+# per brief_id and reused across every retry attempt of the SAME launch.sh
+# invocation (that's what makes the session_limit token-rotation loop above
+# work) — but it is also the branch name ANY future launch.sh invocation for
+# this brief_id would resolve to, including a fresh dispatch called well
+# after this process exits. So a branch that's still empty-shell-only at a
+# given exit point is only safely closeable when that exit point is genuinely
+# terminal for the brief_id, not merely terminal for this one process.
+#
+# `complete` (Brief-Status: complete) is the only such point: the brief
+# itself is done, so nothing will ever dispatch onto BRANCH_NAME again.
+# session_limit (all tokens exhausted), api_error (retry cap exceeded), and
+# other/* are all cases where the brief is explicitly still in_progress or
+# unclassified — a future re-dispatch of this SAME brief_id is exactly the
+# scenario BRANCH_NAME's determinism exists to support, so this sweep must
+# NOT run on any of those paths. Called only from the `complete` case below.
+# ---------------------------------------------------------------------------
+close_empty_shell_prs() {
+  local r d log_lines commit_msg pr_num
+  for r in "${REPOS[@]:-}"; do
+    [[ -n "${r}" ]] || continue
+    d="$(repo_dir_for "${r}")"
+    [[ -d "${d}/.git" ]] || continue
+
+    # Same check the staging loop uses before creating the placeholder commit,
+    # extended to confirm the branch STILL contains only that one commit and
+    # nothing else — real work landing here must never be swept.
+    log_lines="$(git -C "${d}" log origin/main.."${BRANCH_NAME}" --oneline 2>/dev/null || true)"
+    [[ -z "${log_lines}" ]] && continue
+    [[ "$(wc -l <<< "${log_lines}" | tr -d ' ')" == "1" ]] || continue
+    commit_msg="$(git -C "${d}" log -1 --format=%s "${BRANCH_NAME}" 2>/dev/null || true)"
+    [[ "${commit_msg}" == "chore: open session branch for ${BRIEF_ID}" ]] || continue
+    git -C "${d}" diff --quiet origin/main.."${BRANCH_NAME}" 2>/dev/null || continue
+
+    pr_num="$(gh pr list --repo "${ORG}/${r}" --head "${BRANCH_NAME}" --json number --jq '.[0].number' 2>/dev/null || true)"
+    if [[ -n "${pr_num}" ]]; then
+      gh pr close --repo "${ORG}/${r}" "${pr_num}" --delete-branch >/dev/null 2>&1 \
+        && log "empty-shell sweep: closed PR #${pr_num} + deleted branch for ${r}@${BRANCH_NAME}" \
+        || log "WARNING: empty-shell sweep failed to close PR for ${r}@${BRANCH_NAME}"
+    else
+      git -C "${d}" push origin --delete "${BRANCH_NAME}" >/dev/null 2>&1 \
+        && log "empty-shell sweep: no open PR for ${r}@${BRANCH_NAME} — deleted remote branch" \
+        || true
+    fi
+  done
+}
+
+# ---------------------------------------------------------------------------
 # Phase 2 — the run loop (proposal §3.3, classify_exit per §5)
 # ---------------------------------------------------------------------------
 if [[ -n "${TOKEN_INDEX_OVERRIDE}" ]]; then
@@ -446,6 +494,7 @@ print(classify_exit(sys.stdin.read(), exit_code=${EXIT_CODE}))
     complete)
       log "COMPLETE — exiting 0"
       finalise_planning_session
+      close_empty_shell_prs
       git -C "${HOME_REPO_DIR}" checkout main >/dev/null 2>&1 || true
       exit 0
       ;;

@@ -1,0 +1,157 @@
+"""Tests for launch.sh's empty-shell PR auto-close sweep (PROJ-039/USS-261).
+
+Extracts the actual `close_empty_shell_prs` function body from launch.sh (the
+same style test_launch_sh_staging.py uses for the token-rotation cursor
+block) and runs it under real bash against real temp git repos, with `gh`
+stubbed via a fake PATH entry that logs its invocations to a file instead of
+hitting the network. This proves the git-level decision logic — which
+branches get closed and which are left alone — without needing a live GitHub
+remote or `gh` auth.
+
+Covers the brief's minimum bar (item 4): a repo whose branch is STILL only
+the empty-shell placeholder commit gets closed; a repo with real commits on
+top is never touched.
+"""
+
+from __future__ import annotations
+
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+
+def _run(*args, cwd=None, env=None):
+    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=True, env=env)
+
+
+def _git(repo, *args):
+    return _run("git", "-C", str(repo), *args)
+
+
+def _extract_function(name):
+    lines = (REPO_ROOT / "tools" / "launch.sh").read_text().splitlines()
+    start = next(i for i, l in enumerate(lines) if l.strip() == f"{name}() {{")
+    depth = 0
+    for i in range(start, len(lines)):
+        depth += lines[i].count("{") - lines[i].count("}")
+        if depth == 0 and i > start:
+            end = i + 1
+            break
+    return "\n".join(lines[start:end])
+
+
+class _GitFixture(unittest.TestCase):
+    """A bare origin + a clone on main with one commit, in a temp dir."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        self.origin = base / "origin.git"
+        self.clone = base / "clone"
+        _run("git", "init", "--bare", "-b", "main", str(self.origin))
+        _run("git", "clone", str(self.origin), str(self.clone))
+        for k, v in (("user.email", "t@t"), ("user.name", "T"),
+                     ("commit.gpgsign", "false")):
+            _git(self.clone, "config", k, v)
+        (self.clone / "README.md").write_text("hi\n")
+        _git(self.clone, "add", "README.md")
+        _git(self.clone, "commit", "-m", "init")
+        _git(self.clone, "push", "origin", "main")
+
+        # Fake `gh` on PATH: records every invocation to a log file so tests
+        # can assert on close-vs-leave-alone without a real GitHub remote.
+        self.gh_log = base / "gh.log"
+        fake_bin = base / "bin"
+        fake_bin.mkdir()
+        gh_stub = fake_bin / "gh"
+        gh_stub.write_text(f"""#!/usr/bin/env bash
+echo "$@" >> "{self.gh_log}"
+if [[ "$1 $2" == "pr list" ]]; then
+  echo "1234"
+fi
+exit 0
+""")
+        gh_stub.chmod(gh_stub.stat().st_mode | stat.S_IEXEC)
+        self.env = {**__import__("os").environ, "PATH": f"{fake_bin}:{__import__('os').environ['PATH']}"}
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _sweep_script(self, branch_name, brief_id, repos):
+        repos_csv = " ".join(f'"{r}"' for r in repos)
+        return f"""
+set -euo pipefail
+BRANCH_NAME="{branch_name}"
+BRIEF_ID="{brief_id}"
+ORG="TestOrg"
+REPOS=({repos_csv})
+WORKSPACE_DIR="{self.clone.parent}"
+repo_dir_for() {{ echo "${{WORKSPACE_DIR}}/$1"; }}
+log() {{ echo "[log] $*"; }}
+{_extract_function('close_empty_shell_prs')}
+close_empty_shell_prs
+"""
+
+
+class TestEmptyShellSweep(_GitFixture):
+    def test_empty_shell_branch_gets_pr_closed_and_branch_deleted(self):
+        branch = "hephaestus/2026-08-14-uss261-smoke"
+        repo_dir = self.clone.parent / "myrepo"
+        _run("git", "clone", str(self.origin), str(repo_dir))
+        for k, v in (("user.email", "t@t"), ("user.name", "T"),
+                     ("commit.gpgsign", "false")):
+            _git(repo_dir, "config", k, v)
+        _git(repo_dir, "checkout", "-b", branch)
+        _git(repo_dir, "commit", "--allow-empty", "-m",
+             f"chore: open session branch for podzone/2026-08-14-uss261-smoke")
+        _git(repo_dir, "push", "-u", "origin", branch)
+
+        script = self._sweep_script(branch, "podzone/2026-08-14-uss261-smoke", ["myrepo"])
+        _run("bash", "-c", script, env=self.env)
+
+        log_text = self.gh_log.read_text()
+        self.assertIn("pr close --repo TestOrg/myrepo 1234 --delete-branch", log_text)
+
+    def test_branch_with_real_commits_is_never_touched(self):
+        branch = "hephaestus/2026-08-14-uss261-real-work"
+        repo_dir = self.clone.parent / "realrepo"
+        _run("git", "clone", str(self.origin), str(repo_dir))
+        for k, v in (("user.email", "t@t"), ("user.name", "T"),
+                     ("commit.gpgsign", "false")):
+            _git(repo_dir, "config", k, v)
+        _git(repo_dir, "checkout", "-b", branch)
+        _git(repo_dir, "commit", "--allow-empty", "-m",
+             "chore: open session branch for podzone/2026-08-14-uss261-real-work")
+        (repo_dir / "feature.txt").write_text("real work\n")
+        _git(repo_dir, "add", "feature.txt")
+        _git(repo_dir, "commit", "-m", "wip: podzone/2026-08-14-uss261-real-work attempt 1")
+        _git(repo_dir, "push", "-u", "origin", branch)
+
+        script = self._sweep_script(branch, "podzone/2026-08-14-uss261-real-work", ["realrepo"])
+        _run("bash", "-c", script, env=self.env)
+
+        self.assertFalse(self.gh_log.exists() and "pr close" in self.gh_log.read_text())
+
+    def test_branch_with_no_commits_ahead_is_never_touched(self):
+        # Not yet staged / already fully merged — nothing ahead of main at
+        # all is not the empty-shell condition and must be left alone.
+        branch = "hephaestus/2026-08-14-uss261-untouched"
+        repo_dir = self.clone.parent / "untouchedrepo"
+        _run("git", "clone", str(self.origin), str(repo_dir))
+        _git(repo_dir, "checkout", "-b", branch)
+        _git(repo_dir, "push", "-u", "origin", branch)
+
+        script = self._sweep_script(branch, "podzone/2026-08-14-uss261-untouched", ["untouchedrepo"])
+        _run("bash", "-c", script, env=self.env)
+
+        self.assertFalse(self.gh_log.exists() and "pr close" in self.gh_log.read_text())
+
+
+if __name__ == "__main__":
+    unittest.main()
