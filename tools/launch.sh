@@ -436,7 +436,7 @@ while true; do
   # surface any env-var secret injection already carries; never echoed.
   set +e
   LAST_STDOUT="$(cd "${HOME_REPO_DIR}" && BRIEF_ID="${BRIEF_ID}" CLAUDE_CODE_OAUTH_TOKEN="$(python3 -c "import json; print(json.load(open('${TOKENS_FILE}'))[${i}]['token'])")" \
-    claude -p "Hi ${AGENT_CAP}. Continue with the brief. Commit and push all PRs when done. If the brief is now FULLY complete, include a line \`Brief-Status: complete\` in your final response; otherwise it stays in_progress for the next session. If anything needs operator direction you cannot resolve, raise it to the Team Lead with progress so far via your session response, and exit — do not wait." 2>&1)"
+    claude -p "Hi ${AGENT_CAP}. Continue with the brief. Commit and push all PRs when done — pushing is the terminal action for a working-repo PR; do not merge your own PRs (\`gh pr merge\` or marking ready-for-review then merging), that authority stays with the Team Lead. If the brief is now FULLY complete, include a line \`Brief-Status: complete\` in your final response; otherwise it stays in_progress for the next session. If anything needs operator direction you cannot resolve, raise it to the Team Lead with progress so far via your session response, and exit — do not wait." 2>&1)"
   EXIT_CODE=$?
   set -e
 
