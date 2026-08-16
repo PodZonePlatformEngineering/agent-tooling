@@ -21,10 +21,9 @@ safety — these three guards do, at the two lifecycle edges plus a lock:
     same clone refuses cleanly. Cheap insurance for the serial assumption.
 
 Strict where it guards correctness (:func:`preflight` HALTs rather than branch off an
-unsafe clone); best-effort where it must not break teardown (:func:`return_to_main`
-and the linked-worktree escape hatch for the legacy path). Stdlib-only; the only
-``lib/`` imports are :mod:`finalise_ledger` and :mod:`agent_identity` (both closure
-leaves already in the home-runtime manifest).
+unsafe clone); best-effort where it must not break teardown (:func:`return_to_main`).
+Stdlib-only; the only ``lib/`` imports are :mod:`finalise_ledger` and
+:mod:`agent_identity` (both closure leaves already in the home-runtime manifest).
 """
 
 from __future__ import annotations
@@ -154,18 +153,6 @@ def is_session_branch(name: str) -> bool:
 def current_branch(repo_dir: str) -> str:
     """Current branch name, or ``""`` if detached / not a git repo."""
     return _out(_git(repo_dir, "branch", "--show-current"))
-
-
-def is_linked_worktree(repo_dir: str) -> bool:
-    """True if ``repo_dir`` is a *linked* git worktree (the legacy ``~/sessions/``
-    path), not the primary clone. In a linked worktree the per-worktree git dir
-    (``…/.git/worktrees/<name>``) differs from the shared common dir (``…/.git``)."""
-    gd = _out(_git(repo_dir, "rev-parse", "--absolute-git-dir"))
-    gc_raw = _out(_git(repo_dir, "rev-parse", "--git-common-dir"))
-    if not gd or not gc_raw:
-        return False
-    gc = gc_raw if os.path.isabs(gc_raw) else os.path.join(str(repo_dir), gc_raw)
-    return os.path.realpath(gd) != os.path.realpath(gc)
 
 
 def working_tree_dirty(repo_dir: str) -> bool:
@@ -384,9 +371,8 @@ def _all_log_dirt(entries: list[tuple[str, str]]) -> bool:
 
 def return_to_main(repo_dir: str, session_branch: Optional[str] = None) -> dict:
     """Session-end guard: return ``repo_dir`` to a ff'd ``main`` and delete the local
-    session branch (its work is already pushed as a PR). No-op in the legacy linked
-    worktree path — there the primary clone was never branched, and consolidate reaps
-    the worktree. Returns ``{"ok", "disposition", "branch", "reason"}``.
+    session branch (its work is already pushed as a PR). Returns
+    ``{"ok", "disposition", "branch", "reason"}``.
 
     **Residual pure-log dirt tolerance (PROJ-039/T-068, belt-and-braces):** with
     ``logs/*.log`` gitignored again (the finalise ledger and live per-session logs
@@ -421,11 +407,6 @@ def return_to_main(repo_dir: str, session_branch: Optional[str] = None) -> dict:
     result = {"ok": False, "disposition": "noop", "branch": session_branch or "",
               "reason": ""}
     try:
-        if is_linked_worktree(repo_dir):
-            result.update(ok=True, disposition="skipped-worktree",
-                          reason="legacy linked worktree — primary clone untouched")
-            return result
-
         branch = session_branch or current_branch(repo_dir)
         result["branch"] = branch
         if branch == "main" or not branch:

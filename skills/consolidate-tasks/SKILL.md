@@ -207,12 +207,6 @@ python3 ~/workspace/agent-tooling/lib/session_guard.py return-to-main \
 Any clone reported `returned-branch-kept-unpushed` (tip not on a remote) is an anomaly —
 surface it to Martin rather than force-deleting.
 
-> **Legacy worktree option.** For a session launched with the retired
-> `--legacy-worktree` flag, fall back to the old reap —
-> `git -C ~/workspace/{repo} worktree remove ~/sessions/{session-id}/{repo-name} --force`
-> then `rmdir ~/sessions/{session-id}` if empty. Default (primary-clone) sessions never
-> need this.
-
 ## Step 0d — Fleet-wide open-PR sweep (PLA-279)
 
 Independent of Step 0a/0b, and does **not** replace either — this sweep runs every
