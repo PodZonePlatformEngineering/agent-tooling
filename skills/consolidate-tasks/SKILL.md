@@ -266,7 +266,7 @@ Martin (Outcome B pattern) — do not merge or close.
 
 Record every disposition for the Step 7 report's "Fleet PR sweep" section.
 
-## Step 0e — Dependabot fleet check (PLA-279)
+## Step 0e — Dependabot fleet check (PLA-279, extended 2026-08-16 operator directive)
 
 Same fleet repo list as Step 0d, independent sweep. For each repo, check for open
 Dependabot alerts:
@@ -277,27 +277,146 @@ gh api repos/PodZonePlatformEngineering/{repo}/dependabot/alerts --jq \
 ```
 
 If a repo's alerts endpoint 404s or errors (Dependabot not enabled on that repo): skip
-silently — not every repo has it enabled. If the count is nonzero, list the alerts:
+silently — not every repo has it enabled. If the count is nonzero, list the alerts with
+enough detail to act, not just report — patched-version presence is the load-bearing
+field for everything below:
 
 ```bash
 gh api repos/PodZonePlatformEngineering/{repo}/dependabot/alerts --jq \
-  '.[] | select(.state=="open") | {number, package: .dependency.package.name, severity: .security_advisory.severity, summary: .security_advisory.summary}'
+  '.[] | select(.state=="open") | {number, package: .dependency.package.name, manifest: .dependency.manifest_path, current: .security_vulnerability.vulnerable_version_range, patched: .security_vulnerability.first_patched_version.identifier, severity: .security_advisory.severity, summary: .security_advisory.summary}'
 ```
 
-Cross-check for a corresponding open PR (alerts and PRs don't always map 1:1 — verify
-against whichever surfaces more reliably for the live case, per the `gitopsapi`#43/#49
-precedent T-050 tracks):
+Check for a corresponding open Dependabot PR:
 
 ```bash
-gh pr list --repo PodZonePlatformEngineering/{repo} --state open --search 'label:dependencies' \
-  --json number,title,url
+gh pr list --repo PodZonePlatformEngineering/{repo} --state open --author "app/dependabot" \
+  --json number,title,headRefName,createdAt
 ```
 
-For each alert/PR with no corresponding tracked task (no `planning.task` row referencing
-the repo + package), surface it in the Step 7 report's "Dependabot findings" section:
-repo, alert number, severity, summary, PR link if one exists. **Do not auto-merge
-Dependabot PRs** — major-version bumps need deliberate review (per the existing T-050
-handling); this step's job is surfacing, not disposing.
+**Disposition per alert/PR combination:**
+
+1. **Open PR, patch or minor bump** (version jump stays within the same major —
+   read the PR title's `from X.Y.Z to A.B.C`): low risk, mergeable on sight. Check
+   CI (`gh pr view {repo}#{number} --json statusCheckRollup`) — if green or no CI
+   configured, merge:
+   ```bash
+   gh pr merge {number} --repo PodZonePlatformEngineering/{repo} --merge
+   ```
+   Note the merge in the Step 7 report. This mirrors the precedent already set
+   2026-08-13 (22 patch/minor bumps merged on sight across the fleet in one pass).
+
+2. **Open PR, major bump**: never auto-merge — flag for Martin in the Step 7 report
+   exactly as before (the `gitopsapi`#43/#49 precedent, T-050). A major jump can carry
+   real breaking API changes; needs a human read of the changelog against the repo's
+   actual usage before merging.
+
+3. **Open alert, no PR, patched version exists**: Dependabot hasn't auto-opened a
+   remediation PR (common for a transitive dependency pinned only in a lockfile, or
+   a repo whose `dependabot.yml` doesn't cover that ecosystem/schedule). Check
+   whether a task already covers this repo+package (search `planning.task` titles
+   for the package name); if not, create one — **RPC-backed, `create_task`** (same
+   call Step 2c already uses) — scoped to "bump `{package}` to `{patched}`+ in
+   `{repo}`, confirm build/test still pass." Judge risk from the manifest path and
+   bump size the same way as PR review above (lockfile-only/transitive + patch-level
+   ⇒ low risk, safe to phrase the task as mergeable-on-sight once opened; a direct
+   `package.json`/`requirements.txt` entry or anything crossing a major version ⇒
+   note it needs real review, same as case 2).
+
+4. **Open alert, no patched version published yet**: nothing to remediate — do
+   **not** create a task (it would sit permanently unactionable). Note it in the
+   Step 7 report as "no fix available, monitoring" and move on. Re-check on every
+   future pass; it becomes case 3 the moment upstream ships a fix.
+
+**Do not auto-merge a major-version Dependabot PR under any circumstance** — that
+judgment call stays with Martin regardless of how this step otherwise automates the
+patch/minor path.
+
+## Step 0f — GitHub issues sweep (operator directive, 2026-08-16)
+
+Independent of every other step this pass — this is the formalised version of the
+ad hoc issue-triage pattern worked out live across the 2026-08-16 session (which
+processed ~20 issues one at a time; this step is that same judgment, made routine).
+Run it every consolidation pass, fleet-wide, not just against repos a session
+touched.
+
+**Enumerate.** Search org-wide rather than repo-by-repo — cheaper and catches
+issues on any repo, not just ones already on the radar:
+
+```bash
+gh api search/issues -X GET -f q='org:PodZonePlatformEngineering is:issue is:open' \
+  --paginate --jq '.items[] | [.repository_url, .number, .title, .created_at] | @tsv'
+```
+
+For each open issue, read its full body (`gh issue view {number} --repo
+PodZonePlatformEngineering/{repo} --json title,body,labels,comments`) and decide one
+of four dispositions:
+
+**A — Already processed (shipped, or resolved by something already merged).**
+Check the issue's own comment thread first — a prior pass may have already posted
+"tracked as X" or a fix summary without formally closing it (this happens: the
+operator confirms a fix verbally/in-chat rather than on the GitHub thread itself).
+Cross-check the task board (search `planning.task` titles/summaries for the issue's
+own keywords) and recent merged PRs referencing the repo. If resolved, comment with
+a one-paragraph summary of what shipped (PR links, commit SHAs) and close:
+
+```bash
+gh issue comment {number} --repo PodZonePlatformEngineering/{repo} --body "..."
+gh issue close {number} --repo PodZonePlatformEngineering/{repo}
+```
+
+**B — Already tracked, not yet done.** A task already exists covering this exact
+ask (search the board first, same as A) but isn't complete yet. Leave the issue
+open, untouched — don't re-comment on an issue that's already correctly in flight
+unless the task reference itself is missing from the thread (see C's comment step).
+
+**C — New, actionable.** No existing task covers it. Create one — **RPC-backed**
+(`create_task`, same call Step 2c and Step 0e both already use), sized and scoped
+from the issue body the same way any operator-filed brief would be (see
+`agent-tooling/docs/brief-authoring.md`'s sizing rules if the ask is large enough to
+need slicing). Then comment on the issue linking the new task ref, so a reader
+lands on the board row without needing to ask:
+
+```bash
+gh issue comment {number} --repo PodZonePlatformEngineering/{repo} \
+  --body "Tracked as PROJ-XXX/{ref} on the board. Left open until the feature ships."
+```
+
+Do not dispatch a build session as part of this step — creating and linking the
+task is the whole job here; dispatch decisions are a separate, prioritised call
+(the operator's own "run a series of sessions" pattern), not something this sweep
+should do unattended.
+
+**D — Ambiguous or contradictory content.** An issue's title, body, and any attached
+image don't cohere (title says one thing, screenshot shows something unrelated —
+this happened live: an issue titled "Image for the landing page" turned out to
+attach a screenshot of an unrelated tutor conversation). **Do not guess and create
+a task from a misread.** Download and actually view any attached image before
+deciding (`curl -sL -H "Authorization: token $(gh auth token)"
+{user-attachments-url} -o {scratchpad-path}`, then `Read` it) — screenshots carry
+the real signal far more often than issue bodies do on this fleet, and a title
+alone is not enough to size a task from. If genuinely unclear even after viewing
+the attachment, write a `provenance` `type: question` point (Step 4's mechanism)
+rather than fabricating scope, and leave the issue open pending the operator's
+read.
+
+**Live-blocking bug caught mid-sweep.** If an issue describes something actively
+broken right now (not a backlog feature ask), the sweep is not the place to stop
+and debug live — surface it in the Step 7 report and let the operator decide
+whether it's urgent enough to interrupt the sweep for. A live investigation follows
+its own path (root-cause first, live verification before claiming a fix, e.g. the
+2026-08-16 CORS/DNS investigations that turned out to be wrong on first theory and
+were only confirmed by testing the actual live behaviour) — that's out of scope for
+a routine consolidation pass to attempt unattended.
+
+**Verify a screenshot's target before trusting it names the failing thing.** A
+screenshot of a browser Network tab names request URLs and status codes precisely
+— trust those over the issue body's prose. A generic client-side "Failed to
+fetch"/CORS error in DevTools can have a server-side cause (an uncaught exception
+returns headers-less, which browsers report as CORS) or a client-side cause (the
+target hostname itself doesn't resolve, or the CORS allowlist genuinely doesn't
+cover the calling origin) — both surfaced this same session under the same visible
+symptom. Don't commit to one theory without live verification (a captured request,
+a direct `curl` against the suspected endpoint, or both) before proposing a fix.
 
 ## Step 2 — Read and extract from each session's `outcome_note`
 
@@ -636,9 +755,18 @@ Fleet PR sweep (Step 0d) — N repos scanned, N stray PRs found:
   merged (task already complete): {repo}#{number} — {task-ref}
   flagged for Martin (unclear/unmapped): {repo}#{number} — {reason}
 
-Dependabot findings (Step 0e) — N repos scanned, N untracked alerts:
-  {repo}#{alert-number} ({severity}) — {summary}
-    PR: {repo}#{pr-number} — {title}   (or "no PR yet")
+Dependabot sweep (Step 0e) — N repos scanned, N open alerts:
+  merged (patch/minor, low risk): {repo}#{pr-number} — {title}
+  flagged for Martin (major bump): {repo}#{pr-number} — {title}
+  task created (no PR, patched version available): {repo}#{alert-number} → {task-ref}
+  no fix available yet (monitoring, no task): {repo}#{alert-number} ({severity}) — {summary}
+
+Issues sweep (Step 0f) — N repos scanned, N open issues reviewed:
+  closed (already shipped): {repo}#{number} — {one-line summary of what shipped}
+  left open (already tracked): {repo}#{number} → {task-ref}
+  new task created: {repo}#{number} → {task-ref}
+  question raised (ambiguous content): {repo}#{number} — provenance: {provenance_id}
+  flagged live-blocking, not actioned this pass: {repo}#{number} — {reason}
 
 Sessions refreshed (Step 6):
   Upserted: {N}  ({M} newly transitioned to status: ended)
