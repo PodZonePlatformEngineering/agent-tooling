@@ -113,6 +113,9 @@ class TestCreateBrief(unittest.TestCase):
         # point is written with an EMPTY named-vector map ({} — an omitted
         # `vector` key is a Qdrant 400; proven live 2026-07-12), the full body
         # still lands in the payload, and the degradation is announced on stderr.
+        # Since the WF friction fix (2026-08-16), an unset OLLAMA_HOST defaults
+        # to http://localhost:11434 rather than opting out — explicit opt-out
+        # is now OLLAMA_HOST="".
         import io
         from contextlib import redirect_stderr
 
@@ -123,6 +126,7 @@ class TestCreateBrief(unittest.TestCase):
             raise AssertionError("embed_text must not be called with no endpoint")
 
         env = {k: v for k, v in os.environ.items() if k != "OLLAMA_HOST"}
+        env["OLLAMA_HOST"] = ""
         err = io.StringIO()
         with patch.dict(os.environ, env, clear=True), \
              patch.object(qdrant_http, "request_json", self._vector_recorder(rec, captured)), \

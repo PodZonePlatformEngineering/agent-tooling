@@ -22,10 +22,12 @@ vector-less point in a named-vector collection when the upsert carries
 400; proven live against cloud Qdrant 2026-07-12). Vectors are added in
 retrospect by the PROJ-042 enrichment batch job where a semantic-search
 requirement arises. Authoring paths (:func:`create_session_point`, brief
-authoring) are **embed-optional**: they embed only when an embed endpoint is
-explicitly configured (the ``OLLAMA_HOST`` env var, or an explicit
-``ollama_host=`` argument) and otherwise write vector-less points, saying so on
-stderr.
+authoring) are **embed-optional**: they embed via ``OLLAMA_HOST`` (an explicit
+``ollama_host=`` argument, the env var, or — since the WF friction fix,
+2026-08-16 — a ``http://localhost:11434`` default when the env var is unset)
+and otherwise (env var explicitly set empty) write vector-less points, saying
+so on stderr. An unreachable endpoint also degrades to vector-less rather than
+raising (:func:`maybe_embed`).
 
 The point ID is ``uuid5(NAMESPACE_DNS, session_id)`` — identical to
 ``lib/sessions_upsert.point_id_for`` — so the per-Stop / session-end target is
@@ -37,6 +39,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import urllib.error
 import urllib.request
 import uuid
 from datetime import datetime, timezone
@@ -107,24 +110,37 @@ def _now_iso() -> str:
 
 
 def embed_endpoint() -> Optional[str]:
-    """The explicitly configured embed endpoint (``OLLAMA_HOST`` env), or None.
+    """The configured embed endpoint (``OLLAMA_HOST`` env), defaulting to
+    ``http://localhost:11434`` when unset.
 
-    No default host (PROJ-041/T-002): embedding is opt-in. Absent env means the
-    authoring paths write vector-less points (:func:`maybe_embed`); nothing on a
-    hook path calls an embed at all.
+    PROJ-041/T-002 originally made embedding opt-in with no default, on the
+    assumption that an explicit unset OLLAMA_HOST reliably signalled "no
+    Ollama available here." In practice (WF friction, 2026-08-16) Ollama is
+    running locally on essentially every workstation and dispatch sandbox,
+    but OLLAMA_HOST is rarely actually exported — so nearly every brief/
+    provenance/session write went vector-less by default, silently, with no
+    enrichment job ever built to backfill it (PROJ-042 is unbuilt). Defaulting
+    to localhost here matches the fallback ``primitives/ollama/embed-text.sh``
+    already used. A genuinely embed-less environment can still opt out with
+    ``OLLAMA_HOST=""`` or by passing ``ollama_host=""`` explicitly.
     """
-    return os.environ.get("OLLAMA_HOST") or None
+    host = os.environ.get("OLLAMA_HOST")
+    if host is None:
+        return "http://localhost:11434"
+    return host or None
 
 
 def embed_text(text: str, *, ollama_host: Optional[str] = None,
                timeout: float = 30.0) -> list[float]:
     """Embed ``text`` with nomic-embed-text; returns a 768-dim vector.
 
-    Requires an explicitly configured endpoint — ``ollama_host`` argument or the
-    ``OLLAMA_HOST`` env var (:func:`embed_endpoint`); raises RuntimeError when
-    neither is set (no localhost default since PROJ-041/T-002). Stdlib-only
-    (urllib) to match qdrant_http — no `requests` dependency. Raises on
-    transport/decoding failure.
+    Requires a resolvable endpoint — ``ollama_host`` argument or
+    :func:`embed_endpoint` (which defaults to ``http://localhost:11434`` when
+    ``OLLAMA_HOST`` is unset); raises RuntimeError when both resolve empty
+    (``OLLAMA_HOST=""`` explicit opt-out). Stdlib-only (urllib) to match
+    qdrant_http — no `requests` dependency. Raises on transport/decoding
+    failure — callers wanting graceful degradation on an unreachable endpoint
+    should go through :func:`maybe_embed`, which catches that case.
     """
     host = ollama_host or embed_endpoint()
     if not host:
@@ -166,7 +182,21 @@ def maybe_embed(text: str, *, label: str = "embed",
             file=sys.stderr,
         )
         return None
-    return embed_text(_bound_embed_input(text, label=label), ollama_host=host)
+    try:
+        return embed_text(_bound_embed_input(text, label=label), ollama_host=host)
+    except (urllib.error.URLError, OSError) as exc:
+        # host came from embed_endpoint()'s implicit localhost default in most
+        # cases now (WF friction, 2026-08-16) — a genuinely unreachable
+        # endpoint should degrade to vector-less, not hard-crash the caller,
+        # since "unreachable" no longer implies "the operator explicitly
+        # pointed us somewhere and it's broken."
+        print(
+            f"[session_substrate] {label}: embed endpoint {host} unreachable "
+            f"({exc}) — writing vector-less; the PROJ-042 enrichment job "
+            f"embeds in retrospect.",
+            file=sys.stderr,
+        )
+        return None
 
 
 # --------------------------------------------------------------------------- #

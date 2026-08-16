@@ -80,8 +80,14 @@ def _with_endpoint():
 
 
 def _without_endpoint():
-    """Context: no embed endpoint anywhere — the trainer-workstation shape."""
+    """Context: explicit embed opt-out (OLLAMA_HOST=""). Since the WF friction
+    fix (2026-08-16) a merely-unset OLLAMA_HOST now defaults to
+    http://localhost:11434 (embed_endpoint()) rather than opting out, so this
+    helper sets it empty explicitly to keep the "no endpoint anywhere"
+    scenario deterministic regardless of what's running on the test executor.
+    """
     env = {k: v for k, v in os.environ.items() if k != "OLLAMA_HOST"}
+    env["OLLAMA_HOST"] = ""
     return patch.dict(os.environ, env, clear=True)
 
 
@@ -426,6 +432,48 @@ class TestFindByWorkItem(unittest.TestCase):
         must = captured["payload"]["filter"]["must"]
         keys = {m["key"] for m in must}
         self.assertEqual(keys, {"point_type", "agent", "work_item"})
+
+
+class TestEmbedEndpointDefault(unittest.TestCase):
+    """WF friction fix (2026-08-16): an unset OLLAMA_HOST now defaults to
+    http://localhost:11434 instead of opting out of embedding entirely, since
+    Ollama is present on essentially every workstation/dispatch sandbox but
+    the env var itself is rarely actually exported."""
+
+    def test_unset_defaults_to_localhost(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "OLLAMA_HOST"}
+        with patch.dict(os.environ, env, clear=True):
+            self.assertEqual(session_substrate.embed_endpoint(), "http://localhost:11434")
+
+    def test_explicit_empty_still_opts_out(self) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "OLLAMA_HOST"}
+        env["OLLAMA_HOST"] = ""
+        with patch.dict(os.environ, env, clear=True):
+            self.assertIsNone(session_substrate.embed_endpoint())
+
+    def test_explicit_value_still_wins(self) -> None:
+        with _with_endpoint():
+            self.assertEqual(session_substrate.embed_endpoint(), FAKE_OLLAMA)
+
+    def test_maybe_embed_degrades_gracefully_on_unreachable_default(self) -> None:
+        """An unreachable localhost default must not crash the caller — it was
+        never an explicit operator choice, so a connection failure degrades to
+        vector-less exactly like the no-endpoint-configured case, not a raise."""
+        import io
+        import urllib.error
+        from contextlib import redirect_stderr
+
+        def refuse(*a, **k):
+            raise urllib.error.URLError("Connection refused")
+
+        env = {k: v for k, v in os.environ.items() if k != "OLLAMA_HOST"}
+        err = io.StringIO()
+        with patch.dict(os.environ, env, clear=True), \
+             patch.object(session_substrate, "embed_text", refuse), \
+             redirect_stderr(err):
+            result = session_substrate.maybe_embed("some text", label="test")
+        self.assertIsNone(result)
+        self.assertIn("unreachable", err.getvalue())
 
 
 if __name__ == "__main__":

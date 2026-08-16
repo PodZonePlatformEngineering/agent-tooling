@@ -108,6 +108,9 @@ class TestUpsertResult(unittest.TestCase):
         self.assertEqual(rec.payload["body"], "# Session result\n\nDone.")
 
     def test_no_embed_endpoint_writes_vector_less_with_stderr_note(self) -> None:
+        # Since the WF friction fix (2026-08-16), an unset OLLAMA_HOST defaults
+        # to http://localhost:11434 rather than opting out — explicit opt-out
+        # is now OLLAMA_HOST="".
         import io
         from contextlib import redirect_stderr
 
@@ -117,6 +120,7 @@ class TestUpsertResult(unittest.TestCase):
             raise AssertionError("embed_text must not be called with no endpoint")
 
         env = {k: v for k, v in os.environ.items() if k != "OLLAMA_HOST"}
+        env["OLLAMA_HOST"] = ""
         err = io.StringIO()
         with patch.dict(os.environ, env, clear=True), \
              patch.object(qdrant_http, "request_json", rec), \

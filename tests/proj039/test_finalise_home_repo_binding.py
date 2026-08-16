@@ -232,7 +232,11 @@ class TestFinaliseHomeRepoBinding(unittest.TestCase):
         self._patch(qdrant_http, "request_json", recorder)
         self._patch(finalise_ledger, "record_step",
                     lambda sid, name, status: steps.__setitem__(name, status))
-        os.environ.pop("OLLAMA_HOST", None)
+        # Explicit opt-out, not just unset: since the WF friction fix
+        # (2026-08-16) an unset OLLAMA_HOST defaults to localhost:11434,
+        # which would make this test's outcome depend on whether Ollama
+        # happens to be running on the executor.
+        os.environ["OLLAMA_HOST"] = ""
         os.environ.setdefault("PODZONE_QDRANT_APIKEY", "test-key")
 
         self.assertEqual(self._drive(str(self.home)), 0)
