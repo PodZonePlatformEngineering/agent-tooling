@@ -31,8 +31,18 @@ except ImportError:
     yaml = None
 
 OLLAMA_URL = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-QDRANT_URL = os.environ.get("AGENTSONLY_QDRANT_URL", "http://qdrant.agenticflows.co.uk:8080")
-COLLECTION = "agent-workflow"
+# Fixed 2026-08-16 (WF-005 follow-on): this tool pointed at a decommissioned
+# self-hosted Qdrant host + a collection ("agent-workflow") that never
+# existed on the live cloud instance — every prior run 403'd silently on
+# submit and no one-shot ever actually landed (0 points found in the correct
+# "one_shots" collection, which was provisioned with a matching payload
+# schema and just never written to). Now points at the same cloud instance
+# every other agent-tooling substrate module uses.
+QDRANT_URL = os.environ.get(
+    "PODZONE_QDRANT_URL",
+    "https://2dd1f0b8-5cf1-4caf-bc96-2b4811251f4c.eu-west-2-0.aws.cloud.qdrant.io",
+)
+COLLECTION = "one_shots"
 EMBED_MODEL = "nomic-embed-text"
 TIMEOUT = 120
 
@@ -48,16 +58,26 @@ def _json_dumps(data: dict) -> bytes:
     return json.dumps(data, default=default).encode()
 
 
+def _qdrant_headers():
+    headers = {"Content-Type": "application/json"}
+    key = os.environ.get("PODZONE_QDRANT_APIKEY", "")
+    if key:
+        headers["api-key"] = key
+    return headers
+
+
 def http_put(url, data):
     body = _json_dumps(data)
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="PUT")
+    req = urllib.request.Request(url, data=body, headers=_qdrant_headers(), method="PUT")
     with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
         return json.loads(r.read())
 
 
 def http_post(url, data):
     body = _json_dumps(data)
-    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    # Ollama's /api/embeddings needs no api-key; Qdrant calls do — harmless
+    # either way since Ollama ignores an unrecognised header.
+    req = urllib.request.Request(url, data=body, headers=_qdrant_headers(), method="POST")
     with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
         return json.loads(r.read())
 
