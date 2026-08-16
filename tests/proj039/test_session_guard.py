@@ -6,8 +6,7 @@ behaviour is proven end-to-end, not mocked:
 
   * preflight: clean-on-main → ready; dirty → halt; leftover session branch → halt
     unless the finalise ledger shows the clone's last session finalised → recovered.
-  * return_to_main: ff main + delete pushed session branch; keep an unpushed branch;
-    skip a linked worktree (legacy path).
+  * return_to_main: ff main + delete pushed session branch; keep an unpushed branch.
   * SessionLock: refuse a live holder, steal a stale lock, idempotent same-sid.
 """
 
@@ -82,15 +81,6 @@ class TestBranchHelpers(_GitFixture):
     def test_ds_store_does_not_count_as_dirty(self) -> None:
         (self.clone / ".DS_Store").write_text("junk")
         self.assertFalse(session_guard.working_tree_dirty(self.clone))
-
-    def test_primary_clone_is_not_linked_worktree(self) -> None:
-        self.assertFalse(session_guard.is_linked_worktree(self.clone))
-
-    def test_linked_worktree_detected(self) -> None:
-        wt = Path(self._tmp.name) / "wt"
-        _git(self.clone, "worktree", "add", str(wt), "-b", "session/x-2026-07-03-t")
-        self.assertTrue(session_guard.is_linked_worktree(wt))
-
 
 class TestPreflight(_GitFixture):
     def test_clean_on_main_is_ready(self) -> None:
@@ -169,16 +159,6 @@ class TestReturnToMain(_GitFixture):
         res = session_guard.return_to_main(str(self.clone))
         self.assertTrue(res["ok"])
         self.assertEqual(res["disposition"], "already-main")
-
-    def test_linked_worktree_skipped(self) -> None:
-        wt = Path(self._tmp.name) / "wt"
-        _git(self.clone, "worktree", "add", str(wt), "-b", "session/x-2026-07-03-t")
-        res = session_guard.return_to_main(str(wt))
-        self.assertTrue(res["ok"])
-        self.assertEqual(res["disposition"], "skipped-worktree")
-        # The worktree branch is untouched (legacy path reaps it elsewhere).
-        self.assertEqual(session_guard.current_branch(wt), "session/x-2026-07-03-t")
-
 
 class TestReturnToMainLedgerLifecycle(_GitFixture):
     """PROJ-039/T-068 — the REAL lifecycle regression the T-062/T-063 attempts missed.
