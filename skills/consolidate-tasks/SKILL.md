@@ -418,7 +418,75 @@ cover the calling origin) — both surfaced this same session under the same vis
 symptom. Don't commit to one theory without live verification (a captured request,
 a direct `curl` against the suspected endpoint, or both) before proposing a fix.
 
-## Step 2 — Read and extract from each session's `outcome_note`
+## Step 0g — Board-vs-reality reverse check (operator directive, 2026-08-16)
+
+Step 0f checks GitHub issues against the board (is a real-world signal reflected in a
+task?). This step checks the **other direction**: is an open task still describing
+reality? The board accumulates tasks faster than it sheds them — a task can go stale
+not because the work finished, but because the project it belongs to got parked, the
+approach it assumed was abandoned, or the thing it was blocked on turns out to be
+permanently (not temporarily) unavailable. Nobody circles back to close those on their
+own.
+
+**This step never closes or parks anything itself.** The operator manages the backlog
+down deliberately and wants to make that call themselves, one recommendation at a
+time — this step's entire job is surfacing good candidates, not disposing of them.
+Every finding becomes a **task**, not just a report line, so it survives past the
+scrollback and sits in the operator's own review queue at their pace:
+
+```bash
+mcp__secrets__secret_run -k podzone_qdrant_apikey -- python3 -c "
+import sys; sys.path.insert(0, '$HOME/workspace/agent-tooling')
+from lib import planning_mirror
+conn = planning_mirror.connect()
+result = planning_mirror.call_rpc(conn, 'create_task', {
+    'project_id': '{project-uuid}',  # the affected task's OWN project — verify the
+                                       # uuid against ref_prefix, not title text; a
+                                       # project_id mismatch has happened live before
+    'title': 'RECOMMEND: {park|close} {N} tasks — {one-line reason}',
+    'summary': '{list every candidate task ref with its own one-line reason, plus which are already correctly disposed and need no action}',
+    'owner': 'hermes',
+    'status': 'ready',
+})
+print(result)
+conn.close()
+"
+```
+
+**Signal sources, cheapest first:**
+
+1. **A recorded parked/stale decision.** Query `provenance` for `type='decision'`
+   points tagged with a project ref (the mechanism Step 4 already writes to — this
+   step is often triggered by the operator stating a decision live, same as the
+   2026-08-16 gitopsapi case: "no on-prem hardware, parked"). Cross-reference the
+   decision's tagged project(s) against currently-open tasks in those projects
+   (`status NOT IN ('complete','closed','parked')`). Every open task whose own text
+   names the same blocker the decision describes (search task titles/summaries for
+   the blocker's keyword — "saturn", "on-prem", whatever the decision names) is a
+   candidate; note ones already `status='parked'` as "already correctly disposed,
+   no action" rather than re-flagging them.
+2. **A closed GitHub issue with a still-open task.** The inverse of Step 0f's own
+   check — if Step 0f found an issue already resolved and closed it, but the task
+   it maps to is still `ready`/`in_progress`, that's a direct signal the task
+   should have closed alongside it. This should be rare if Step 0f and Step 3 stay
+   disciplined about closing the task at the same time as the issue, but check for
+   drift anyway — a task closed by hand outside this skill, or an issue closed by
+   the operator directly on GitHub without a matching board update, both produce
+   this gap.
+3. **Long-dormant repo, task still `ready`.** A task's repo hasn't had a commit or
+   merged PR in a long time (rough threshold: no activity in 60+ days — use
+   judgement, a genuinely quiet-but-still-wanted repo isn't automatically stale) AND
+   the task has sat `ready` (never dispatched) the whole time. Lower-confidence
+   signal than 1 or 2 — worth a recommendation, not a strong claim; phrase the
+   task's reason as a question ("still wanted, or has this quietly died?") rather
+   than an assertion.
+
+**One recommendation task per coherent group, not one per candidate.** The
+gitopsapi case (7 candidate tasks, one root cause) shipped as a single recommendation
+listing all seven with individual one-line reasons — that's the right granularity:
+enough for the operator to scan and disposition in one sitting, not seven near-
+duplicate rows to click through separately. Group by shared root cause, not by
+project, when a single decision (like a parked project) spans several projects.
 
 For each session from Step 0a, read `outcome_note` (already fetched in the Step 0a query)
 and extract:
@@ -767,6 +835,10 @@ Issues sweep (Step 0f) — N repos scanned, N open issues reviewed:
   new task created: {repo}#{number} → {task-ref}
   question raised (ambiguous content): {repo}#{number} — provenance: {provenance_id}
   flagged live-blocking, not actioned this pass: {repo}#{number} — {reason}
+
+Board-vs-reality recommendations (Step 0g) — N candidates found:
+  {task-ref} → {new-recommendation-task-ref} — {one-line reason}
+  (or "None this pass.")
 
 Sessions refreshed (Step 6):
   Upserted: {N}  ({M} newly transitioned to status: ended)
