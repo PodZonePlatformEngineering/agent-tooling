@@ -52,6 +52,20 @@ Run this before authoring any headless brief:
    from a wrapper-launched brief's prompt furniture — the minimal prompt stays
    `"Hi {Agent}. Continue with the brief."`, nothing about git.
 
+## Academy repos: QA-first (operator directive, 2026-08-18)
+
+Any brief touching `academy-frontend`, `academy-api`, `academy-admin`/DB, or
+`academy-web` must route the work through QA before production: reproduce
+(bugs) or build (features/content/anything else) against the `qa` Neon
+branch and QA app instances first, run a full regression pass there, and
+only then promote to production. Full rule, current regression-scope
+definition, and the DB-migration gap this exists to close (a migration
+applied to `main` does NOT automatically reach `qa` — both branches need it
+explicitly until `ACP-251`'s re-parent job is running on schedule) —
+`podzoneTeam/planning/projects/PROJ-011-academy/qa-first-change-workflow.md`.
+Name this explicitly in the brief's Objective/Order-of-work sections for any
+academy-* task, don't assume the agent already knows it.
+
 ## Brief skeleton conventions
 
 Every headless brief carries these sections (see any
