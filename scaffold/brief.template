@@ -56,6 +56,9 @@ agent-tooling/docs/brief-authoring.md § "The extraction-authorisation clause".
 - Serial simple-repo mode; commit early and often so a limit-stop self-banks.
 - Raise-to-lead-and-exit if something needs operator direction — do not wait.
 - `Brief-Status: complete` in the final response is the deterministic completion signal.
+- Shipping a new/changed user-visible `academy-frontend` flow: add or update its
+  Playwright spec (`e2e/`) as part of this brief's own scope (PROJ-011/ACP-253) —
+  don't defer it to a follow-up.
 
 ## Definition of done
 

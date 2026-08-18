@@ -66,6 +66,16 @@ explicitly until `ACP-251`'s re-parent job is running on schedule) —
 Name this explicitly in the brief's Objective/Order-of-work sections for any
 academy-* task, don't assume the agent already knows it.
 
+**Playwright spec convention (PROJ-011/ACP-253).** Any brief shipping a new or
+changed user-visible flow in `academy-frontend` includes "add or update the
+covering Playwright spec (`e2e/`)" as an explicit scope item — a convention
+change to the brief, per the `acp249-qa-environment-proposal.md` §1.3
+recommendation, not a separate recurring task. Run it against the QA app
+instance (`academy-frontend-qa.pages.dev`; `npm run test:e2e`), not
+production. This is currently scoped to `academy-frontend` only —
+`academy-web` doesn't have the suite yet (a future follow-up, not this
+convention's job to extend silently).
+
 ## Brief skeleton conventions
 
 Every headless brief carries these sections (see any
