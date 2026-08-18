@@ -391,6 +391,12 @@ _RPC_PARAMS = {
         "status",
         "cc_ref",
     ],
+    # PLA-283 (2026-08-18): both were unreachable via call_rpc() until now —
+    # missing GRANT EXECUTE (planner-db migration 017), not a whitelist gap
+    # alone, but adding them here too closes the loop so this module's own
+    # callers can actually use them, not just a raw-connection smoke test.
+    "set_task_status": ["task_id", "status", "reason"],
+    "append_task_note": ["task_id", "note"],
 }
 
 
