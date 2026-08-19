@@ -1,11 +1,15 @@
-"""register-planning-session.py's work-item ref validator (PLA-287).
+"""register-planning-session.py's work-item ref validator (PLA-287, PLA-289).
 
 Covers `_resolve_task_ids()` against a fake DB-API cursor (no live Neon
 connection needed):
   * legacy `PROJ-XXX/T-YYY` resolution (unchanged behaviour)
-  * short `{PREFIX}-{NNN}` resolution (new, PLA-287)
+  * short `{PREFIX}-{NNN}` resolution (PLA-287)
   * the genuine-error case — a ref matching neither shape raises a clear
     message before any query is even issued
+  * legacy shape falling back to `former_ref` on a `ref` miss, and still
+    raising when neither `ref` nor `former_ref` resolve (PLA-289, design
+    doc §2.2 — the short unqualified path deliberately does NOT get this
+    fallback)
 """
 
 from __future__ import annotations
@@ -70,6 +74,23 @@ class ResolveTaskIdsTest(unittest.TestCase):
         conn, cur = _fake_conn(None)
         with self.assertRaisesRegex(ValueError, "no planning.task found"):
             register_planning_session._resolve_task_ids(conn, ["PLA-999"])
+
+    def test_legacy_shape_falls_back_to_former_ref(self):
+        conn, cur = _fake_conn(None)
+        cur.fetchone.side_effect = [None, ("33333333-3333-3333-3333-333333333333",)]
+        ids = register_planning_session._resolve_task_ids(conn, ["PROJ-029/T-247"])
+        self.assertEqual(ids, ["33333333-3333-3333-3333-333333333333"])
+        self.assertEqual(cur.execute.call_count, 2)
+        fallback_sql, fallback_params = cur.execute.call_args_list[1][0]
+        self.assertIn("t.former_ref", fallback_sql)
+        self.assertEqual(fallback_params, ("PROJ-029", "T-247"))
+
+    def test_legacy_shape_raises_when_ref_and_former_ref_both_miss(self):
+        conn, cur = _fake_conn(None)
+        cur.fetchone.side_effect = [None, None]
+        with self.assertRaisesRegex(ValueError, "no planning.task found"):
+            register_planning_session._resolve_task_ids(conn, ["PROJ-029/T-999"])
+        self.assertEqual(cur.execute.call_count, 2)
 
 
 if __name__ == "__main__":
