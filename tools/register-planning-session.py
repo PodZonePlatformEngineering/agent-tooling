@@ -7,11 +7,20 @@ GUI reads) via the `register_session()` RPC. This is orthogonal to the Qdrant
 (brief authoring, session_ids[] append) — this script only makes the
 dispatch visible on the board.
 
-Resolves each `--work-item PROJ-XXX/T-YYY` ref to a `planning.task.id` UUID
-via a direct lookup (register_session's own p_task_ids param is `uuid[]`, not
-refs). If no `--work-item` is given, reads the brief's own `work_items[]`
-payload (authored by create-brief.py --work-item) instead of requiring the
-caller to repeat it.
+Resolves each `--work-item` ref to a `planning.task.id` UUID via a direct
+lookup (register_session's own p_task_ids param is `uuid[]`, not refs).
+Accepts two ref shapes:
+  * legacy `PROJ-XXX/T-YYY` — resolved via `project.ref = PROJ-XXX AND
+    task.ref = T-YYY` (task.ref alone is only unique per-project for this
+    shape).
+  * short `{PREFIX}-{NNN}` (no slash, the default shape since the
+    2026-08-14 cutover, PROJ-029/T-278) — resolved via a direct
+    `task.ref = {PREFIX}-{NNN}` lookup. Confirmed live (PLA-287) that this
+    shape is globally unique across the board: no two tasks share a
+    non-legacy short ref.
+If no `--work-item` is given, reads the brief's own `work_items[]` payload
+(authored by create-brief.py --work-item) instead of requiring the caller
+to repeat it.
 
 Best-effort by design (matching conclude-planning-session.py's own contract,
 T-019): if `PLANNING_DATABASE_URL` is unset, this exits 0 with a note on
@@ -32,6 +41,7 @@ caller can capture it: `SID=$(python3 register-planning-session.py ...)`.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -40,22 +50,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import brief_substrate, planning_mirror  # noqa: E402
 
 
+_SHORT_REF_RE = re.compile(r"^[A-Z]+-[0-9]+$")
+
+
 def _resolve_task_ids(conn, work_items: list[str]) -> list[str]:
     ids: list[str] = []
     with conn.cursor() as cur:
         for ref in work_items:
-            if "/" not in ref:
+            if "/" in ref:
+                project_ref, task_ref = ref.split("/", 1)
+                cur.execute(
+                    "SELECT t.id FROM planning.task t "
+                    "JOIN planning.project p ON p.id = t.project_id "
+                    "WHERE p.ref = %s AND t.ref = %s",
+                    (project_ref, task_ref),
+                )
+            elif _SHORT_REF_RE.match(ref):
+                cur.execute(
+                    "SELECT t.id FROM planning.task t WHERE t.ref = %s",
+                    (ref,),
+                )
+            else:
                 raise ValueError(
                     f"register-planning-session: work-item ref {ref!r} must be "
-                    "PROJ-XXX/T-YYY (project ref / task ref)"
+                    "either legacy PROJ-XXX/T-YYY (project ref / task ref) or "
+                    "short {PREFIX}-{NNN} (e.g. PLA-287)"
                 )
-            project_ref, task_ref = ref.split("/", 1)
-            cur.execute(
-                "SELECT t.id FROM planning.task t "
-                "JOIN planning.project p ON p.id = t.project_id "
-                "WHERE p.ref = %s AND t.ref = %s",
-                (project_ref, task_ref),
-            )
             row = cur.fetchone()
             if row is None:
                 raise ValueError(
