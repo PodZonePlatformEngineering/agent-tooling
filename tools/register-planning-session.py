@@ -65,6 +65,28 @@ def _resolve_task_ids(conn, work_items: list[str]) -> list[str]:
                     "WHERE p.ref = %s AND t.ref = %s",
                     (project_ref, task_ref),
                 )
+                row = cur.fetchone()
+                if row is None:
+                    # PLA-288/PLA-289 legacy-ref backfill fallback: the
+                    # caller already supplied the project half, so
+                    # disambiguation is done — a former_ref match here is
+                    # safe even though former_ref alone isn't globally
+                    # unique (design doc §2.2).
+                    cur.execute(
+                        "SELECT t.id FROM planning.task t "
+                        "JOIN planning.project p ON p.id = t.project_id "
+                        "WHERE p.ref = %s AND t.former_ref = %s",
+                        (project_ref, task_ref),
+                    )
+                    row = cur.fetchone()
+                if row is None:
+                    raise ValueError(
+                        f"register-planning-session: no planning.task found for "
+                        f"{ref!r} — create it first (planning.create_task via "
+                        f"/create-task) before registering a session against it"
+                    )
+                ids.append(str(row[0]))
+                continue
             elif _SHORT_REF_RE.match(ref):
                 cur.execute(
                     "SELECT t.id FROM planning.task t WHERE t.ref = %s",
