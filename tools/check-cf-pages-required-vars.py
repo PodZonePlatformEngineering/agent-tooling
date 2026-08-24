@@ -43,9 +43,16 @@ import urllib.request
 REQUIRED_VARS: dict[str, list[str]] = {
     "academy-web-vibe": ["NEON_DATABASE_URL", "PODZONE_QDRANT_APIKEY", "STACK_PROJECT_ID"],
     "academy-web-podzone": ["NEON_DATABASE_URL", "PODZONE_QDRANT_APIKEY", "STACK_PROJECT_ID"],
-    "academy-frontend": ["NEON_DATABASE_URL", "PODZONE_QDRANT_APIKEY", "STACK_PROJECT_ID"],
-    "academy-frontend-vibe": ["NEON_DATABASE_URL", "PODZONE_QDRANT_APIKEY", "STACK_PROJECT_ID"],
-    "academy-frontend-qa": ["NEON_DATABASE_URL", "PODZONE_QDRANT_APIKEY", "STACK_PROJECT_ID"],
+    # ACP-412 (2026-08-24): academy-web-qa stands up a real assessment backend
+    # for QA (own Neon/Qdrant/Stack Auth wiring), matching the -vibe/-podzone
+    # pattern above.
+    "academy-web-qa": ["NEON_DATABASE_URL", "PODZONE_QDRANT_APIKEY", "STACK_PROJECT_ID"],
+    # ACP-412 (2026-08-24): academy-frontend/-vibe/-qa's own duplicated
+    # assessment-backend Functions (and their NEON_DATABASE_URL/
+    # PODZONE_QDRANT_APIKEY/STACK_PROJECT_ID secrets) were deleted as dead
+    # code — all three now call out to a dedicated academy-web-* deployment
+    # instead (see above), so these three entries are deliberately absent
+    # from this manifest, not an oversight.
     "academy-api": ["NEON_DATABASE_URL", "PODZONE_QDRANT_APIKEY", "STACK_PROJECT_ID"],
     "academy-api-qa": ["NEON_DATABASE_URL", "PODZONE_QDRANT_APIKEY", "STACK_PROJECT_ID"],
 }
