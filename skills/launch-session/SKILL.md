@@ -39,10 +39,19 @@ for an agent session and registers it so the Team Lead can track it during conso
 > `--token-index N` to force a specific starting token for a deliberately staggered
 > parallel launch.
 >
-> **Registration prerequisite:** `launch.sh` never calls `planning.register_session()`
-> itself — a `launch.sh` dispatch is registered on the board today only if the Team Lead
-> runs Step 7 manually, before calling `launch.sh` (see `/consolidate-tasks` Step 0a).
-> Register the dispatch first if you want it visible on the plannerapi board.
+> **Registration is automatic (T-258) — do not also register manually.** `launch.sh`
+> calls `register-planning-session.py` itself once `PLANNING_DATABASE_URL` is set (best-effort,
+> logged as `registered on board: session {uuid}`; a missing/unreachable DB never aborts the
+> launch, board visibility is never a gate). This replaced an earlier manual pre-registration
+> step this doc used to instruct the Team Lead to run before every `launch.sh` call — that
+> step is now redundant and must be skipped: calling `register_session` yourself before
+> `launch.sh` creates a second, orphaned `planning.session` row (stuck at `dispatching`
+> forever, since nothing ever concludes it) alongside the one `launch.sh` creates for the
+> same dispatch — confirmed live, 2026-08-25, after this stale text caused exactly that on
+> three separate dispatches in one session. If you need a session registered before
+> `launch.sh` runs at all (rare — e.g. to reference the session id in something else first),
+> that's still possible via Step 7 below, but it is no longer the default/expected path for
+> a `launch.sh` dispatch.
 >
 > The manual Steps 3–8 below remain the documented reference for what the wrapper
 > automates, and are still the path for **interactive** (team-lead / high-uncertainty)
