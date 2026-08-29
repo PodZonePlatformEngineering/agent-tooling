@@ -79,9 +79,23 @@ REPOS_CSV=""
 API_RETRY_CAP=3
 API_RETRY_BACKOFF_S=30
 BRIEF_ID=""
+# PROJ-039 (2026-08-29 incident): every working-repo pull/branch/diff-base
+# below used to hardcode `main` unconditionally. For any repo under the
+# "QA only" discipline — main tracks production, qa accumulates the actual
+# in-flight work — main falls further behind qa with every merge, so every
+# new session branch started stale relative to the repo's real target,
+# sometimes badly (migration-number collisions, merge conflicts against
+# work already on qa). Hit at least 6 times in one session across
+# academy-admin/vibecreations-db/academy-api/academy-frontend before this
+# flag existed. `--base-branch qa` makes a QA-only dispatch branch/pull/
+# diff against the real target instead — default stays `main` so every
+# existing non-QA-only dispatch is unaffected. This does NOT change the
+# home repo's own trunk lifecycle (still always `main`, line ~200) — the
+# home repo is the dispatch-tracking repo, not a QA-only working repo.
+BASE_BRANCH="main"
 
 usage() {
-  echo "Usage: $0 <brief-id> [--repos repo1,repo2,...] [--home-repo <path>] [--org <org>] [--api-retry-cap N] [--api-retry-backoff-s N] [--tokens-file <path>] [--token-index N]" >&2
+  echo "Usage: $0 <brief-id> [--repos repo1,repo2,...] [--home-repo <path>] [--org <org>] [--api-retry-cap N] [--api-retry-backoff-s N] [--tokens-file <path>] [--token-index N] [--base-branch <branch>]" >&2
   exit 1
 }
 
@@ -96,6 +110,7 @@ while [[ $# -gt 0 ]]; do
     --api-retry-backoff-s)  API_RETRY_BACKOFF_S="${2:?}"; shift 2 ;;
     --tokens-file)          TOKENS_FILE="${2:?}"; shift 2 ;;
     --token-index)          TOKEN_INDEX_OVERRIDE="${2:?}"; shift 2 ;;
+    --base-branch)          BASE_BRANCH="${2:?}"; shift 2 ;;
     *) echo "Unknown argument: $1" >&2; usage ;;
   esac
 done
@@ -201,12 +216,13 @@ for r in "${REPOS[@]:-}"; do
   [[ -n "${r}" ]] || continue
   d="$(repo_dir_for "${r}")"
   if [[ -d "${d}/.git" ]]; then
-    log "pulling working repo ${r}"
-    git -C "${d}" checkout main >/dev/null 2>&1 || abort "${r}: could not checkout main"
-    git -C "${d}" pull --ff-only origin main || abort "${r}: pull --ff-only failed — diverged main, resolve before launching"
+    log "pulling working repo ${r} (base: ${BASE_BRANCH})"
+    git -C "${d}" checkout "${BASE_BRANCH}" >/dev/null 2>&1 || abort "${r}: could not checkout ${BASE_BRANCH}"
+    git -C "${d}" pull --ff-only origin "${BASE_BRANCH}" || abort "${r}: pull --ff-only failed — diverged ${BASE_BRANCH}, resolve before launching"
   else
     log "cloning working repo ${r}"
     git clone --quiet "https://github.com/${ORG}/${r}.git" "${d}" || abort "clone of ${r} failed"
+    git -C "${d}" checkout "${BASE_BRANCH}" >/dev/null 2>&1 || abort "${r}: could not checkout ${BASE_BRANCH} after clone"
   fi
 done
 
@@ -224,13 +240,13 @@ for r in "${REPOS[@]:-}"; do
   fi
   # Empty-shell commit: GitHub refuses a PR with no diff against base, and the
   # inner session should have nothing to set up itself.
-  if [[ -z "$(git -C "${d}" log origin/main.."${BRANCH_NAME}" 2>/dev/null)" ]]; then
+  if [[ -z "$(git -C "${d}" log "origin/${BASE_BRANCH}".."${BRANCH_NAME}" 2>/dev/null)" ]]; then
     git -C "${d}" commit --allow-empty -m "chore: open session branch for ${BRIEF_ID}" >/dev/null
   fi
   git -C "${d}" push -u origin "${BRANCH_NAME}" 2>&1 | sed 's/^/    /'
   EXISTING_PR="$(gh pr list --repo "${ORG}/${r}" --head "${BRANCH_NAME}" --json number --jq '.[0].number' 2>/dev/null || true)"
   if [[ -z "${EXISTING_PR}" ]]; then
-    gh pr create --repo "${ORG}/${r}" --draft --base main --head "${BRANCH_NAME}" \
+    gh pr create --repo "${ORG}/${r}" --draft --base "${BASE_BRANCH}" --head "${BRANCH_NAME}" \
       --title "brief(${BRIEF_ID}): ${SLUG}" \
       --body "Auto-staged by launch.sh for brief \`${BRIEF_ID}\` (assignee: ${ASSIGNEE}). Empty shell PR pre-created before the session ran — commits land here as the wrapper pushes each loop-exit boundary." \
       >/dev/null || log "WARNING: gh pr create failed for ${r} — branch is pushed, PR needs manual creation"
@@ -383,12 +399,12 @@ close_empty_shell_prs() {
     # Same check the staging loop uses before creating the placeholder commit,
     # extended to confirm the branch STILL contains only that one commit and
     # nothing else — real work landing here must never be swept.
-    log_lines="$(git -C "${d}" log origin/main.."${BRANCH_NAME}" --oneline 2>/dev/null || true)"
+    log_lines="$(git -C "${d}" log "origin/${BASE_BRANCH}".."${BRANCH_NAME}" --oneline 2>/dev/null || true)"
     [[ -z "${log_lines}" ]] && continue
     [[ "$(wc -l <<< "${log_lines}" | tr -d ' ')" == "1" ]] || continue
     commit_msg="$(git -C "${d}" log -1 --format=%s "${BRANCH_NAME}" 2>/dev/null || true)"
     [[ "${commit_msg}" == "chore: open session branch for ${BRIEF_ID}" ]] || continue
-    git -C "${d}" diff --quiet origin/main.."${BRANCH_NAME}" 2>/dev/null || continue
+    git -C "${d}" diff --quiet "origin/${BASE_BRANCH}".."${BRANCH_NAME}" 2>/dev/null || continue
 
     pr_num="$(gh pr list --repo "${ORG}/${r}" --head "${BRANCH_NAME}" --json number --jq '.[0].number' 2>/dev/null || true)"
     if [[ -n "${pr_num}" ]]; then
