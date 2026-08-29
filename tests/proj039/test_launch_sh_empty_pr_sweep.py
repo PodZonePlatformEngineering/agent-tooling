@@ -90,6 +90,7 @@ set -euo pipefail
 BRANCH_NAME="{branch_name}"
 BRIEF_ID="{brief_id}"
 ORG="TestOrg"
+BASE_BRANCH="main"
 REPOS=({repos_csv})
 WORKSPACE_DIR="{self.clone.parent}"
 repo_dir_for() {{ echo "${{WORKSPACE_DIR}}/$1"; }}
