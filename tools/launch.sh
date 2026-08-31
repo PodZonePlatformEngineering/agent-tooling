@@ -197,8 +197,8 @@ for r in "${REPOS[@]:-}"; do
   d="$(repo_dir_for "${r}")"
   if [[ -d "${d}/.git" ]]; then
     log "preflight-abort: checking working repo ${r}"
-    PRE_OUT="$(python3 "${TOOLING_ROOT}/lib/session_guard.py" preflight --repo "${d}" 2>&1)" \
-      || abort "working repo ${r} (${d}) failed preflight (dirty / unpushed / off-main) — operator attention needed:
+    PRE_OUT="$(python3 "${TOOLING_ROOT}/lib/session_guard.py" preflight --repo "${d}" --base-branch "${BASE_BRANCH}" 2>&1)" \
+      || abort "working repo ${r} (${d}) failed preflight (dirty / unpushed / off-${BASE_BRANCH}) — operator attention needed:
 ${PRE_OUT}"
   else
     log "working repo ${r} not yet cloned — will clone fresh (not a preflight condition)"

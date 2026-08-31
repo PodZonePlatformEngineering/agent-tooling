@@ -229,23 +229,31 @@ def _close_empty_shell_pr(repo_dir: str, branch: str) -> Optional[str]:
         return None
 
 
-def ff_main(repo_dir: str) -> dict:
-    """Fetch origin and fast-forward the local ``main`` to ``origin/main``.
+def ff_main(repo_dir: str, base_branch: str = "main") -> dict:
+    """Fetch origin and fast-forward the local ``base_branch`` to
+    ``origin/{base_branch}``.
 
-    ``--ff-only`` refuses to merge a diverged local main (unpushed commits) rather
-    than papering over it with a merge commit — a diverged main is an anomaly to
+    ``base_branch`` defaults to ``main`` for every caller that doesn't pass one
+    (the home repo's own trunk lifecycle is always ``main`` — see launch.sh's own
+    header note) — a QA-only-discipline working repo passes ``qa`` instead, mirroring
+    launch.sh's ``--base-branch`` flag (PROJ-039, agent-tooling v1.59.0). Name kept as
+    ``ff_main`` for backward compatibility with existing callers/tests; it fast-
+    forwards whichever branch it's told to.
+
+    ``--ff-only`` refuses to merge a diverged local branch (unpushed commits) rather
+    than papering over it with a merge commit — a diverged base is an anomaly to
     surface, not resolve here. Returns ``{"ok", "reason"}``."""
-    fetch = _git(repo_dir, "fetch", "origin", "main")
+    fetch = _git(repo_dir, "fetch", "origin", base_branch)
     if fetch.returncode != 0:
         return {"ok": False, "reason": f"fetch failed: {fetch.stderr.strip()}"}
-    co = _git(repo_dir, "checkout", "main")
+    co = _git(repo_dir, "checkout", base_branch)
     if co.returncode != 0:
-        return {"ok": False, "reason": f"checkout main failed: {co.stderr.strip()}"}
-    ff = _git(repo_dir, "merge", "--ff-only", "origin/main")
+        return {"ok": False, "reason": f"checkout {base_branch} failed: {co.stderr.strip()}"}
+    ff = _git(repo_dir, "merge", "--ff-only", f"origin/{base_branch}")
     if ff.returncode != 0:
         return {"ok": False,
-                "reason": f"ff-only merge failed (main diverged?): {ff.stderr.strip()}"}
-    return {"ok": True, "reason": "main fast-forwarded to origin/main"}
+                "reason": f"ff-only merge failed ({base_branch} diverged?): {ff.stderr.strip()}"}
+    return {"ok": True, "reason": f"{base_branch} fast-forwarded to origin/{base_branch}"}
 
 
 # ---------------------------------------------------------------------------
@@ -280,15 +288,24 @@ def _clone_last_session_finalised(repo_dir: str) -> bool:
 # Launch-time guard (before branching)
 # ---------------------------------------------------------------------------
 
-def preflight(repo_dir: str, *, auto_recover: bool = True) -> dict:
+def preflight(repo_dir: str, *, auto_recover: bool = True, base_branch: str = "main") -> dict:
     """Assert ``repo_dir`` is safe to branch a new session from, and leave it on a
-    fast-forwarded ``main``.
+    fast-forwarded ``base_branch``.
+
+    ``base_branch`` defaults to ``main``. Pass ``qa`` (or whatever) for a
+    QA-only-discipline working repo — mirrors launch.sh's own ``--base-branch`` flag
+    (agent-tooling v1.59.0). Before this, a clone correctly left on ``qa`` by a
+    ``--base-branch qa`` dispatch always failed this check (it only ever recognised
+    ``main`` or a session-branch pattern), forcing a manual `git checkout main` before
+    every subsequent launch — the exact friction ``--base-branch`` was meant to remove.
+    See ``agent-tooling`` v1.59.1's launch.sh fix for the related (but distinct)
+    empty-shell-sweep cause of the same symptom.
 
     Returns ``{"decision", "reason", "branch", "message"}`` where ``decision`` is:
 
-      * ``ready``     — clean + on main (ff'd); branch away.
+      * ``ready``     — clean + on ``base_branch`` (ff'd); branch away.
       * ``recovered`` — a leftover session branch whose session already finalised
-        (ledger ``complete``) was reset to a ff'd ``main``.
+        (ledger ``complete``) was reset to a ff'd ``base_branch``.
       * ``halt``      — dirty tree, a leftover session branch with unfinalised work,
         or an unexpected branch. ``message`` carries operator recovery guidance;
         **do not branch**.
@@ -300,7 +317,7 @@ def preflight(repo_dir: str, *, auto_recover: bool = True) -> dict:
         return {"decision": "halt", "reason": "detached-head",
                 "branch": "", "message":
                 f"{repo_dir} is in a detached-HEAD state. Restore with "
-                f"`git -C {repo_dir} checkout main` and re-launch."}
+                f"`git -C {repo_dir} checkout {base_branch}` and re-launch."}
 
     # A dirty tree blocks regardless of branch — never branch over uncommitted work.
     if working_tree_dirty(repo_dir):
@@ -309,19 +326,20 @@ def preflight(repo_dir: str, *, auto_recover: bool = True) -> dict:
                 f"{repo_dir} has uncommitted changes (on '{branch}'). Commit, stash, "
                 f"or discard them, then re-launch. `git -C {repo_dir} status`."}
 
-    if branch == "main":
-        ff = ff_main(repo_dir)
+    if branch == base_branch:
+        ff = ff_main(repo_dir, base_branch)
         if not ff["ok"]:
-            return {"decision": "halt", "reason": "ff-failed", "branch": "main",
-                    "message": f"{repo_dir}: {ff['reason']}. Resolve the diverged main "
-                               f"before launching."}
-        return {"decision": "ready", "reason": "clean-on-main", "branch": "main",
-                "message": "clone clean on a fast-forwarded main — ready to branch"}
+            return {"decision": "halt", "reason": "ff-failed", "branch": base_branch,
+                    "message": f"{repo_dir}: {ff['reason']}. Resolve the diverged "
+                               f"{base_branch} before launching."}
+        return {"decision": "ready", "reason": "clean-on-main", "branch": base_branch,
+                "message": f"clone clean on a fast-forwarded {base_branch} — ready to branch"}
 
-    # On a non-main branch. A leftover *session* branch is a prior-crash signature.
+    # On a branch other than base_branch. A leftover *session* branch is a
+    # prior-crash signature.
     if is_session_branch(branch):
         if auto_recover and _clone_last_session_finalised(repo_dir):
-            ff = ff_main(repo_dir)  # checks out main + ff
+            ff = ff_main(repo_dir, base_branch)  # checks out base_branch + ff
             if not ff["ok"]:
                 return {"decision": "halt", "reason": "recover-ff-failed", "branch": branch,
                         "message": f"{repo_dir}: leftover branch '{branch}' from a finalised "
@@ -331,19 +349,20 @@ def preflight(repo_dir: str, *, auto_recover: bool = True) -> dict:
             return {"decision": "recovered", "reason": "finalised-leftover-branch",
                     "branch": branch,
                     "message": f"leftover session branch '{branch}' (its session had "
-                               f"finalised) reset to a ff'd main — recovered"}
+                               f"finalised) reset to a ff'd {base_branch} — recovered"}
         return {"decision": "halt", "reason": "unfinalised-session-branch", "branch": branch,
                 "message":
                 f"{repo_dir} is on session branch '{branch}' with no completed finalise on "
                 f"record — a prior session likely crashed mid-work. Inspect it, finalise or "
-                f"discard it, return the clone to main, then re-launch:\n"
+                f"discard it, return the clone to {base_branch}, then re-launch:\n"
                 f"  git -C {repo_dir} status\n"
-                f"  git -C {repo_dir} checkout main && git -C {repo_dir} branch -D {branch}"}
+                f"  git -C {repo_dir} checkout {base_branch} && git -C {repo_dir} branch -D {branch}"}
 
     return {"decision": "halt", "reason": "unexpected-branch", "branch": branch,
             "message":
-            f"{repo_dir} is on '{branch}', not main and not a recognised session branch. "
-            f"Return it to main before launching: `git -C {repo_dir} checkout main`."}
+            f"{repo_dir} is on '{branch}', not {base_branch} and not a recognised session "
+            f"branch. Return it to {base_branch} before launching: "
+            f"`git -C {repo_dir} checkout {base_branch}`."}
 
 
 # ---------------------------------------------------------------------------
@@ -935,8 +954,12 @@ def _main(argv: Optional[list] = None) -> int:
     ap = argparse.ArgumentParser(description="PROJ-039/T-045 serial-mode session guards")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p_pre = sub.add_parser("preflight", help="assert clean+on-main (ff), before branching")
+    p_pre = sub.add_parser("preflight", help="assert clean+on-base-branch (ff), before branching")
     p_pre.add_argument("--repo", required=True)
+    p_pre.add_argument("--base-branch", default="main",
+                       help="branch the clone must be clean+ff'd on (default: main; pass "
+                            "the same value as launch.sh's --base-branch for a "
+                            "QA-only-discipline repo, e.g. qa)")
     p_pre.add_argument("--no-recover", action="store_true",
                        help="do not auto-recover a finalised leftover branch")
 
@@ -958,7 +981,8 @@ def _main(argv: Optional[list] = None) -> int:
     args = ap.parse_args(argv)
 
     if args.cmd == "preflight":
-        res = preflight(args.repo, auto_recover=not args.no_recover)
+        res = preflight(args.repo, auto_recover=not args.no_recover,
+                        base_branch=args.base_branch)
         print(json.dumps(res))
         print(res["message"], file=sys.stderr)
         return 0 if res["decision"] in ("ready", "recovered") else 3

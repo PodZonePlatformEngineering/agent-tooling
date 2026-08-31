@@ -133,6 +133,49 @@ class TestPreflight(_GitFixture):
         self.assertEqual(res["reason"], "detached-head")
 
 
+class TestPreflightBaseBranch(_GitFixture):
+    """preflight(base_branch=...) — a QA-only-discipline working repo whose real
+    base is ``qa``, not ``main`` (agent-tooling v1.59.1, the session_guard half of
+    launch.sh's --base-branch fix). Before this, a clone correctly left on ``qa``
+    always failed preflight with "not main and not a recognised session branch",
+    forcing a manual `git checkout main` before every subsequent launch — the exact
+    friction --base-branch was meant to remove (hit repeatedly: ACP-460/462/466)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        _git(self.clone, "checkout", "-b", "qa")
+        _git(self.clone, "push", "-u", "origin", "qa")
+
+    def test_clean_on_qa_is_ready_with_base_branch_qa(self) -> None:
+        res = session_guard.preflight(str(self.clone), base_branch="qa")
+        self.assertEqual(res["decision"], "ready")
+        self.assertEqual(res["branch"], "qa")
+        self.assertEqual(session_guard.current_branch(self.clone), "qa")
+
+    def test_clean_on_qa_still_halts_without_base_branch_override(self) -> None:
+        # Default base_branch="main" — the pre-fix behaviour must still be exactly
+        # this for every caller that doesn't opt in, so nothing else regresses.
+        res = session_guard.preflight(str(self.clone))
+        self.assertEqual(res["decision"], "halt")
+        self.assertEqual(res["reason"], "unexpected-branch")
+
+    def test_leftover_session_branch_recovers_onto_qa_not_main(self) -> None:
+        branch = "session/hephaestus-2026-07-03-t045"
+        self._branch(branch)
+        self._commit()
+        _git(self.clone, "push", "origin", branch)
+        with tempfile.TemporaryDirectory() as logdir:
+            os.environ["PODZONE_LOG_DIR"] = logdir
+            try:
+                finalise_ledger.begin("sid-qa", cwd=str(self.clone))
+                finalise_ledger.complete("sid-qa")
+                res = session_guard.preflight(str(self.clone), base_branch="qa")
+            finally:
+                os.environ.pop("PODZONE_LOG_DIR", None)
+        self.assertEqual(res["decision"], "recovered")
+        self.assertEqual(session_guard.current_branch(self.clone), "qa")
+
+
 class TestReturnToMain(_GitFixture):
     def test_pushed_session_branch_returned_and_deleted(self) -> None:
         branch = "session/hephaestus-2026-07-03-t045"
