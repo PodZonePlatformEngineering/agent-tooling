@@ -416,6 +416,21 @@ close_empty_shell_prs() {
         && log "empty-shell sweep: no open PR for ${r}@${BRANCH_NAME} — deleted remote branch" \
         || true
     fi
+
+    # Deleting the REMOTE branch above leaves the local working-repo clone
+    # still checked out on BRANCH_NAME — session_guard's preflight then reads
+    # that as an "unfinalised session branch" on the NEXT launch.sh dispatch
+    # against this repo (any brief, not just this one), aborting with
+    # "operator attention needed" even though there is nothing left to
+    # review: the PR is already closed/deleted, real content never landed.
+    # For a non-empty-shell PR this same cleanup happens naturally when the
+    # Team Lead merges and returns the clone to base after review; an
+    # empty-shell PR never reaches that review step at all, so nothing else
+    # ever performs it. Mirror the home-repo return-to-base done below for
+    # the empty-shell case specifically — safe because the emptiness check
+    # above already confirmed this branch carries no real work to lose.
+    git -C "${d}" checkout "${BASE_BRANCH}" >/dev/null 2>&1 || true
+    git -C "${d}" branch -D "${BRANCH_NAME}" >/dev/null 2>&1 || true
   done
 }
 

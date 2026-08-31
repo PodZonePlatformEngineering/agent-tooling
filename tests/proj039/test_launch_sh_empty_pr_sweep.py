@@ -119,6 +119,15 @@ class TestEmptyShellSweep(_GitFixture):
         log_text = self.gh_log.read_text()
         self.assertIn("pr close --repo TestOrg/myrepo 1234 --delete-branch", log_text)
 
+        # The local clone must be returned to base and the local session
+        # branch deleted — otherwise the NEXT launch.sh dispatch against this
+        # repo trips session_guard's preflight on a branch nothing will ever
+        # come back to finalise (the recurring friction this fix closes).
+        current = _git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        self.assertEqual(current, "main")
+        branches = _git(repo_dir, "branch", "--list", branch).stdout
+        self.assertNotIn(branch, branches)
+
     def test_branch_with_real_commits_is_never_touched(self):
         branch = "hephaestus/2026-08-14-uss261-real-work"
         repo_dir = self.clone.parent / "realrepo"
@@ -138,6 +147,10 @@ class TestEmptyShellSweep(_GitFixture):
         _run("bash", "-c", script, env=self.env)
 
         self.assertFalse(self.gh_log.exists() and "pr close" in self.gh_log.read_text())
+        # Real content must never be swept back to base — the branch (and its
+        # commits) has to stay checked out for the Team Lead's normal review.
+        current = _git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        self.assertEqual(current, branch)
 
     def test_branch_with_no_commits_ahead_is_never_touched(self):
         # Not yet staged / already fully merged — nothing ahead of main at
