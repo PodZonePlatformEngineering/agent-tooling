@@ -152,6 +152,42 @@ class TestEmptyShellSweep(_GitFixture):
         current = _git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
         self.assertEqual(current, branch)
 
+    def test_local_ref_showing_empty_but_remote_has_real_commits_is_never_touched(self):
+        # PROJ-039, 2026-09-02 — the ACP-465/PR#129 incident this test
+        # guards against: a real 2-commit branch was swept as empty-shell
+        # and its PR closed + branch deleted, because the OLD check trusted
+        # the LOCAL BRANCH_NAME ref, which can diverge from what's actually
+        # on the remote (root cause of the divergence itself was never
+        # pinned down — this test proves the fix closes the failure mode
+        # regardless of how the divergence happens). Real commit recovered
+        # by SHA after the fact; nothing was actually lost, but the sweep
+        # must never be able to destroy real remote content again.
+        branch = "hephaestus/2026-09-02-uss261-divergence"
+        repo_dir = self.clone.parent / "divergedrepo"
+        _run("git", "clone", str(self.origin), str(repo_dir))
+        for k, v in (("user.email", "t@t"), ("user.name", "T"),
+                     ("commit.gpgsign", "false")):
+            _git(repo_dir, "config", k, v)
+        _git(repo_dir, "checkout", "-b", branch)
+        _git(repo_dir, "commit", "--allow-empty", "-m",
+             "chore: open session branch for podzone/2026-09-02-uss261-divergence")
+        (repo_dir / "feature.txt").write_text("real work\n")
+        _git(repo_dir, "add", "feature.txt")
+        _git(repo_dir, "commit", "-m", "wip: podzone/2026-09-02-uss261-divergence attempt 1")
+        _git(repo_dir, "push", "-u", "origin", branch)
+        # Simulate local/remote divergence: reset the LOCAL branch back to
+        # just the placeholder, as if whatever caused the ACP-465 incident
+        # happened here too. The remote still has both commits.
+        _git(repo_dir, "reset", "--hard", "HEAD~1")
+
+        script = self._sweep_script(branch, "podzone/2026-09-02-uss261-divergence", ["divergedrepo"])
+        _run("bash", "-c", script, env=self.env)
+
+        self.assertFalse(self.gh_log.exists() and "pr close" in self.gh_log.read_text())
+        # The remote branch must still exist with both commits — not deleted.
+        remote_log = _run("git", "ls-remote", str(self.origin), branch).stdout
+        self.assertIn(branch, remote_log)
+
     def test_branch_with_no_commits_ahead_is_never_touched(self):
         # Not yet staged / already fully merged — nothing ahead of main at
         # all is not the empty-shell condition and must be left alone.

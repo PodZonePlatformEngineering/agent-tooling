@@ -390,21 +390,34 @@ finalise_planning_session() {
 # NOT run on any of those paths. Called only from the `complete` case below.
 # ---------------------------------------------------------------------------
 close_empty_shell_prs() {
-  local r d log_lines commit_msg pr_num
+  local r d log_lines commit_msg pr_num remote_ref
   for r in "${REPOS[@]:-}"; do
     [[ -n "${r}" ]] || continue
     d="$(repo_dir_for "${r}")"
     [[ -d "${d}/.git" ]] || continue
 
+    # Checked against the REMOTE branch tip, not the local BRANCH_NAME ref —
+    # this function's whole job is deciding whether to delete the REMOTE
+    # branch, so that's the state that must be empty, not local workdir
+    # state that could (for reasons not fully understood — see the 2026-09-02
+    # ACP-465/PR#129 incident this fix responds to: a real 2-commit branch
+    # was swept as empty-shell and its PR closed+branch deleted, root cause
+    # not pinned down, but a real commit was demonstrably on the remote at
+    # the time) diverge from it. `git ls-remote` + fetch-by-SHA gets the
+    # actual current remote tip without trusting any local ref's freshness.
+    remote_ref="$(git -C "${d}" ls-remote origin "refs/heads/${BRANCH_NAME}" 2>/dev/null | cut -f1)"
+    [[ -z "${remote_ref}" ]] && continue  # no remote branch at all — nothing to sweep
+    git -C "${d}" fetch origin "${remote_ref}" >/dev/null 2>&1 || continue
+
     # Same check the staging loop uses before creating the placeholder commit,
     # extended to confirm the branch STILL contains only that one commit and
     # nothing else — real work landing here must never be swept.
-    log_lines="$(git -C "${d}" log "origin/${BASE_BRANCH}".."${BRANCH_NAME}" --oneline 2>/dev/null || true)"
+    log_lines="$(git -C "${d}" log "origin/${BASE_BRANCH}".."${remote_ref}" --oneline 2>/dev/null || true)"
     [[ -z "${log_lines}" ]] && continue
     [[ "$(wc -l <<< "${log_lines}" | tr -d ' ')" == "1" ]] || continue
-    commit_msg="$(git -C "${d}" log -1 --format=%s "${BRANCH_NAME}" 2>/dev/null || true)"
+    commit_msg="$(git -C "${d}" log -1 --format=%s "${remote_ref}" 2>/dev/null || true)"
     [[ "${commit_msg}" == "chore: open session branch for ${BRIEF_ID}" ]] || continue
-    git -C "${d}" diff --quiet "origin/${BASE_BRANCH}".."${BRANCH_NAME}" 2>/dev/null || continue
+    git -C "${d}" diff --quiet "origin/${BASE_BRANCH}".."${remote_ref}" 2>/dev/null || continue
 
     pr_num="$(gh pr list --repo "${ORG}/${r}" --head "${BRANCH_NAME}" --json number --jq '.[0].number' 2>/dev/null || true)"
     if [[ -n "${pr_num}" ]]; then
