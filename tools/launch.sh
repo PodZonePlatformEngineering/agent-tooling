@@ -263,6 +263,27 @@ log "checking headless write-capability gate on home repo"
 python3 "${TOOLING_ROOT}/tools/ensure-local-settings.py" --check --repo "${HOME_REPO_DIR}" \
   || abort "home repo ${HOME_REPO_DIR} does not grant headless write capability — operator/Team Lead action required (see message above), not something this wrapper can fix in-session"
 
+# Gap found live 2026-09-02 (ACP-474/ACP-475 dispatches, home-podzone-hermes):
+# the gate above only ever covered the home repo. Working-repo clones under
+# .workspace/ never got their own settings.local.json, so headless write
+# capability there was ambient/undefined rather than guaranteed — confirmed
+# live: one working-repo clone (freshly cloned by this same wrapper, same
+# session) worked, a sibling clone of the identical shape reproducibly
+# denied every Edit/Write/git-write call across three separate headless
+# attempts. This wrapper is the one that clones working repos (the loop
+# above) — same actor/trust-boundary as the home-repo apply already does —
+# so apply (not just check) here too, closing the gap at its source rather
+# than relying on ambient trust cascading from the home repo.
+for r in "${REPOS[@]:-}"; do
+  [[ -n "${r}" ]] || continue
+  d="$(repo_dir_for "${r}")"
+  log "ensuring headless write-capability gate on working repo ${r}"
+  python3 "${TOOLING_ROOT}/tools/ensure-local-settings.py" --repo "${d}" >/dev/null \
+    || abort "working repo ${r} (${d}): ensure-local-settings.py apply failed — operator attention needed"
+  python3 "${TOOLING_ROOT}/tools/ensure-local-settings.py" --check --repo "${d}" \
+    || abort "working repo ${r} (${d}) does not grant headless write capability even after ensure-local-settings.py apply — operator/Team Lead action required"
+done
+
 # Pre-resolved tokens gate (PROJ-039/T-210 — fail loud, same philosophy as the
 # write-capability gate above). This script never calls secretctl itself; the
 # Team Lead must have already run resolve-launch-tokens.py via the secrets MCP
