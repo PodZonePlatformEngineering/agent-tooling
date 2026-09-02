@@ -566,6 +566,18 @@ print(classify_exit(sys.stdin.read(), exit_code=${EXIT_CODE}))
     other|*)
       log "OTHER FAILURE — exiting non-zero"
       finalise_planning_session
+      # Gap found live 2026-09-02 (ACP-474 dispatch): close_empty_shell_prs
+      # previously ran only on the `complete` exit path. A session that made
+      # zero progress (e.g. blocked entirely by the write-capability gap
+      # fixed alongside this change) still leaves the placeholder
+      # empty-shell branch/PR this wrapper staged before Claude ever ran —
+      # and the next launch against the same brief_id (same deterministic
+      # BRANCH_NAME) hits session_guard's "unfinalised session branch" halt,
+      # requiring manual `checkout base + branch -D` every time. The sweep
+      # already only touches branches proven to carry zero real work (same
+      # emptiness check as the complete path), so it is exactly as safe to
+      # run here as there.
+      close_empty_shell_prs
       echo "${LAST_STDOUT}"
       exit 1
       ;;

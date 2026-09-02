@@ -203,5 +203,31 @@ class TestEmptyShellSweep(_GitFixture):
         self.assertFalse(self.gh_log.exists() and "pr close" in self.gh_log.read_text())
 
 
+class TestSweepWiredIntoOtherFailurePath(unittest.TestCase):
+    """Gap found live 2026-09-02 (ACP-474 dispatch): close_empty_shell_prs
+    previously ran only on the `complete` exit. A session that made zero
+    progress still leaves the placeholder branch/PR behind, and the next
+    launch against the same brief_id (same deterministic BRANCH_NAME) hits
+    session_guard's "unfinalised session branch" halt, requiring manual
+    cleanup every time. Structural guard: the `other|*)` exit branch must
+    call close_empty_shell_prs too, same as `complete` already does."""
+
+    def test_other_failure_branch_calls_sweep(self):
+        src = (REPO_ROOT / "tools" / "launch.sh").read_text()
+        other_idx = src.index('    other|*)')
+        next_case_idx = src.index("esac", other_idx)
+        other_block = src[other_idx:next_case_idx]
+        self.assertIn("close_empty_shell_prs", other_block)
+
+    def test_complete_branch_still_calls_sweep(self):
+        # Regression guard for the pre-existing behaviour this change must
+        # not disturb.
+        src = (REPO_ROOT / "tools" / "launch.sh").read_text()
+        complete_idx = src.index("    complete)")
+        other_idx = src.index("    other|*)")
+        complete_block = src[complete_idx:other_idx]
+        self.assertIn("close_empty_shell_prs", complete_block)
+
+
 if __name__ == "__main__":
     unittest.main()
