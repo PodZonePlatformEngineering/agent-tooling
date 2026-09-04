@@ -499,9 +499,29 @@ while true; do
   # call in this script at all. The value briefly exists in this subshell's
   # own environment for the `claude` child process only, the same exposure
   # surface any env-var secret injection already carries; never echoed.
+  #
+  # --permission-mode bypassPermissions (2026-09-04, live gap found dispatching
+  # ACP-476): settings.local.json's permissions.defaultMode alone — the T-132
+  # "single mechanism" that replaced --dangerously-skip-permissions on
+  # 2026-08-01 against CLI v1.25.0 — no longer reliably grants headless write
+  # capability on the now-installed CLI (v2.1.259, a two major-version jump).
+  # Confirmed live: a bare `claude -p` against a repo whose settings.local.json
+  # correctly declares bypassPermissions still blocked Write/Bash `touch` with
+  # "may only create or modify files in the allowed working directories..."
+  # even naming the target path as allowed; the session's own self-report
+  # showed a PARTIAL posture (simple single Bash commands pass unprompted,
+  # compound commands and writes still gate) — not true bypassPermissions.
+  # `--dangerously-skip-permissions` and `--permission-mode bypassPermissions`
+  # (the documented, non-"dangerous"-framed equivalent) both fixed it
+  # immediately in isolated reproduction; this is a CLI-version regression
+  # against the T-132 assumption, not an error in that decision at the time.
+  # settings.local.json + ensure-local-settings.py's prep gate stay as-is —
+  # still a useful pre-flight check that catches a genuinely misconfigured
+  # clone before spending a dispatch attempt — this flag is now
+  # defense-in-depth alongside it, not a replacement for the check.
   set +e
   LAST_STDOUT="$(cd "${HOME_REPO_DIR}" && BRIEF_ID="${BRIEF_ID}" CLAUDE_CODE_OAUTH_TOKEN="$(python3 -c "import json; print(json.load(open('${TOKENS_FILE}'))[${i}]['token'])")" \
-    claude -p "Hi ${AGENT_CAP}. Continue with the brief. Commit and push all PRs when done — pushing is the terminal action for a working-repo PR; do not merge your own PRs (\`gh pr merge\` or marking ready-for-review then merging), that authority stays with the Team Lead. If the brief is now FULLY complete, include a line \`Brief-Status: complete\` in your final response; otherwise it stays in_progress for the next session. If anything needs operator direction you cannot resolve, raise it to the Team Lead with progress so far via your session response, and exit — do not wait." 2>&1)"
+    claude -p --permission-mode bypassPermissions "Hi ${AGENT_CAP}. Continue with the brief. Commit and push all PRs when done — pushing is the terminal action for a working-repo PR; do not merge your own PRs (\`gh pr merge\` or marking ready-for-review then merging), that authority stays with the Team Lead. If the brief is now FULLY complete, include a line \`Brief-Status: complete\` in your final response; otherwise it stays in_progress for the next session. If anything needs operator direction you cannot resolve, raise it to the Team Lead with progress so far via your session response, and exit — do not wait." 2>&1)"
   EXIT_CODE=$?
   set -e
 

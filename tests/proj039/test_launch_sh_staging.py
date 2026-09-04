@@ -156,6 +156,33 @@ class TestClaudeInvocationCarriesBriefId(unittest.TestCase):
         )
 
 
+class TestClaudeInvocationSetsPermissionMode(unittest.TestCase):
+    """2026-09-04 regression: settings.local.json's permissions.defaultMode
+    alone (the T-132 "single mechanism") stopped reliably granting headless
+    write capability on Claude Code CLI v2.1.259 (that decision was made
+    against v1.25.0). Confirmed live: a bare `claude -p` against a repo whose
+    settings.local.json correctly declared bypassPermissions still blocked
+    Write/Bash `touch`, even naming the target path as allowed in its own
+    refusal message -- `--permission-mode bypassPermissions` on the CLI
+    invocation fixed it immediately in isolated reproduction. Asserts the fix
+    textually, same style as the sibling BRIEF_ID regression test above --
+    not exercisable as a live subprocess test (needs a real subscription
+    token)."""
+
+    def test_claude_invocation_line_sets_permission_mode(self):
+        lines = (REPO_ROOT / "tools" / "launch.sh").read_text().splitlines()
+        matches = [i for i, line in enumerate(lines) if "LAST_STDOUT=" in line and "claude" in line.lower()]
+        self.assertEqual(len(matches), 1)
+        idx = matches[0]
+        invocation_block = lines[idx] + "\n" + lines[idx + 1]
+        self.assertIn(
+            "--permission-mode bypassPermissions", invocation_block,
+            "claude -p invocation must set --permission-mode bypassPermissions "
+            "explicitly -- settings.local.json alone is not sufficient on the "
+            "current CLI (2026-09-04 finding)",
+        )
+
+
 class TestTokenRotationCursor(unittest.TestCase):
     """PROJ-039/T-216: every launch.sh invocation used to start at token index
     0 unconditionally (confirmed live -- every dispatch this session hit
