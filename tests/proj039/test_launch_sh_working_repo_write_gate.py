@@ -64,6 +64,37 @@ class TestEnsureLocalSettingsPrimitive(unittest.TestCase):
         checked = self._tool("--check", "--repo", str(self.clone))
         self.assertEqual(checked.returncode, 0, checked.stderr)
 
+    def test_apply_gitignores_settings_file_when_missing(self):
+        """2026-09-04 regression: academy-frontend#137 accidentally committed
+        settings.local.json because its .gitignore never excluded it — this
+        tool only assumed the file was gitignored, never verified/enforced
+        it. `apply` must now append the entry itself."""
+        applied = self._tool("--repo", str(self.clone))
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        gitignore = self.clone / ".gitignore"
+        self.assertTrue(gitignore.exists())
+        self.assertIn(".claude/settings.local.json", gitignore.read_text().splitlines())
+        # git itself must agree, not just a text match.
+        check = _run("git", "-C", str(self.clone), "check-ignore", "-q",
+                      ".claude/settings.local.json")
+        self.assertEqual(check.returncode, 0)
+
+    def test_apply_does_not_duplicate_an_existing_broader_pattern(self):
+        """A repo whose .gitignore already excludes the whole .claude/ dir
+        (or the exact path) must not get a redundant second entry appended."""
+        (self.clone / ".gitignore").write_text(".claude/\n")
+        applied = self._tool("--repo", str(self.clone))
+        self.assertEqual(applied.returncode, 0, applied.stderr)
+        lines = (self.clone / ".gitignore").read_text().splitlines()
+        self.assertEqual(lines, [".claude/"])
+
+    def test_apply_is_idempotent_on_gitignore_across_two_calls(self):
+        self._tool("--repo", str(self.clone))
+        first = (self.clone / ".gitignore").read_text()
+        self._tool("--repo", str(self.clone))
+        second = (self.clone / ".gitignore").read_text()
+        self.assertEqual(first, second)
+
 
 class TestLaunchShWorkingRepoGate(unittest.TestCase):
     """Structural guard: the per-working-repo gate loop must exist in

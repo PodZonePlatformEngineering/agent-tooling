@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -95,7 +96,52 @@ def is_sufficient(data: dict) -> bool:
             and not any(_grants_unrestricted(deny, t) for t in WRITE_TOOLS))
 
 
+def _is_git_ignored(repo: Path, rel_path: str) -> bool | None:
+    """True/False if `git check-ignore` can answer, None if git isn't usable
+    here (not a repo, no git binary) — caller falls back to a text check."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "check-ignore", "-q", rel_path],
+            capture_output=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode in (0, 1):
+        return result.returncode == 0
+    return None  # e.g. not a git repo — rc 128
+
+
+def ensure_gitignored(repo: Path) -> None:
+    """Guard against the settings file landing in a commit (found live
+    2026-09-04: a dispatched session's own `git add` swept up a freshly
+    -created settings.local.json into its PR — academy-frontend#137 — because
+    that repo's .gitignore, like several others in the fleet, never actually
+    excluded `.claude/settings.local.json`; this tool only ever assumed it
+    was gitignored, never verified or enforced it). Appends one line to
+    .gitignore, creating the file if absent. Idempotent: does nothing if
+    `git check-ignore` (or, failing that, a literal text match) already
+    covers the path — never duplicates an entry or fights a broader
+    existing pattern like `.claude/`.
+    """
+    rel = ".claude/settings.local.json"
+    already = _is_git_ignored(repo, rel)
+    gitignore = repo / ".gitignore"
+    if already is None:
+        existing = gitignore.read_text() if gitignore.exists() else ""
+        already = rel in existing.splitlines() or ".claude/" in existing.splitlines()
+    if already:
+        return
+    existing = gitignore.read_text() if gitignore.exists() else ""
+    needs_leading_newline = bool(existing) and not existing.endswith("\n")
+    with gitignore.open("a") as f:
+        if needs_leading_newline:
+            f.write("\n")
+        f.write(f"{rel}\n")
+    print(f"appended: {gitignore} ({rel} was not previously gitignored)")
+
+
 def apply(repo: Path) -> int:
+    ensure_gitignored(repo)
     path = settings_path(repo)
     data = load_settings(path)
     if is_sufficient(data):
