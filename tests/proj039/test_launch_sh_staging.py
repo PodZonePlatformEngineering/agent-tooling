@@ -156,6 +156,31 @@ class TestClaudeInvocationCarriesBriefId(unittest.TestCase):
         )
 
 
+class TestBuildGitIdentityAssertedPerRepo(unittest.TestCase):
+    """2026-09-05 — operator directive: differentiate PRs raised in launch.sh
+    sessions from Team Lead activity. launch.sh must set a per-agent local
+    git identity ("{Agent} (build)") in the home repo and every working repo
+    it stages, BEFORE any commit happens in that dispatch — the empty-shell
+    staging commit is the earliest one, so the identity call must precede it
+    in source order."""
+
+    def test_home_repo_identity_set_before_working_repo_staging(self) -> None:
+        src = (REPO_ROOT / "tools" / "launch.sh").read_text()
+        home_call_idx = src.index('set_build_git_identity "${HOME_REPO_DIR}"')
+        staging_commit_idx = src.index('git -C "${d}" commit --allow-empty')
+        self.assertLess(home_call_idx, staging_commit_idx)
+
+    def test_working_repo_identity_set_before_staging_commit(self) -> None:
+        src = (REPO_ROOT / "tools" / "launch.sh").read_text()
+        working_call_idx = src.index('set_build_git_identity "${d}"')
+        staging_commit_idx = src.index('git -C "${d}" commit --allow-empty')
+        self.assertLess(working_call_idx, staging_commit_idx)
+
+    def test_build_identity_uses_agent_cap_and_build_suffix(self) -> None:
+        src = (REPO_ROOT / "tools" / "launch.sh").read_text()
+        self.assertIn('GIT_BUILD_IDENTITY_NAME="${AGENT_CAP} (build)"', src)
+
+
 class TestClaudeInvocationSetsPermissionMode(unittest.TestCase):
     """2026-09-04 regression: settings.local.json's permissions.defaultMode
     alone (the T-132 "single mechanism") stopped reliably granting headless

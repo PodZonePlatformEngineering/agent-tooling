@@ -454,6 +454,18 @@ def return_to_main(repo_dir: str, session_branch: Optional[str] = None) -> dict:
             result["reason"] = ff["reason"]
             return result
 
+        # Git-identity attribution (2026-09-05): launch.sh sets a per-agent
+        # local git identity ("{Agent} (build)") in this clone for the
+        # duration of its dispatch, so build commits are distinguishable from
+        # Team Lead activity. Unset it here so the clone falls back to the
+        # machine's global identity (the Team Lead's own) once the dispatch
+        # is over — otherwise a later direct Team Lead edit into this same
+        # clone would silently inherit the previous dispatch's agent name.
+        # Best-effort: a config key that was never set returns nonzero and
+        # must not fail this cleanup.
+        _git(repo_dir, "config", "--unset", "user.name")
+        _git(repo_dir, "config", "--unset", "user.email")
+
         if not is_session_branch(branch):
             result.update(ok=True, disposition="returned-kept-branch",
                           reason=f"returned to main; '{branch}' is not a session branch — kept")

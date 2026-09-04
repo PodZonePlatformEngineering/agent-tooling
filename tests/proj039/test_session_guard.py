@@ -203,6 +203,46 @@ class TestReturnToMain(_GitFixture):
         self.assertTrue(res["ok"])
         self.assertEqual(res["disposition"], "already-main")
 
+
+class TestReturnToMainGitIdentityReset(_GitFixture):
+    """2026-09-05 — operator directive to differentiate launch.sh build
+    commits from Team Lead activity: launch.sh sets a per-agent local git
+    identity in each clone it dispatches into ("{Agent} (build)"); this is
+    the other half — return_to_main must clear that local override once the
+    dispatch is over, so a later Team Lead commit into the same clone falls
+    back to the machine's global identity instead of silently inheriting the
+    previous dispatch's agent name."""
+
+    def test_local_identity_cleared_on_return(self) -> None:
+        branch = "hephaestus/2026-09-05-t000"
+        self._branch(branch)
+        _git(self.clone, "config", "user.name", "Hephaestus (build)")
+        _git(self.clone, "config", "user.email", "podzone.cloud@gmail.com")
+        self._commit()
+        _git(self.clone, "push", "origin", branch)
+        session_guard.return_to_main(str(self.clone))
+        # --local specifically, via session_guard's own check=False _git —
+        # the effective (global-falling-back) value would still resolve on
+        # a machine with any global identity set; this asserts the LOCAL
+        # override itself is gone, not just that resolution still works.
+        self.assertEqual(session_guard._git(str(self.clone), "config", "--local", "user.name").returncode, 1)
+        self.assertEqual(session_guard._git(str(self.clone), "config", "--local", "user.email").returncode, 1)
+
+    def test_unset_on_already_cleared_identity_does_not_error(self) -> None:
+        # A clone with no local identity override at all (fixture's own
+        # baseline unset first) must not make return_to_main fail — `git
+        # config --unset` on a missing key exits nonzero, and that must be
+        # swallowed, not raised.
+        branch = "hephaestus/2026-09-05-t001"
+        self._branch(branch)
+        self._commit()
+        _git(self.clone, "push", "origin", branch)
+        _git(self.clone, "config", "--unset", "user.name")
+        _git(self.clone, "config", "--unset", "user.email")
+        res = session_guard.return_to_main(str(self.clone))
+        self.assertTrue(res["ok"])
+
+
 class TestReturnToMainLedgerLifecycle(_GitFixture):
     """PROJ-039/T-068 — the REAL lifecycle regression the T-062/T-063 attempts missed.
 

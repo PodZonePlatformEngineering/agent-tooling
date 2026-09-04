@@ -147,6 +147,26 @@ case "${BRIEF_STATUS_FIELD}" in
 esac
 
 AGENT_CAP="$(python3 -c "print('${ASSIGNEE}'.capitalize())")"
+# Git-identity attribution (2026-09-05, operator directive — "differentiate
+# PRs raised in launch.sh sessions from team lead activity"). Every commit on
+# this machine used to carry the same git identity regardless of actor
+# (human operator, an interactive Team Lead session, or a headless launch.sh
+# dispatch), which made a real incident (a 2026-08-29 rebase silently
+# reintroducing an already-fixed regression on academy-frontend) impossible
+# to attribute from git history alone. The operator's own git identity is
+# retired fleet-wide ("I no longer do git commits") in favour of the actual
+# GitHub account every push already authenticates as (`podzonecloud-hue`,
+# email below) — this wrapper's job is to differentiate WHICH actor within
+# that account authored a given commit, via the display name only (the email
+# stays constant so GitHub's UI still resolves the linked avatar/account).
+# Team Lead interactive sessions default to "Hermes (Team Lead)" via this
+# same email, set globally on this workstation — untouched by this wrapper.
+GIT_IDENTITY_EMAIL="podzone.cloud@gmail.com"
+GIT_BUILD_IDENTITY_NAME="${AGENT_CAP} (build)"
+set_build_git_identity() { # $1 = repo dir
+  git -C "$1" config user.name "${GIT_BUILD_IDENTITY_NAME}"
+  git -C "$1" config user.email "${GIT_IDENTITY_EMAIL}"
+}
 # brief_id is `{team}/{date}-{slug}` — its last path segment is ALREADY
 # date-prefixed, so the branch name is `{agent}/{that segment}` verbatim
 # (not `{agent}/{today}-{that segment}`, which would double the date).
@@ -211,6 +231,7 @@ log "preflight-abort: all repos clear"
 log "pulling home repo to a ff'd main"
 git -C "${HOME_REPO_DIR}" checkout main >/dev/null 2>&1 || abort "home repo: could not checkout main"
 git -C "${HOME_REPO_DIR}" pull --ff-only origin main || abort "home repo: pull --ff-only failed — diverged main, resolve before launching"
+set_build_git_identity "${HOME_REPO_DIR}"
 
 for r in "${REPOS[@]:-}"; do
   [[ -n "${r}" ]] || continue
@@ -224,6 +245,7 @@ for r in "${REPOS[@]:-}"; do
     git clone --quiet "https://github.com/${ORG}/${r}.git" "${d}" || abort "clone of ${r} failed"
     git -C "${d}" checkout "${BASE_BRANCH}" >/dev/null 2>&1 || abort "${r}: could not checkout ${BASE_BRANCH} after clone"
   fi
+  set_build_git_identity "${d}"
 done
 
 # Stage working repos: session branch + first push + initial/empty-shell PR,
