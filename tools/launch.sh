@@ -304,6 +304,25 @@ for r in "${REPOS[@]:-}"; do
     || abort "working repo ${r} (${d}): ensure-local-settings.py apply failed — operator attention needed"
   python3 "${TOOLING_ROOT}/tools/ensure-local-settings.py" --check --repo "${d}" \
     || abort "working repo ${r} (${d}) does not grant headless write capability even after ensure-local-settings.py apply — operator/Team Lead action required"
+  # Commit+push the .gitignore fix immediately (2026-09-05 — academy-api PR
+  # #35 recurrence): the apply call above can leave a genuine, tracked
+  # .gitignore edit sitting UNCOMMITTED on the freshly-staged session
+  # branch. Leaving it pending until the inner session's own commits or
+  # bank_all_repos sweep it up in a later `git add -A` is fragile — a
+  # `.claude/settings.local.json` created here is untracked and survives a
+  # `git checkout .`/`git reset --hard` unscathed, but the .gitignore
+  # MODIFICATION does not, so an inner session discarding an unrelated
+  # local change (for any reason) can silently revert just the gitignore
+  # half, leaving the settings file to land in the next real commit
+  # unprotected — reproduced live exactly once despite this apply call
+  # having already run correctly. Commit the fix on its own, right here,
+  # before the inner session ever starts, so it's immune to anything that
+  # happens afterward.
+  if [[ -n "$(git -C "${d}" status --porcelain -- .gitignore)" ]]; then
+    git -C "${d}" add .gitignore
+    git -C "${d}" commit -m "chore: gitignore .claude/settings.local.json" >/dev/null
+    git -C "${d}" push 2>&1 | sed 's/^/    /'
+  fi
 done
 
 # Pre-resolved tokens gate (PROJ-039/T-210 — fail loud, same philosophy as the

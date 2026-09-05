@@ -113,6 +113,43 @@ class TestLaunchShWorkingRepoGate(unittest.TestCase):
         loop_start = src.rindex('for r in "${REPOS[@]:-}"; do', 0, working_gate_idx)
         self.assertLess(loop_start, working_gate_idx)
 
+    def test_gitignore_fix_is_committed_immediately_after_apply(self):
+        """2026-09-05 regression: academy-api PR #35 recurred the exact
+        .claude/settings.local.json leak this gate exists to prevent, DESPITE
+        ensure-local-settings.py's own gitignore-enforcement (already
+        verified working in isolation, see TestEnsureLocalSettingsPrimitive
+        above). Root cause: the apply call leaves a genuine, tracked
+        .gitignore edit sitting UNCOMMITTED on the freshly-staged session
+        branch; unlike the untracked settings.local.json file itself (which
+        survives a `git checkout .`/`git reset --hard`), that pending
+        MODIFICATION does not, so an inner session discarding any unrelated
+        local change can silently revert just the gitignore half. launch.sh
+        must commit the .gitignore fix on its own, immediately after the
+        apply call, before the inner session ever starts -- and it must stay
+        inside the same per-working-repo loop this test's sibling
+        (test_source_applies_gate_to_each_working_repo) already anchors, not
+        deferred to bank_all_repos or some later loop-exit boundary."""
+        src = (REPO_ROOT / "tools" / "launch.sh").read_text()
+        apply_idx = src.index('ensure-local-settings.py" --repo "${d}"')
+        check_idx = src.index('ensure-local-settings.py" --check --repo "${d}"', apply_idx)
+        commit_idx = src.index('git -C "${d}" commit -m "chore: gitignore', check_idx)
+        push_idx = src.index('git -C "${d}" push', commit_idx)
+        self.assertGreater(commit_idx, check_idx)
+        self.assertGreater(push_idx, commit_idx)
+        # Same loop: the nearest preceding "for r in ...REPOS..." must be the
+        # loop this commit/push pair is inside, and the nearest following
+        # "done" must close that same loop (i.e. no unrelated loop boundary
+        # sits between the gate calls and the commit/push).
+        loop_start = src.rindex('for r in "${REPOS[@]:-}"; do', 0, commit_idx)
+        loop_end = src.index("\ndone", push_idx)
+        self.assertLess(loop_start, check_idx)
+        self.assertGreater(loop_end, push_idx)
+        # No other "for"/"done" boundary sits between the loop opening and
+        # this commit -- i.e. it's the same loop as the gate calls, not a
+        # later one that happens to reuse the same REPOS iteration pattern.
+        between = src[loop_start + len('for r in "${REPOS[@]:-}"; do'):commit_idx]
+        self.assertNotIn("\ndone", between)
+
 
 if __name__ == "__main__":
     unittest.main()
