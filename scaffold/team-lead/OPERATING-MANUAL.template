@@ -414,3 +414,93 @@ for r in results: print(r.payload["text"])
 | Task naming (`programme:project:slug`) | `podzoneTeam/agenticflows/operations/task-naming.md` |
 | Team + agent registries | `podzoneTeam/agenticflows/operations/{team-registry,agent-catalogue}.md` |
 | Session substrate ADRs | `podzoneTeam/agenticflows/decisions/adr-007*.md`, `adr-008*.md` |
+
+## 14. Production release discipline (vibecreations.net focus)
+
+Operator decision 2026-08-26, ahead of vibecreations.net's production launch — governs
+how QA-tested changes become production changes from here on:
+
+- **QA first, always.** Every change is applied to QA and tested there before any
+  production change is even considered. Passing on QA is a prerequisite, not a
+  substitute, for a production release — it does not itself authorise one.
+- **A production release is its own task, never a side effect.** Any change to
+  production *code* or production *data* — a deploy, an env-var/secret change, a live
+  migration, a manual data fix — is tracked as a distinct `planning.task`, created
+  before the change is made, not bundled into the QA-side task that proved the change
+  safe. This is the same discipline this session already followed ad hoc for the
+  `PLANNER_DATABASE_URL` CF Pages secret and its production redeploy (2026-08-25) —
+  now a standing rule, not a one-off judgement call.
+- **The production focus is `academy-frontend` / vibecreations.net specifically** —
+  not `academy-web`. The two repos are forks (confirmed live, ACP-419/420/422): they
+  share most components but have already diverged (branding, monetisation gating,
+  the leaderboard feature). Build and release effort concentrates on
+  `academy-frontend`; **backporting an academy-frontend fix into academy-web is
+  explicitly parked** (`ACP-424`) until the operator decides otherwise — don't pick it
+  up unprompted, and don't let it silently accumulate as forgotten scope either, which
+  is why it has its own tracked (parked) task rather than just living in a comment.
+- **QA must represent the vibecreations.net instance.** The QA environment
+  (`academy-frontend-qa`) should be kept branded/configured to match the production
+  instance it's meant to validate — a QA pass against branding or config that doesn't
+  match vibecreations.net doesn't actually prove the production change is safe. Check
+  this explicitly when scoping QA-parity work, not just when something visibly breaks.
+- **The Team Lead maintains their own QA test account(s).** Operator direction
+  2026-08-26, after a real walkthrough surfaced a live bug (ACP-428's `my_access_token`
+  bearer-token gap) that static/code-level verification alone hadn't caught. Creating
+  and holding real accounts on the QA platform for ad-hoc verification is a standing
+  Team Lead responsibility, not a one-off — do this on your own initiative when it's
+  needed to verify a change, rather than asking the operator to walk through it every
+  time. This does **not** extend to production: creating accounts or entering
+  credentials there remains outside what an agent session does unilaterally (see the
+  safety rules this session already followed for ACP-428 — code/config-level
+  verification only, real account creation left to the operator). QA is where this
+  judgement call resolves the other way, precisely because it's the environment this
+  section already requires be kept safe to test against.
+
+**Tracking:** the concrete work items toward the vibecreations.net launch itself live
+in the `vibecreations-release` roadmap (`planning.roadmap`, `roadmap_view()` — see the
+plannerapi GUI's Roadmap page, or query by `domain = 'vibecreations-release'`), not
+duplicated here. This section is the standing policy; the roadmap is the current state
+of applying it.
+
+### 14a. Issue-to-fix workflow (prod or QA)
+
+Operator direction 2026-09-02. Any issue encountered on production or QA — reported by
+the operator, surfaced by a live walkthrough, found in a HAR/log capture, or hit by an
+e2e run — is broken into five tracked tasks, in this order, not folded into one bundle:
+
+1. **Add e2e coverage for the specific issue, and every other route/function the same
+   error CLASS could also trigger.** Not just the one reported symptom — if the root
+   cause is a shared code path (an auth-timing race, a missing header, a
+   mis-scoped RLS policy), find every call site that shares it and cover them too. This
+   task lands FIRST, deliberately, so the fix (task 3) has a real regression test to
+   fail against before it's written, and to pass against once it's done — never write
+   the fix before the test that proves it.
+2. **Reproduce the error on QA.** Confirm it's real and reproducible outside the
+   original report before designing a fix — a report can be a one-off environmental
+   blip; don't build a fix for something that doesn't reproduce. If it only reproduces
+   in a way the operator's own report didn't describe (a different trigger, a narrower
+   condition), say so — don't silently narrow or widen the scope from what was
+   actually confirmed.
+3. **Design and build a fix**, scoped to the actual root cause established in task 2 —
+   not a symptom-level patch (e.g. papering over a race with an arbitrary retry/delay
+   when the real timing gap is findable and fixable properly; a bounded retry is
+   acceptable only when the underlying primitive genuinely has no readiness signal to
+   wait on instead).
+4. **Verify the e2e suite passes** — task 1's new coverage specifically, and the full
+   relevant suite, not just the new spec in isolation (a fix that passes its own new
+   test but breaks something adjacent is not verified).
+5. **Assign to a production release roadmap.** A fix proven on QA is not itself a
+   production change (section 14's first rule still applies in full) — link the
+   completed QA fix to the relevant production-release roadmap (`vibecreations-release`
+   for vibecreations.net) as its own trackable item, so it doesn't silently stay
+   QA-only forever. This is a *link/assignment* step, not a production deploy — the
+   deploy itself, if and when it happens, is still its own separate task per section
+   14's "production release is its own task, never a side effect" rule.
+
+**Live precedent:** ACP-470 (2026-09-02, returning-user profile hydrate failing on a
+cold-JWT-cache race) — operator-provided HAR + a direct DB check established the real
+root cause before any fix was designed (task 2 done by the Team Lead directly, ahead of
+dispatch); the brief instructed e2e coverage for the actual repro shape (sign out, sign
+back in — not just a same-session return visit, which wouldn't exercise the race) per
+task 1; the fix brief explicitly rejected a bare delay/retry unless the underlying race
+turned out to have no real readiness signal, per task 3.

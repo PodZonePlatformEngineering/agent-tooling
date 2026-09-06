@@ -26,6 +26,9 @@ logs/
 # sweeps them, this keeps any survivor out of commits meanwhile.
 *.sync-tmp*
 
+# Playwright MCP scratch output (screenshots/console logs from browser-driven checks)
+.playwright-mcp/
+
 # Per-home-repo scoped env block (plaintext secrets until PROJ-003) — NEVER commit.
 # Lives only on the workstation; carries PODZONE_QDRANT_APIKEY / SECRETCTL_PASSWORD.
 # The committed .claude/settings.json carries hooks only; primitives/ + lib/ are
