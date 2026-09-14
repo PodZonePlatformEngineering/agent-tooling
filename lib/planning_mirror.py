@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -110,6 +111,85 @@ def connect(database_url: Optional[str] = None, *, autocommit: bool = True):
             "exists yet, see this module's docstring)."
         )
     return psycopg.connect(url, autocommit=autocommit)
+
+
+_SHORT_REF_RE = re.compile(r"^[A-Z]+-[0-9]+$")
+
+
+def resolve_task_ids(conn, work_items: list[str]) -> list[str]:
+    """Resolve each ``work_items`` ref to a ``planning.task.id`` UUID.
+
+    Single source of truth for work-item ref resolution (PROJ-039/USS-418):
+    originally register-planning-session.py-only, now shared with
+    create-brief.py's own creation-time validation so both tools stay in
+    lockstep on ref-shape rules instead of drifting.
+
+    Accepts two ref shapes:
+      * legacy ``PROJ-XXX/T-YYY`` — resolved via ``project.ref = PROJ-XXX
+        AND task.ref = T-YYY`` (task.ref alone is only unique per-project
+        for this shape), falling back to ``former_ref`` on a ``ref`` miss
+        (PLA-288/PLA-289).
+      * short ``{PREFIX}-{NNN}`` (no slash, the default shape since the
+        2026-08-14 cutover, PROJ-029/T-278) — resolved via a direct
+        ``task.ref = {PREFIX}-{NNN}`` lookup. Confirmed live (PLA-287) that
+        this shape is globally unique across the board.
+
+    Raises ``ValueError`` (never returns partial results) on the first ref
+    that doesn't resolve, or that matches neither shape.
+    """
+    ids: list[str] = []
+    with conn.cursor() as cur:
+        for ref in work_items:
+            if "/" in ref:
+                project_ref, task_ref = ref.split("/", 1)
+                cur.execute(
+                    "SELECT t.id FROM planning.task t "
+                    "JOIN planning.project p ON p.id = t.project_id "
+                    "WHERE p.ref = %s AND t.ref = %s",
+                    (project_ref, task_ref),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    # PLA-288/PLA-289 legacy-ref backfill fallback: the
+                    # caller already supplied the project half, so
+                    # disambiguation is done — a former_ref match here is
+                    # safe even though former_ref alone isn't globally
+                    # unique (design doc §2.2).
+                    cur.execute(
+                        "SELECT t.id FROM planning.task t "
+                        "JOIN planning.project p ON p.id = t.project_id "
+                        "WHERE p.ref = %s AND t.former_ref = %s",
+                        (project_ref, task_ref),
+                    )
+                    row = cur.fetchone()
+                if row is None:
+                    raise ValueError(
+                        f"no planning.task found for {ref!r} — create it "
+                        "first (planning.create_task via /create-task) "
+                        "before registering a session against it"
+                    )
+                ids.append(str(row[0]))
+                continue
+            elif _SHORT_REF_RE.match(ref):
+                cur.execute(
+                    "SELECT t.id FROM planning.task t WHERE t.ref = %s",
+                    (ref,),
+                )
+            else:
+                raise ValueError(
+                    f"work-item ref {ref!r} must be either legacy "
+                    "PROJ-XXX/T-YYY (project ref / task ref) or short "
+                    "{PREFIX}-{NNN} (e.g. PLA-287)"
+                )
+            row = cur.fetchone()
+            if row is None:
+                raise ValueError(
+                    f"no planning.task found for {ref!r} — create it "
+                    "first (planning.create_task via /create-task) before "
+                    "registering a session against it"
+                )
+            ids.append(str(row[0]))
+    return ids
 
 
 def _rows_as_dicts(cur) -> list[dict]:
