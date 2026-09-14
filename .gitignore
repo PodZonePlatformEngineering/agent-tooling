@@ -7,3 +7,4 @@ __pycache__/
 # (e.g. tests / a local hook run); never committed.
 logs/
 *.log
+.claude/settings.local.json
