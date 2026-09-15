@@ -42,6 +42,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from lib import brief_substrate  # noqa: E402
 from lib import extraction_scan as ES  # noqa: E402
+from lib import planning_mirror  # noqa: E402
 
 
 def _gate_body(body: str, *, skip: bool) -> int:
@@ -84,6 +85,39 @@ def _gate_body(body: str, *, skip: bool) -> int:
         print(f"  gate: {ES.GATE_DOC} · override with --skip-extraction-scan",
               file=sys.stderr)
         return 1
+    return 0
+
+
+def _validate_work_items(work_items: list[str]) -> int:
+    """Halt brief creation on a `--work-item` ref that doesn't resolve to a
+    real `planning.task` row (PROJ-039/USS-418) — the same resolution logic
+    register-planning-session.py's `_resolve_task_ids()` already uses (now
+    shared via `lib.planning_mirror.resolve_task_ids`), just run here, before
+    the brief point is written, instead of after the session has already
+    started.
+
+    Omitting `--work-item` entirely stays unvalidated (still optional).
+    Best-effort on DB connectivity, matching register-planning-session.py's
+    own posture: no `PLANNING_DATABASE_URL` means this can't check anything,
+    which isn't grounds to block a brief that was otherwise fine.
+    """
+    if not work_items:
+        return 0
+
+    try:
+        conn = planning_mirror.connect()
+    except RuntimeError as e:
+        print(f"create-brief: skipping work-item validation (soft) — {e}",
+              file=sys.stderr)
+        return 0
+
+    try:
+        planning_mirror.resolve_task_ids(conn, work_items)
+    except ValueError as e:
+        print(f"create-brief: REFUSING to upsert — {e}", file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
     return 0
 
 
@@ -131,6 +165,10 @@ def main(argv: list[str] | None = None) -> int:
     if not body.strip():
         print("create-brief: brief body is empty", file=sys.stderr)
         return 2
+
+    work_items_rc = _validate_work_items(args.work_items)
+    if work_items_rc:
+        return work_items_rc
 
     gate_rc = _gate_body(body, skip=args.skip_extraction_scan)
     if gate_rc:

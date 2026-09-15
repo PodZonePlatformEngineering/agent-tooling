@@ -41,7 +41,6 @@ caller can capture it: `SID=$(python3 register-planning-session.py ...)`.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
@@ -50,63 +49,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib import brief_substrate, planning_mirror  # noqa: E402
 
 
-_SHORT_REF_RE = re.compile(r"^[A-Z]+-[0-9]+$")
-
-
 def _resolve_task_ids(conn, work_items: list[str]) -> list[str]:
-    ids: list[str] = []
-    with conn.cursor() as cur:
-        for ref in work_items:
-            if "/" in ref:
-                project_ref, task_ref = ref.split("/", 1)
-                cur.execute(
-                    "SELECT t.id FROM planning.task t "
-                    "JOIN planning.project p ON p.id = t.project_id "
-                    "WHERE p.ref = %s AND t.ref = %s",
-                    (project_ref, task_ref),
-                )
-                row = cur.fetchone()
-                if row is None:
-                    # PLA-288/PLA-289 legacy-ref backfill fallback: the
-                    # caller already supplied the project half, so
-                    # disambiguation is done — a former_ref match here is
-                    # safe even though former_ref alone isn't globally
-                    # unique (design doc §2.2).
-                    cur.execute(
-                        "SELECT t.id FROM planning.task t "
-                        "JOIN planning.project p ON p.id = t.project_id "
-                        "WHERE p.ref = %s AND t.former_ref = %s",
-                        (project_ref, task_ref),
-                    )
-                    row = cur.fetchone()
-                if row is None:
-                    raise ValueError(
-                        f"register-planning-session: no planning.task found for "
-                        f"{ref!r} — create it first (planning.create_task via "
-                        f"/create-task) before registering a session against it"
-                    )
-                ids.append(str(row[0]))
-                continue
-            elif _SHORT_REF_RE.match(ref):
-                cur.execute(
-                    "SELECT t.id FROM planning.task t WHERE t.ref = %s",
-                    (ref,),
-                )
-            else:
-                raise ValueError(
-                    f"register-planning-session: work-item ref {ref!r} must be "
-                    "either legacy PROJ-XXX/T-YYY (project ref / task ref) or "
-                    "short {PREFIX}-{NNN} (e.g. PLA-287)"
-                )
-            row = cur.fetchone()
-            if row is None:
-                raise ValueError(
-                    f"register-planning-session: no planning.task found for "
-                    f"{ref!r} — create it first (planning.create_task via "
-                    f"/create-task) before registering a session against it"
-                )
-            ids.append(str(row[0]))
-    return ids
+    """Thin wrapper over the shared resolver (PROJ-039/USS-418 moved the
+    real logic to ``lib.planning_mirror.resolve_task_ids`` so create-brief.py
+    can reuse it); re-prefixed here so this tool's own error messages keep
+    naming themselves, matching prior behaviour for callers/tests."""
+    try:
+        return planning_mirror.resolve_task_ids(conn, work_items)
+    except ValueError as e:
+        raise ValueError(f"register-planning-session: {e}") from e
 
 
 def main() -> int:
